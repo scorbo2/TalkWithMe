@@ -126,6 +126,16 @@ TalkWithMe/
 - Single-user design: only one active chat session exists at a time.
 - "New Chat" clears all conversation history.
 
+## Release history
+
+- **2026-07-27** v1.0
+  - initial release
+  - basic text input only
+  - manual configuration of personas
+  - optional TTS
+- **TODO** v2.0
+  - release notes go here for v2
+
 ## License
 
 This project is licensed under the [MIT License](LICENSE)
