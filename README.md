@@ -10,6 +10,7 @@ As seen on YouTube!: https://www.youtube.com/watch?v=1VPydYNt4R8
 - Smart persona routing: let the LLM decide, pick randomly, or choose manually
 - Streaming responses rendered incrementally
 - Optional TTS: AI responses spoken aloud via a local TTS server
+- Optional STT: Click the microphone icon to speak your prompt
 - Fully local — no internet required, no authentication
 - Dark theme UI with sidebar persona management
 
@@ -17,7 +18,7 @@ As seen on YouTube!: https://www.youtube.com/watch?v=1VPydYNt4R8
 
 - Python 3.10+
 - A locally running llama.cpp server with OpenAI-compatible API (e.g., `--api` flag)
-- (Optional) A local TTS REST server with `/synthesize` and `/health` endpoints.
+- (Optional) A local TTS REST server with `/synthesize`, `parse`, and `/health` endpoints.
    You can use my [server.py](https://github.com/scorbo2/ai-playground/blob/master/dots.tts/server.py)
    in front of a [dots.tts](https://github.com/studio-dots-ai/dots.tts) server (that's what I use.)
 
@@ -98,7 +99,8 @@ personas:
 | `POST` | `/api/session/personas` | Update active personas |
 | `POST` | `/api/chat` | Send message (SSE stream response) |
 | `GET` | `/api/tts/health` | TTS availability status |
-| `POST` | `/api/tts` | Synthesize speech |
+| `POST` | `/api/tts` | Synthesize speech from text |
+| `POST` | `/api/stt` | Transcribe speech from voice |
 
 ## Project Structure
 
@@ -120,7 +122,7 @@ TalkWithMe/
 
 ## Notes
 
-- The TTS server is optional. If unreachable, TTS is silently disabled.
+- The TTS server is optional. If unreachable, TTS/STT is silently disabled.
 - Single-user design: only one active chat session exists at a time.
 - "New Chat" clears all conversation history.
 

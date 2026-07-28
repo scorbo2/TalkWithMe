@@ -31,6 +31,11 @@ class TTSRequest(BaseModel):
     persona_name: str = Field(..., description="Which persona to synthesize for")
 
 
+class STTRequest(BaseModel):
+    """Proxy request to the STT server."""
+    audio_base64: str = Field(..., min_length=1, description="Base64-encoded audio to transcribe")
+
+
 # ---------------------------------------------------------------------------
 # Response models
 # ---------------------------------------------------------------------------
@@ -54,6 +59,12 @@ class TTSResponse(BaseModel):
     """Base64-encoded audio from the TTS server."""
     audio_base64: str
     sample_rate: int = 24000
+
+
+class STTResponse(BaseModel):
+    """Transcribed text from the STT server."""
+    text: str
+    language: Optional[str] = None
 
 
 class TTSHealthResponse(BaseModel):

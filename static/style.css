@@ -430,6 +430,43 @@ html, body {
     cursor: not-allowed;
 }
 
+#btn-mic {
+    background: var(--bg-tertiary);
+    color: var(--text-primary);
+    border: 1px solid var(--border-color);
+    border-radius: 8px;
+    width: 40px;
+    height: 40px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    cursor: pointer;
+    font-size: 1rem;
+    transition: background 0.15s, border-color 0.15s;
+    flex-shrink: 0;
+}
+
+#btn-mic:hover {
+    background: var(--accent);
+    border-color: var(--accent);
+}
+
+#btn-mic.recording {
+    background: var(--accent);
+    border-color: var(--accent);
+    animation: mic-pulse 1s infinite ease-in-out;
+}
+
+#btn-mic:disabled {
+    opacity: 0.35;
+    cursor: not-allowed;
+}
+
+@keyframes mic-pulse {
+    0%, 100% { opacity: 1; }
+    50% { opacity: 0.6; }
+}
+
 /* --------------------------------------------------------------------------
    Empty state
    -------------------------------------------------------------------------- */

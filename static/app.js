@@ -20,6 +20,10 @@ const audioQueue = [];
 let audioCtx = null;
 let isPlayingAudio = false;
 
+// Microphone / STT state
+let mediaRecorder = null;
+let recordedChunks = [];
+
 /* ==========================================================================
    DOM references
    ========================================================================== */
@@ -27,6 +31,7 @@ let isPlayingAudio = false;
 const messagesEl = document.getElementById("messages");
 const inputEl = document.getElementById("message-input");
 const sendBtn = document.getElementById("btn-send");
+const micBtn = document.getElementById("btn-mic");
 const newChatBtn = document.getElementById("btn-new-chat");
 const ttsToggleBtn = document.getElementById("btn-tts-toggle");
 const ttsIcon = document.getElementById("tts-icon");
@@ -98,6 +103,14 @@ function setupEventListeners() {
 
     newChatBtn.addEventListener("click", newChat);
     ttsToggleBtn.addEventListener("click", toggleTTS);
+    micBtn.addEventListener("click", toggleMicrophone);
+
+    document.addEventListener("keydown", (e) => {
+        if (e.ctrlKey && e.code === "Space" && !micBtn.disabled) {
+            e.preventDefault();
+            toggleMicrophone();
+        }
+    });
 }
 
 /* ==========================================================================
@@ -479,6 +492,81 @@ function playAudio(buffer) {
         source.onended = resolve;
         source.start();
     });
+}
+
+/* ==========================================================================
+   STT / Microphone
+   ========================================================================== */
+
+async function toggleMicrophone() {
+    if (mediaRecorder && mediaRecorder.state === "recording") {
+        mediaRecorder.stop();
+        return;
+    }
+
+    let stream;
+    try {
+        stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+    } catch (err) {
+        console.error("Microphone access denied:", err);
+        appendErrorBubble("Microphone access was denied.");
+        return;
+    }
+
+    recordedChunks = [];
+    mediaRecorder = new MediaRecorder(stream);
+
+    mediaRecorder.ondataavailable = (e) => {
+        if (e.data.size > 0) recordedChunks.push(e.data);
+    };
+
+    mediaRecorder.onstop = async () => {
+        // Stop all tracks to release the microphone
+        stream.getTracks().forEach(t => t.stop());
+        micBtn.classList.remove("recording");
+        micBtn.disabled = true;
+
+        const blob = new Blob(recordedChunks, { type: "audio/webm" });
+        const arrayBuffer = await blob.arrayBuffer();
+        const bytes = new Uint8Array(arrayBuffer);
+        let binary = "";
+        for (let i = 0; i < bytes.length; i++) binary += String.fromCharCode(bytes[i]);
+        const audio_base64 = btoa(binary);
+
+        let sttFailed = false;
+        try {
+            const resp = await fetch("/api/stt", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ audio_base64 }),
+            });
+
+            if (!resp.ok) {
+                console.error("STT request failed:", resp.status);
+                appendErrorBubble("Speech recognition failed. Microphone disabled.");
+                sttFailed = true;
+                return;
+            }
+
+            const data = await resp.json();
+            if (data.text) {
+                // Append transcribed text (never replace existing content)
+                const existing = inputEl.value;
+                inputEl.value = existing ? existing + " " + data.text : data.text;
+                inputEl.dispatchEvent(new Event("input")); // trigger auto-resize
+                sendMessage();
+            }
+        } catch (err) {
+            console.error("STT error:", err);
+            appendErrorBubble("Speech recognition failed. Microphone disabled.");
+            sttFailed = true;
+        } finally {
+            if (!sttFailed) micBtn.disabled = false;
+        }
+    };
+
+    mediaRecorder.start();
+    micBtn.classList.add("recording");
 }
 
 /* ==========================================================================
