@@ -138,7 +138,7 @@ If `streaming` is enabled in the TTS configuration, text responses from AI perso
 
 If you prefer to hear the persona's response in one clear, contiguous audio playback, and you don't mind the lag time for audio playback to begin, leave streaming mode disabled in configuration (this is the default).
 
-If you want to hear each sentence as soon as it has been synthesized, without having to wait for the ENTIRE response to be synthesized, and you don't mine the occasional pause in between sentences, then enable streaming mode in configuration.
+If you want to hear each sentence as soon as it has been synthesized, without having to wait for the ENTIRE response to be synthesized, and you don't mind the occasional pause in between sentences, then enable streaming mode in configuration.
 
 ## Notes
 
