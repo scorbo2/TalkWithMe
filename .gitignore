@@ -1,5 +1,6 @@
 app/__pycache__/
 app/services/__pycache__/
 app/routers/__pycache__/
-personas.yaml.startrek
+personas.yaml.TNG
+personas.yaml.languages
 

@@ -49,6 +49,7 @@ class Persona(BaseModel):
     avatar_image: Optional[str] = None
     reference_audio: Optional[str] = None
     reference_audio_transcript: Optional[str] = None
+    language: str = "en"
 
     @property
     def tts_capable(self) -> bool:

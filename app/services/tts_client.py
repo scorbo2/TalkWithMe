@@ -34,6 +34,7 @@ async def synthesize(
     text: str,
     prompt_text: str,
     audio_base64: str,
+    language: str = "en",
 ) -> Optional[dict]:
     """Call the TTS server's /synthesize endpoint.
 
@@ -46,6 +47,7 @@ async def synthesize(
         "text": text,
         "prompt_text": prompt_text,
         "audio_base64": audio_base64,
+        "language": language,
         "num_steps": settings.tts.num_steps,
         "guidance_scale": settings.tts.guidance_scale,
         "seed": settings.tts.seed,
