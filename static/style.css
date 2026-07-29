@@ -285,17 +285,19 @@ html, body {
 
 .message-row.assistant {
     align-self: flex-start;
+    align-items: flex-start; /* Top-align avatar with bubble, not bottom */
+    gap: 12px;               /* Wider gap to match the larger avatar */
 }
 
 .bubble-avatar {
-    width: 32px;
-    height: 32px;
+    width: 64px;
+    height: 64px;
     border-radius: 50%;
     display: flex;
     align-items: center;
     justify-content: center;
     font-weight: 700;
-    font-size: 0.8rem;
+    font-size: 1.5rem;
     color: #fff;
     flex-shrink: 0;
     overflow: hidden;
