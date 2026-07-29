@@ -11,4 +11,4 @@ tts:
   guidance_scale: 1.7
   seed: null
   timeout: 120
-  streaming: true
+  streaming: false
