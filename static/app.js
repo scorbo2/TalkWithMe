@@ -528,12 +528,16 @@ async function toggleMicrophone() {
         micBtn.disabled = true;
 
         const blob = new Blob(recordedChunks, { type: "audio/webm" });
-        const arrayBuffer = await blob.arrayBuffer();
-        const bytes = new Uint8Array(arrayBuffer);
-        let binary = "";
-        for (let i = 0; i < bytes.length; i++) binary += String.fromCharCode(bytes[i]);
-        const audio_base64 = btoa(binary);
 
+        const audio_base64 = await new Promise((resolve, reject) => {
+            const reader = new FileReader();
+            reader.onerror = () => reject(reader.error);
+            reader.onload = () => {
+                const result = String(reader.result || "");
+                resolve(result.split(",")[1] || "");
+            };
+            reader.readAsDataURL(blob);
+        });
         let sttFailed = false;
         try {
             const resp = await fetch("/api/stt", {
