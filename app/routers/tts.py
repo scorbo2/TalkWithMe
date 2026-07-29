@@ -10,7 +10,7 @@ from fastapi import APIRouter
 from fastapi.responses import JSONResponse
 
 from app.config import get_personas, get_settings
-from app.models import TTSRequest, TTSHealthResponse, STTRequest
+from app.models import TTSRequest, TTSHealthResponse, STTRequest, STTResponse
 from app.services.tts_client import check_tts_health, encode_reference_audio, read_transcript, synthesize, parse_audio
 
 logger = logging.getLogger(__name__)
