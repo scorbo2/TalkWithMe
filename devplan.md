@@ -145,7 +145,7 @@ or "no volume" or similar symbol with the avatar if the persona cannot speak.
 2. `getUserMedia` -> `MediaRecorder` records user's speech
 3. User clicks Microphone again to stop speaking
 4. Input audio is Base64-encoded
-5. POST `{audio_base64}` to `/parse` endpoint on TTS/STT server
+5. POST `{audio_base64}` to `/api/stt` endpoint on the app (backend proxies to `/parse` on the TTS/STT server)
 6. If this returns 5xx, show an error and disable the microphone button
 7. Otherwise, parse `text` from the Json response and populate the text input box (append to existing contents, never replace)
 8. On success, implicitly invoke the chat/streaming flow as though the user clicked Send
