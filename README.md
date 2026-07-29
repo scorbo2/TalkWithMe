@@ -54,6 +54,7 @@ tts:
   guidance_scale: 3.0
   seed: null
   timeout: 60
+  streaming: false
 ```
 
 ### `personas.yaml`
@@ -127,6 +128,17 @@ TalkWithMe/
 If your reference audio is in English, you're all set.
 
 If your reference audio is in some other language, you must specify the language code in the `language` field for the persona in question. This helps the voice cloner understand the reference audio. This may also prevent the cloned voice from speaking in languages other than the reference audio language, but your mileage may vary.
+
+## Streaming TTS responses
+
+If `streaming` is enabled in the TTS configuration, text responses from AI personas will be chunked into sentences using common punctuation, and each sentence will be queued up as a separate TTS request. A separate audio playback queue is used to queue up and play the responses sequentially. 
+
+- Advantage: the initial lag time before playback begins is reduced. The user only has to wait for the first sentence to generate and not the entire text response. As each sentence plays, the next sentence is being processed by the TTS service. Ideally, the lag between sentences is minimal.
+- Disadvantage: sentence length variance can lead to large pauses between sentences. A short sentence followed by a long sentence is the worst case scenario, because the short sentence will process and play very quickly, but the longer sentence will take much longer for the TTS server to process.
+
+If you prefer to hear the persona's response in one clear, contiguous audio playback, and you don't mind the lag time for audio playback to begin, leave streaming mode disabled in configuration (this is the default).
+
+If you want to hear each sentence as soon as it has been synthesized, without having to wait for the ENTIRE response to be synthesized, and you don't mine the occasional pause in between sentences, then enable streaming mode in configuration.
 
 ## Notes
 

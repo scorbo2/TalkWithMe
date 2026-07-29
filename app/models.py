@@ -74,6 +74,10 @@ class TTSHealthResponse(BaseModel):
         default=False,
         description="True if the TTS server responded to /health",
     )
+    streaming: bool = Field(
+        default=False,
+        description="True if streaming (sentence-by-sentence) TTS mode is configured",
+    )
 
 
 # ---------------------------------------------------------------------------

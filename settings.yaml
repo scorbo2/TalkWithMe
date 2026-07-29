@@ -6,8 +6,9 @@ llm:
 
 tts:
   enabled: true
-  base_url: http://saturn-lm:8765
+  base_url: http://saturn-lm:8181
   num_steps: 12
   guidance_scale: 1.7
   seed: null
   timeout: 120
+  streaming: true

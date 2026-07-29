@@ -154,6 +154,10 @@ or "no volume" or similar symbol with the avatar if the persona cannot speak.
 
 ## TTS Flow
 
+### When not in streaming mode
+
+When the `streaming` config property is set to `false` (or when it is omitted):
+
 1. Frontend receives `done` SSE event for a persona
 2. If TTS enabled and supported for this persona: enqueue `{persona_name, text}` in FIFO audio queue
 3. POST `{text}` to `/api/tts`
@@ -165,6 +169,16 @@ or "no volume" or similar symbol with the avatar if the persona cannot speak.
 5. Returns `{audio_base64, sample_rate}` to frontend
 6. Frontend decodes base64 WAV → Web Audio API → plays audio
 7. Queue processes next item after current audio finishes
+
+### When streaming mode is enabled
+
+When the `streaming` config property is set to `true`:
+
+1. Incoming text streams from the personas are chunked into sentences using a regex to split on common punctuation.
+2. At each sentence boundary, a TTS request for that sentence is queued.
+3. A separate audio playback queue is used to queue up audio responses from the TTS server.
+4. As sentence 1 is being played, sentence 2 can be processing on the TTS server, and so on for sentence 3.
+5. This mode reduces the initial lag time for audio playback to begin, at the expense of possibly causing longer delays between sentences.
 
 ---
 

@@ -29,6 +29,7 @@ class TTSConfig(BaseModel):
     guidance_scale: float = 3.0
     seed: Optional[int] = None
     timeout: float = 60.0
+    streaming: bool = False
 
 
 class AppSettings(BaseModel):

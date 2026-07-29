@@ -22,7 +22,11 @@ async def tts_health():
     """Report TTS availability status to the frontend."""
     settings = get_settings()
     available = await check_tts_health() if settings.tts.enabled else False
-    return TTSHealthResponse(enabled=settings.tts.enabled, available=available)
+    return TTSHealthResponse(
+        enabled=settings.tts.enabled,
+        available=available,
+        streaming=settings.tts.streaming,
+    )
 
 
 @router.post("/api/tts")
