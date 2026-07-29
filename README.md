@@ -18,7 +18,7 @@ As seen on YouTube!: https://www.youtube.com/watch?v=1VPydYNt4R8
 
 - Python 3.10+
 - A locally running llama.cpp server with OpenAI-compatible API (e.g., `--api` flag)
-- (Optional) A local TTS REST server with `/synthesize`, `parse`, and `/health` endpoints.
+- (Optional) A local TTS/STT REST server with `/synthesize`, `/parse`, and `/health` endpoints.
    You can use my [server.py](https://github.com/scorbo2/ai-playground/blob/master/dots.tts/server.py)
    in front of a [dots.tts](https://github.com/studio-dots-ai/dots.tts) server (that's what I use.)
 
