@@ -500,6 +500,7 @@ function playAudio(buffer) {
 
 async function toggleMicrophone() {
     if (mediaRecorder && mediaRecorder.state === "recording") {
+        micBtn.disabled = true; // prevent re-entry until onstop finishes
         mediaRecorder.stop();
         return;
     }
