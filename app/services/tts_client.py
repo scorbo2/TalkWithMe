@@ -78,7 +78,7 @@ async def parse_audio(audio_base64: str) -> Optional[dict]:
             return resp.json()
     except Exception as exc:
         logger.warning("STT parse failed: %s", exc)
-        raise
+        return None
 
 
 def encode_reference_audio(audio_path: Optional[str]) -> Optional[str]:
