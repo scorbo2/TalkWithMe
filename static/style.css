@@ -29,6 +29,51 @@
     --radius: 12px;
 }
 
+body[data-theme="light"] {
+    --bg-primary: #f5f7fb;
+    --bg-secondary: #ffffff;
+    --bg-tertiary: #e9eef7;
+    --bg-input: #ffffff;
+    --text-primary: #1d2433;
+    --text-secondary: #445067;
+    --text-muted: #6f7d97;
+    --accent: #2f6fed;
+    --accent-hover: #4d85f2;
+    --bubble-user: #d9e6ff;
+    --bubble-ai: #ffffff;
+    --border-color: #ccd6e6;
+}
+
+body[data-theme="matrix"] {
+    --bg-primary: #020b03;
+    --bg-secondary: #041706;
+    --bg-tertiary: #0a260d;
+    --bg-input: #041706;
+    --text-primary: #9dff9d;
+    --text-secondary: #71cf71;
+    --text-muted: #4b9b4b;
+    --accent: #35ff6c;
+    --accent-hover: #6eff95;
+    --bubble-user: #0a2a10;
+    --bubble-ai: #08220d;
+    --border-color: #1f5f2f;
+}
+
+body[data-theme="blues"] {
+    --bg-primary: #0a1f3f;
+    --bg-secondary: #102c57;
+    --bg-tertiary: #1a3d73;
+    --bg-input: #15325f;
+    --text-primary: #edf6ff;
+    --text-secondary: #bfd8f7;
+    --text-muted: #8eb0db;
+    --accent: #66b3ff;
+    --accent-hover: #8cc8ff;
+    --bubble-user: #174073;
+    --bubble-ai: #12335e;
+    --border-color: #2a4f82;
+}
+
 html, body {
     height: 100%;
     font-family: 'Segoe UI', system-ui, -apple-system, sans-serif;
@@ -79,6 +124,25 @@ html, body {
 .topbar-actions button:hover {
     background: var(--accent);
     border-color: var(--accent);
+}
+
+.theme-label {
+    font-size: 0.8rem;
+    color: var(--text-secondary);
+}
+
+#theme-select {
+    background: var(--bg-tertiary);
+    color: var(--text-primary);
+    border: 1px solid var(--border-color);
+    border-radius: 6px;
+    padding: 6px 8px;
+    font-size: 0.82rem;
+}
+
+#theme-select:focus {
+    outline: 1px solid var(--accent);
+    outline-offset: 1px;
 }
 
 .icon-btn {
@@ -175,7 +239,7 @@ html, body {
 .persona-card.selected {
     background: var(--bg-tertiary);
     border-color: var(--accent);
-    color: #fff;
+    color: var(--text-primary);
 }
 
 .persona-avatar {

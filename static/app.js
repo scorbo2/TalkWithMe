@@ -34,6 +34,7 @@ const ttsRequestQueue = [];      // [{personaName, text}] waiting to be fetched
 const audioBufferQueue = [];     // AudioBuffers decoded and ready to play
 let isFetchingTTS = false;
 let isPlayingAudioBuffer = false;
+const THEME_STORAGE_KEY = "talkwithme_theme";
 
 /* ==========================================================================
    DOM references
@@ -48,12 +49,14 @@ const ttsToggleBtn = document.getElementById("btn-tts-toggle");
 const ttsIcon = document.getElementById("tts-icon");
 const personaListEl = document.getElementById("persona-list");
 const whoChooser = document.getElementById("who-chooser");
+const themeSelectEl = document.getElementById("theme-select");
 
 /* ==========================================================================
    Initialization
    ========================================================================== */
 
 async function init() {
+    initTheme();
     await loadPersonas();
     await checkTTSHealth();
     setupEventListeners();
@@ -117,6 +120,9 @@ function setupEventListeners() {
     newChatBtn.addEventListener("click", newChat);
     ttsToggleBtn.addEventListener("click", toggleTTS);
     micBtn.addEventListener("click", toggleMicrophone);
+    themeSelectEl.addEventListener("change", () => {
+        applyTheme(themeSelectEl.value, true);
+    });
 
     document.addEventListener("keydown", (e) => {
         if (e.ctrlKey && e.code === "Space" && !micBtn.disabled) {
@@ -124,6 +130,34 @@ function setupEventListeners() {
             toggleMicrophone();
         }
     });
+}
+
+function initTheme() {
+    let storedTheme = "dark";
+    try {
+        const fromStorage = localStorage.getItem(THEME_STORAGE_KEY);
+        if (fromStorage) {
+            storedTheme = fromStorage;
+        }
+    } catch (err) {
+        console.warn("Theme storage unavailable:", err);
+    }
+    applyTheme(storedTheme, false);
+}
+
+function applyTheme(theme, persist) {
+    const allowedThemes = new Set(["dark", "light", "matrix", "blues"]);
+    const normalizedTheme = allowedThemes.has(theme) ? theme : "dark";
+    document.body.dataset.theme = normalizedTheme;
+    themeSelectEl.value = normalizedTheme;
+
+    if (persist) {
+        try {
+            localStorage.setItem(THEME_STORAGE_KEY, normalizedTheme);
+        } catch (err) {
+            console.warn("Failed to persist theme:", err);
+        }
+    }
 }
 
 /* ==========================================================================

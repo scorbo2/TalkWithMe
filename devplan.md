@@ -16,6 +16,7 @@ A local single-user chat webapp built with Python + FastAPI that connects to a l
 - Optional STT: user can use microphone to speak instead of typing a message (transcribed via TTS/STT server)
 - Fully local — no internet required, no auth
 - Single active chat session (in-memory); "New Chat" clears history
+- Top-right theme chooser with Dark (default), Light, Matrix, and Blues options (persisted in browser storage)
 
 ---
 
@@ -184,7 +185,7 @@ When the `streaming` config property is set to `true`:
 
 ## Frontend Design
 
-- **Dark theme** throughout
+- **Theme chooser** in top bar with Dark (default), Light, Matrix, and Blues palettes
 - **Left sidebar** (~250px):
    - "Who should answer?" chooser with options "LLM decides", "Surprise me", and "Selected persona"
    - Beneath that chooser, show all personas with colored avatar (image or initial circle)
@@ -243,5 +244,4 @@ Open `http://localhost:8000`. Ensure llama.cpp is running at the URL in `setting
 TTS is optional — if unreachable, the app logs a warning and disables TTS gracefully.
 The TTS server exposes a simple GET /health endpoint - if this returns 200, assume TTS is available.
 If TTS is available, UI should default the TTS toggle to on. Otherwise, default it to off.
-
 

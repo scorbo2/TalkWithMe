@@ -12,7 +12,8 @@ As seen on YouTube!: https://www.youtube.com/watch?v=1VPydYNt4R8
 - Optional TTS: AI responses spoken aloud via a local TTS server
 - Optional STT: Click the microphone icon to speak your prompt
 - Fully local — no internet required, no authentication
-- Dark theme UI with sidebar persona management
+- Theme chooser in the top-right: Dark (default), Light, Matrix, and Blues
+- Theme preference persists between visits in local browser storage
 
 ## Prerequisites
 
@@ -159,4 +160,3 @@ If you want to hear each sentence as soon as it has been synthesized, without ha
 ## License
 
 This project is licensed under the [MIT License](LICENSE)
-
