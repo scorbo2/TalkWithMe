@@ -25,6 +25,24 @@ class SessionPersonasRequest(BaseModel):
     )
 
 
+class PersonaCreateRequest(BaseModel):
+    """Create or update a persona definition."""
+    name: str = Field(..., min_length=1, max_length=25)
+    description: str = Field(default="", max_length=30)
+    system_prompt: str = Field(..., min_length=1, max_length=8192)
+    router_hints: str = Field(..., min_length=1, max_length=256)
+    avatar_color: str = Field(default="#FF0000")
+    avatar_image: Optional[str] = None
+    reference_audio: Optional[str] = None
+    reference_audio_transcript: Optional[str] = None
+    language: str = Field(default="en", min_length=2, max_length=2)
+
+
+class PersonaUpdateRequest(PersonaCreateRequest):
+    """Update an existing persona (same fields as create)."""
+    pass
+
+
 class TTSRequest(BaseModel):
     """Proxy request to the TTS server."""
     text: str = Field(..., min_length=1, description="Text to synthesize")
@@ -46,6 +64,20 @@ class PersonaResponse(BaseModel):
     description: str
     avatar_color: str
     avatar_image: Optional[str] = None
+    tts_capable: bool = False
+
+
+class PersonaDetailResponse(BaseModel):
+    """Full persona detail including all editable fields."""
+    name: str
+    description: str
+    system_prompt: str
+    router_hints: str
+    avatar_color: str
+    avatar_image: Optional[str] = None
+    reference_audio: Optional[str] = None
+    reference_audio_transcript: Optional[str] = None
+    language: str
     tts_capable: bool = False
 
 

@@ -114,6 +114,21 @@ def get_personas() -> PersonasConfig:
     return _personas_cache
 
 
+def save_personas(config: PersonasConfig, path: Optional[Path] = None) -> None:
+    """Serialize PersonasConfig back to personas.yaml and update the in-memory cache."""
+    global _personas_cache
+    target = path or _PROJECT_ROOT / "personas.yaml"
+    raw = {
+        "personas": [
+            p.model_dump(exclude_none=False)
+            for p in config.personas
+        ]
+    }
+    with open(target, "w") as f:
+        yaml.dump(raw, f, default_flow_style=False, allow_unicode=True, sort_keys=False)
+    _personas_cache = config
+
+
 def reload_all():
     """Force-reload both config files. Useful for dev hot-reload."""
     global _settings_cache, _personas_cache

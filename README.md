@@ -11,6 +11,7 @@ As seen on YouTube!: https://www.youtube.com/watch?v=1VPydYNt4R8
 - Streaming responses rendered incrementally
 - Optional TTS: AI responses spoken aloud via a local TTS server
 - Optional STT: Click the microphone icon to speak your prompt
+- **In-app Persona Editor**: create, edit, clone and delete personas without touching `personas.yaml`
 - Fully local — no internet required, no authentication
 - Theme chooser in the top-right: Dark (default), Light, Matrix, and Blues
 - Theme preference persists between visits in local browser storage
@@ -91,12 +92,30 @@ personas:
 
 **TTS support**: Both `reference_audio` and `reference_audio_transcript` must be set for a persona to have TTS capability.
 
+## In-App Persona Editor
+
+Click the **✎ Personas** button in the top-right to open the Persona Editor. You can:
+
+- **Create** a new persona with the **+ New Persona** button
+- **Edit** any existing persona's properties inline
+- **Clone** a persona (a numeric suffix is added to the name, e.g. `Mark_2`)
+- **Delete** a persona (with a confirmation prompt)
+
+Changes are persisted immediately to `personas.yaml` and the sidebar persona list is refreshed automatically. No server restart is needed.
+
+> **Note**: renaming or deleting a persona does not modify messages already visible in the chat panel — those retain the name they were created with.
+
 ## API Endpoints
 
 | Method | Path | Description |
 |--------|------|-------------|
 | `GET` | `/` | Chat UI |
 | `GET` | `/api/personas` | List all personas |
+| `POST` | `/api/personas` | Create a new persona |
+| `GET` | `/api/personas/{name}/detail` | Full persona detail (all editable fields) |
+| `PUT` | `/api/personas/{name}` | Update a persona |
+| `DELETE` | `/api/personas/{name}` | Delete a persona |
+| `POST` | `/api/personas/{name}/clone` | Clone a persona |
 | `GET` | `/api/personas/{name}/avatar` | Serve persona avatar image |
 | `GET` | `/api/session` | Current session state |
 | `POST` | `/api/session/new` | Reset session |
@@ -160,8 +179,8 @@ If you want to hear each sentence as soon as it has been synthesized, without ha
   - Better size and positioning of avatar images (#3)
   - Allow microphone voice input for prompting (#6)
   - Color theme chooser with persistence (#12)
-- **TODO** v3.0
-  - 3.0 release notes go here
+- **2026-07-30** v3.0
+  - In-app persona editor: create, edit, clone, and delete personas from the browser UI (#XX)
 
 ## License
 

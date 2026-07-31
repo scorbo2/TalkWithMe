@@ -19,6 +19,7 @@
                     <option value="matrix">Matrix</option>
                     <option value="blues">Blues</option>
                 </select>
+                <button id="btn-persona-editor" title="Open persona editor">&#9998; Personas</button>
                 <button id="btn-new-chat" title="Start a new chat">New Chat</button>
                 <button id="btn-tts-toggle" title="Toggle TTS playback" class="icon-btn">
                     <span id="tts-icon">&#128266;</span>
@@ -66,6 +67,95 @@
                     <button id="btn-send" title="Send message">&#9654;</button>
                 </div>
             </main>
+        </div>
+    </div>
+
+    <!-- Persona Editor Modal -->
+    <div id="persona-editor-overlay" class="modal-overlay hidden" role="dialog" aria-modal="true" aria-labelledby="persona-editor-title">
+        <div class="modal-box">
+            <!-- List view -->
+            <div id="pe-list-view">
+                <div class="modal-header">
+                    <h2 id="persona-editor-title">Persona Editor</h2>
+                    <div class="modal-header-actions">
+                        <button id="pe-btn-new" class="btn-accent" title="Create new persona">&#43; New Persona</button>
+                        <button id="pe-btn-close" class="btn-icon-close" title="Close">&#10005;</button>
+                    </div>
+                </div>
+                <div id="pe-list" class="pe-list">
+                    <!-- Populated by JS -->
+                </div>
+            </div>
+
+            <!-- Form view (create / edit) -->
+            <div id="pe-form-view" class="hidden">
+                <div class="modal-header">
+                    <h2 id="pe-form-title">New Persona</h2>
+                    <button id="pe-form-btn-cancel" class="btn-icon-close" title="Cancel">&#10005;</button>
+                </div>
+                <div id="pe-form-error" class="pe-form-error hidden"></div>
+                <form id="pe-form" novalidate>
+                    <div class="form-row">
+                        <label for="pf-name">Name <span class="required">*</span></label>
+                        <input id="pf-name" type="text" maxlength="25" placeholder="Max 25 chars" required>
+                        <span class="field-hint">25 chars max, must be unique</span>
+                    </div>
+                    <div class="form-row">
+                        <label for="pf-description">Description</label>
+                        <input id="pf-description" type="text" maxlength="30" placeholder="Max 30 chars (optional)">
+                    </div>
+                    <div class="form-row">
+                        <label for="pf-system-prompt">System Prompt <span class="required">*</span></label>
+                        <textarea id="pf-system-prompt" maxlength="8192" rows="6" placeholder="System prompt sent to the LLM (max 8192 chars)" required></textarea>
+                    </div>
+                    <div class="form-row">
+                        <label for="pf-router-hints">Router Hints <span class="required">*</span></label>
+                        <input id="pf-router-hints" type="text" maxlength="256" placeholder="Keywords for routing, e.g. science, math" required>
+                        <span class="field-hint">256 chars max</span>
+                    </div>
+                    <div class="form-row form-row-inline">
+                        <div class="form-col">
+                            <label for="pf-avatar-color">Avatar Color</label>
+                            <input id="pf-avatar-color" type="color" value="#FF0000">
+                        </div>
+                        <div class="form-col">
+                            <label for="pf-language">Language</label>
+                            <input id="pf-language" type="text" maxlength="2" minlength="2" placeholder="en" style="width:60px">
+                            <span class="field-hint">2-letter code</span>
+                        </div>
+                    </div>
+                    <div class="form-row">
+                        <label for="pf-avatar-image">Avatar Image Path</label>
+                        <input id="pf-avatar-image" type="text" placeholder="Path to local image file (optional)">
+                    </div>
+                    <div class="form-row">
+                        <label for="pf-reference-audio">Reference Audio Path</label>
+                        <input id="pf-reference-audio" type="text" placeholder="Path to WAV file for TTS cloning (optional)">
+                    </div>
+                    <div class="form-row">
+                        <label for="pf-reference-audio-transcript">Reference Audio Transcript Path</label>
+                        <input id="pf-reference-audio-transcript" type="text" placeholder="Path to transcript TXT file (optional)">
+                    </div>
+                    <div class="form-actions">
+                        <button type="button" id="pe-form-btn-cancel2" class="btn-secondary">Cancel</button>
+                        <button type="submit" id="pe-form-btn-save" class="btn-accent">Save</button>
+                    </div>
+                </form>
+            </div>
+        </div>
+    </div>
+
+    <!-- Delete confirmation modal -->
+    <div id="pe-confirm-overlay" class="modal-overlay hidden" role="dialog" aria-modal="true">
+        <div class="modal-box modal-box-sm">
+            <div class="modal-header">
+                <h2>Delete Persona</h2>
+            </div>
+            <p id="pe-confirm-msg" class="pe-confirm-msg"></p>
+            <div class="form-actions">
+                <button id="pe-confirm-cancel" class="btn-secondary">Cancel</button>
+                <button id="pe-confirm-delete" class="btn-danger">Delete</button>
+            </div>
         </div>
     </div>
 
