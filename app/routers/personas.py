@@ -90,6 +90,9 @@ def update_persona(name: str, req: PersonaUpdateRequest):
         raise HTTPException(status_code=404, detail=f"Persona '{name}' not found")
 
     new_name = req.name.strip()
+    if not new_name:
+        raise HTTPException(status_code=422, detail="Name may not be blank")
+
     if new_name.lower() != name.lower():
         if any(p.name.lower() == new_name.lower() for p in config.personas if p.name != name):
             raise HTTPException(status_code=409, detail=f"A persona named '{new_name}' already exists")
