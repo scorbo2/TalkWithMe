@@ -816,7 +816,6 @@ peConfirmOverlay.addEventListener("click", (e) => {
 function openPersonaEditor() {
     personaEditorOverlay.classList.remove("hidden");
     showPersonaList();
-    renderPersonaEditorList();
 }
 
 function closePersonaEditor() {
