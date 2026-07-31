@@ -3,6 +3,8 @@
 The TTS server is optional. If it's down or misconfigured, the app logs
 a warning and gracefully disables TTS. The frontend gets the status via
 the /api/tts/health endpoint.
+
+STT client code lives in its own module: app.services.stt_client
 """
 
 import base64
@@ -60,26 +62,6 @@ async def synthesize(
             return resp.json()
     except Exception as exc:
         logger.warning("TTS synthesis failed: %s", exc)
-        return None
-
-
-async def parse_audio(audio_base64: str) -> Optional[dict]:
-    """Call the STT server's /parse endpoint.
-
-    Returns dict with {"text": str, "language": str} or None on failure.
-    """
-    settings = get_settings()
-    url = f"{settings.tts.base_url}/parse"
-
-    payload = {"audio_base64": audio_base64}
-
-    try:
-        async with httpx.AsyncClient(timeout=settings.tts.timeout) as client:
-            resp = await client.post(url, json=payload)
-            resp.raise_for_status()
-            return resp.json()
-    except Exception as exc:
-        logger.warning("STT parse failed: %s", exc)
         return None
 
 

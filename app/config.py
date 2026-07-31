@@ -32,9 +32,17 @@ class TTSConfig(BaseModel):
     streaming: bool = False
 
 
+class STTConfig(BaseModel):
+    """Speech-to-text configuration, independent of TTS."""
+    enabled: bool = True
+    base_url: str = "http://localhost:5500"
+    timeout: float = 30.0
+
+
 class AppSettings(BaseModel):
     llm: LLMSettings = LLMSettings()
     tts: TTSConfig = TTSConfig()
+    stt: STTConfig = STTConfig()
 
 
 # ---------------------------------------------------------------------------
@@ -82,6 +90,7 @@ def load_settings(path: Optional[Path] = None) -> AppSettings:
     _settings_cache = AppSettings(
         llm=LLMSettings(**raw.get("llm", {})),
         tts=TTSConfig(**raw.get("tts", {})),
+        stt=STTConfig(**raw.get("stt", {})),
     )
     return _settings_cache
 

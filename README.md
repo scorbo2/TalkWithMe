@@ -40,7 +40,7 @@ Open `http://localhost:8000` in your browser.
 
 ### `settings.yaml`
 
-Configure your LLM and TTS server endpoints:
+Configure your LLM, TTS, and STT server endpoints:
 
 ```yaml
 llm:
@@ -57,7 +57,16 @@ tts:
   seed: null
   timeout: 60
   streaming: false
+
+stt:
+  enabled: true
+  base_url: http://localhost:5501
+  timeout: 30
 ```
+
+Note that TTS and STT are both optional! You can mark them as disabled
+and/or leave the base_url field blank or null. The only mandatory
+configuration here is the LLM.
 
 ### `personas.yaml`
 
@@ -162,7 +171,8 @@ If you want to hear each sentence as soon as it has been synthesized, without ha
 
 ## Notes
 
-- The TTS server is optional. If unreachable, TTS/STT is silently disabled.
+- The TTS server is optional. If unreachable, TTS is silently disabled.
+- The STT server is optional. If unreachable, STT is silently disabled.
 - Single-user design: only one active chat session exists at a time.
 - "New Chat" clears all conversation history.
 
@@ -179,8 +189,9 @@ If you want to hear each sentence as soon as it has been synthesized, without ha
   - Better size and positioning of avatar images (#3)
   - Allow microphone voice input for prompting (#6)
   - Color theme chooser with persistence (#12)
-- **2026-07-30** v3.0
+- **TODO** v3.0
   - In-app persona editor: create, edit, clone, and delete personas from the browser UI (#11)
+  - Split TTS and STT into separate features with separate configuration
 
 ## License
 

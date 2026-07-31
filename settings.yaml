@@ -12,3 +12,8 @@ tts:
   seed: null
   timeout: 120
   streaming: false
+
+stt:
+  enabled: true
+  base_url: http://saturn-lm:8181
+  timeout: 30

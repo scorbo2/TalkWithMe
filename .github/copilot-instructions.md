@@ -11,7 +11,7 @@ There is no test suite. Manual testing is done by running the app and using the 
 
 ## Architecture
 
-**Backend**: FastAPI app in `app/`. Config is loaded from `settings.yaml` (LLM/TTS endpoints) and `personas.yaml` (persona definitions) at startup. Both are cached in module-level globals in `app/config.py` — always use `get_settings()` / `get_personas()` rather than calling `load_*()` directly in request handlers.
+**Backend**: FastAPI app in `app/`. Config is loaded from `settings.yaml` (LLM, TTS, and STT endpoints) and `personas.yaml` (persona definitions) at startup. Both are cached in module-level globals in `app/config.py` — always use `get_settings()` / `get_personas()` rather than calling `load_*()` directly in request handlers.
 
 **Session**: Single global `session` singleton in `app/session.py` (`SessionManager`). This is intentional — the app is single-user. History is a list of `ChatMessage` objects. `session.build_llm_messages()` constructs the per-call LLM payload, interleaving multi-persona history by prefixing other personas' turns with `[Name]: <text>` so the responding LLM understands the group chat context.
 
@@ -30,9 +30,11 @@ There is no test suite. Manual testing is done by running the app and using the 
 | `POST` | `/api/tts` | Proxy text → TTS `/synthesize`; returns `{audio_base64, sample_rate}` |
 | `POST` | `/api/stt` | Proxy audio → STT `/parse`; returns `{text, language}` |
 
-**STT flow**: The microphone button in the input bar uses `getUserMedia` + `MediaRecorder`. Click to start, click again to stop. The recorded blob is base64-encoded and POSTed to `/api/stt`, which proxies to `/parse` on the same server as TTS (`settings.tts.base_url`). On success, the transcribed text is appended to the input box (never replaces) and `sendMessage()` is called automatically. A 5xx response disables the mic button for the session.
+**STT flow**: The microphone button in the input bar uses `getUserMedia` + `MediaRecorder`. Click to start, click again to stop. The recorded blob is base64-encoded and POSTed to `/api/stt`, which proxies to `/parse` at `settings.stt.base_url`. On success, the transcribed text is appended to the input box (never replaces) and `sendMessage()` is called automatically. A 5xx response disables the mic button for the session. STT is independently enabled/disabled via `settings.stt.enabled` — it has no dependency on TTS.
 
-**TTS/STT server**: Both `/api/tts` and `/api/stt` routes share one `APIRouter` (no prefix) in `app/routers/tts.py`. The client functions `synthesize()` and `parse_audio()` are in `app/services/tts_client.py`. A persona is TTS-capable only when both `reference_audio` and `reference_audio_transcript` are set in `personas.yaml` (computed as a `@property` on `Persona` in `app/config.py`). STT requires no per-persona config — it uses the same `tts.base_url` endpoint.
+**TTS server** (`app/routers/tts.py`, `app/services/tts_client.py`): The `/api/tts` and `/api/tts/health` routes live in `app/routers/tts.py`. The client functions `synthesize()` and `check_tts_health()` are in `app/services/tts_client.py`. TTS is independently enabled/disabled via `settings.tts.enabled`. A persona is TTS-capable only when both `reference_audio` and `reference_audio_transcript` are set in `personas.yaml` (computed as a `@property` on `Persona` in `app/config.py`).
+
+**STT server** (`app/routers/stt.py`, `app/services/stt_client.py`): The `/api/stt` route lives in `app/routers/stt.py`. The client function `parse_audio()` is in `app/services/stt_client.py`. STT is independently enabled/disabled via `settings.stt.enabled` and has its own `base_url` and `timeout` in `settings.yaml`. STT requires no per-persona config.
 
 ## Key Conventions
 
@@ -40,5 +42,5 @@ There is no test suite. Manual testing is done by running the app and using the 
 - **SSE event schema**: every event is `data: <JSON>\n\n`. The `type` field is always present. Frontend switches on it in `handleSSEEvent()`.
 - **Config hot-reload**: call `app.config.reload_all()` to force re-read both YAML files (e.g., for dev tooling). The `--reload` uvicorn flag handles Python file changes only; YAML changes require `reload_all()` or a restart.
 - **Persona router** uses a low-temperature (0.1) non-streaming LLM call capped at 16 tokens to pick a persona name. If the LLM returns an unrecognized name, it falls back to random.
-- **Routers** live in `app/routers/`, **external service clients** (LLM, TTS) live in `app/services/`. Keep that separation.
+- **Routers** live in `app/routers/`, **external service clients** (LLM, TTS, STT) live in `app/services/`. Keep that separation.
 - **No auth, no database** — by design. Don't add persistent storage or user management without revisiting the single-user assumption throughout.
