@@ -180,7 +180,7 @@ If you want to hear each sentence as soon as it has been synthesized, without ha
   - Allow microphone voice input for prompting (#6)
   - Color theme chooser with persistence (#12)
 - **2026-07-30** v3.0
-  - In-app persona editor: create, edit, clone, and delete personas from the browser UI (#XX)
+  - In-app persona editor: create, edit, clone, and delete personas from the browser UI (#11)
 
 ## License
 
