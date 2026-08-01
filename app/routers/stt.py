@@ -46,11 +46,11 @@ async def stt_proxy(req: STTRequest):
         return JSONResponse(status_code=400, content={"detail": "Invalid audio data"})
 
     try:
-        result = await transcribe_audio(audio_bytes, mime_type=req.audio_mime_type)
+        mime_type = req.audio_mime_type or "audio/webm"
+        result = await transcribe_audio(audio_bytes, mime_type=mime_type)
     except Exception:
         return JSONResponse(status_code=502, content={"detail": "Unable to process STT data"})
 
-    if not result or not result.get("text"):
+    if not result:
         return JSONResponse(status_code=502, content={"detail": "Unable to process STT data"})
-
     return result
