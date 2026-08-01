@@ -681,8 +681,7 @@ async function toggleMicrophone() {
     mediaRecorder = new MediaRecorder(stream);
     // Capture the actual MIME type the browser chose. Different browsers/platforms
     // may produce webm, ogg, mp4, or other containers.
-    const audioMimeType = mediaRecorder.mimeType;
-
+    const audioMimeType = mediaRecorder.mimeType || "audio/webm";
     mediaRecorder.ondataavailable = (e) => {
         if (e.data.size > 0) recordedChunks.push(e.data);
     };
