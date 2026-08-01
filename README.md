@@ -201,11 +201,12 @@ If you want to hear each sentence as soon as it has been synthesized, without ha
   - Better size and positioning of avatar images (#3)
   - Allow microphone voice input for prompting (#6)
   - Color theme chooser with persistence (#12)
-- **TODO** v3.0
+- **RELEASE DATE GOES HERE** v3.0
   - In-app persona editor: create, edit, clone, and delete personas from the browser UI (#11)
   - Migrate STT to OpenAI-compatible `/v1/audio/transcriptions` endpoint (#21)
   - Split TTS and STT into separate features with separate configuration (#19)
   - Add UI for server connection settings (#23)
+  - Clicking a persona now updates "Who should answer?" to "Selected persona" (#24)
 
 ## License
 

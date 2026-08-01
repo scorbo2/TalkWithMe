@@ -192,6 +192,8 @@ function renderPersonaList() {
         card.addEventListener("click", () => {
             selectedPersona = p.name;
             highlightSelectedPersona();
+            // If I clicked a persona, I probably want it to answer. Switch the chooser.
+            document.querySelector('input[name="who_answers"][value="selected"]').checked = true;
         });
 
         // Avatar
