@@ -225,6 +225,7 @@ If you want to hear each sentence as soon as it has been synthesized, without ha
   - Clicking a persona now updates "Who should answer?" to "Selected persona" (#24)
   - Added configurable chat rooms for grouping personas (#18)
   - Mentioning a persona causes them to answer next (can be disabled in settings.yaml) (#28)
+  - Break up the `app.js` monolith for code maintainability (#29)
 
 ## License
 

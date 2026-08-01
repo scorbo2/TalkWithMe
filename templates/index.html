@@ -337,6 +337,18 @@
         </div>
     </div>
 
+    <!-- Load modules in dependency order -->
+    <!-- Be careful with the load order!  -->
+    <!-- state.js first, app.js last.     -->
+    <script src="/static/state.js"></script>
+    <script src="/static/utils.js"></script>
+    <script src="/static/theme.js"></script>
+    <script src="/static/tts.js"></script>
+    <script src="/static/stt.js"></script>
+    <script src="/static/chat.js"></script>
+    <script src="/static/persona.js"></script>
+    <script src="/static/chatrooms.js"></script>
+    <script src="/static/settings.js"></script>
     <script src="/static/app.js"></script>
 </body>
 </html>
