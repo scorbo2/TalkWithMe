@@ -18,11 +18,15 @@ logger = logging.getLogger(__name__)
 
 def _mime_to_extension(mime_type: str) -> str:
     """Derive a file extension from a MIME type, falling back to 'bin'."""
-    ext = mimetypes.guess_extension(mime_type)
+    base = (mime_type or "").split(";", 1)[0].strip()
+    if "/" not in base:
+        return "bin"
+    ext = mimetypes.guess_extension(base)
     if ext and ext.startswith("."):
         return ext[1:]  # strip leading dot
     # Fallback: use the subtype (e.g. "audio/webm" -> "webm")
-    return mime_type.split("/")[-1]
+    subtype = base.split("/", 1)[1]
+    return subtype or "bin"
 
 
 async def check_stt_health() -> bool:
