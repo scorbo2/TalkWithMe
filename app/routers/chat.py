@@ -81,7 +81,7 @@ async def _pick_persona(who_answers: str, user_message: str) -> str:
             result = await chat_completion(prompt, max_tokens=16)
             chosen = result.strip().strip("\"'")
             # Validate the LLM actually returned a known name
-            if chosen in all_names:
+            if chosen in active:
                 return chosen
             logger.info("Router returned unknown name '%s', falling back to random", chosen)
         except Exception as exc:
