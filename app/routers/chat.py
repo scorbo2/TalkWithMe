@@ -28,13 +28,14 @@ router = APIRouter(prefix="/api/chat", tags=["chat"])
 
 def _build_router_prompt(user_message: str) -> list[dict]:
     """Build a minimal prompt that asks the LLM to pick a persona by name."""
-    active = session.active_personas or [p.name for p in get_personas().personas]
-    active_personas = [p for p in get_personas().personas if p.name in active]
+    personas_config = get_personas().personas
+    active = session.active_personas or [p.name for p in personas_config]
+    active_personas = [p for p in personas_config if p.name in active]
     persona_choices = ", ".join(p.name for p in active_personas)
 
     # Build router hints block
     hints = "\n".join(
-        f"- {p.name}: {p.router_hints}" for p in config.personas
+        f"- {p.name}: {p.router_hints}" for p in personas_config
     )
 
     # Include last N conversation turns for context

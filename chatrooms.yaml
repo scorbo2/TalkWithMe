@@ -1,0 +1,5 @@
+chat_rooms:
+- name: Test
+  persona_names:
+  - Luna
+  - Alex
