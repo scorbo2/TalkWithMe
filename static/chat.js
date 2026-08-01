@@ -145,9 +145,8 @@ async function sendMessage() {
                 }
             }
         }
-    } catch (err) {
         console.error("Chat error:", err);
-        appendErrorBubble("Connection failed. Is the LLM server running?");
+        handleSSEEvent({ type: "error", message: "Connection failed. Is the LLM server running?" }, assistantRow);
     } finally {
         isStreaming = false;
         sendBtn.disabled = false;
