@@ -1510,7 +1510,7 @@ function renderPersonaPickerList() {
 
         const descEl = document.createElement("div");
         descEl.className = "pp-list-item-desc";
-        descEl.textContent = alreadyInRoom.has(p.name) ? p.description + " (already in room)" : p.description || "";
+        descEl.textContent = alreadyInRoom.has(p.name) ? (p.description || "") + " (already in room)" : (p.description || "");
 
         info.appendChild(nameEl);
         info.appendChild(descEl);
