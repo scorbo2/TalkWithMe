@@ -78,10 +78,11 @@ async def transcribe_audio(audio_bytes: bytes, mime_type: str = "audio/webm") ->
             resp = await client.post(url, files=files, data=data)
             resp.raise_for_status()
             json_response = resp.json()
+            text = json_response.get("text") or "No response received from STT server"
             return {
-                "text": json_response.get("text", ""),
+                "text": text,
                 # "language" is optional in the response; default to "en" if absent
-                "language": json_response.get("language", "en"),
+                "language": json_response.get("language") or "en",
                 # "language_probability" is optional; None if the server doesn't provide it
                 "language_probability": json_response.get("language_probability"),
             }
