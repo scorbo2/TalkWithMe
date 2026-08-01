@@ -52,6 +52,10 @@ class TTSRequest(BaseModel):
 class STTRequest(BaseModel):
     """Proxy request to the STT server."""
     audio_base64: str = Field(..., min_length=1, description="Base64-encoded audio to transcribe")
+    audio_mime_type: Optional[str] = Field(
+        default="audio/webm",
+        description="MIME type of the recorded audio (e.g. audio/webm, audio/ogg)",
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -94,9 +98,10 @@ class TTSResponse(BaseModel):
 
 
 class STTResponse(BaseModel):
-    """Transcribed text from the STT server."""
+    """Transcribed text from an OpenAI-compatible STT server."""
     text: str
-    language: Optional[str] = None
+    language: str = "en"
+    language_probability: Optional[float] = None
 
 
 class TTSHealthResponse(BaseModel):

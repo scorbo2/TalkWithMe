@@ -20,9 +20,13 @@ As seen on YouTube!: https://www.youtube.com/watch?v=1VPydYNt4R8
 
 - Python 3.10+
 - A locally running llama.cpp server with OpenAI-compatible API (e.g., `--api` flag)
-- (Optional) A local TTS/STT REST server with `/synthesize`, `/parse`, and `/health` endpoints.
+- (Optional) A local TTS REST server with `/synthesize` and `/health` endpoints.
    You can use my [server.py](https://github.com/scorbo2/ai-playground/blob/master/dots.tts/server.py)
    in front of a [dots.tts](https://github.com/studio-dots-ai/dots.tts) server (that's what I use.)
+- (Optional) An OpenAI-compatible STT server that exposes a `/v1/audio/transcriptions` endpoint
+   accepting multipart form uploads. The `stt.base_url` in `settings.yaml` should point to the
+   server's root (e.g., `http://localhost:8181`), and the app will POST to
+   `{base_url}/v1/audio/transcriptions`.
 
 ## Quick Start
 
@@ -60,9 +64,15 @@ tts:
 
 stt:
   enabled: true
-  base_url: http://localhost:5501
+  base_url: http://localhost:8181
   timeout: 30
 ```
+
+The STT `base_url` should point to an OpenAI-compatible server. The app sends audio
+as a multipart form POST to `{base_url}/v1/audio/transcriptions` with
+`response_format=json`. The server must return a JSON object containing at least a
+`text` field. Optional response fields `language` (defaults to `"en"`) and
+`language_probability` are also supported.
 
 Note that TTS and STT are both optional! You can mark them as disabled
 and/or leave the base_url field blank or null. The only mandatory
@@ -172,7 +182,7 @@ If you want to hear each sentence as soon as it has been synthesized, without ha
 ## Notes
 
 - The TTS server is optional. If unreachable, TTS is silently disabled.
-- The STT server is optional. If unreachable, STT is silently disabled.
+- The STT server is optional. If unreachable or misconfigured, STT is gracefully disabled with an error message.
 - Single-user design: only one active chat session exists at a time.
 - "New Chat" clears all conversation history.
 
@@ -191,7 +201,8 @@ If you want to hear each sentence as soon as it has been synthesized, without ha
   - Color theme chooser with persistence (#12)
 - **TODO** v3.0
   - In-app persona editor: create, edit, clone, and delete personas from the browser UI (#11)
-  - Split TTS and STT into separate features with separate configuration
+  - Migrate STT to OpenAI-compatible `/v1/audio/transcriptions` endpoint (#21)
+  - Split TTS and STT into separate features with separate configuration (#19)
 
 ## License
 

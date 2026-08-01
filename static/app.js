@@ -679,6 +679,9 @@ async function toggleMicrophone() {
 
     recordedChunks = [];
     mediaRecorder = new MediaRecorder(stream);
+    // Capture the actual MIME type the browser chose. Different browsers/platforms
+    // may produce webm, ogg, mp4, or other containers.
+    const audioMimeType = mediaRecorder.mimeType;
 
     mediaRecorder.ondataavailable = (e) => {
         if (e.data.size > 0) recordedChunks.push(e.data);
@@ -690,7 +693,7 @@ async function toggleMicrophone() {
         micBtn.classList.remove("recording");
         micBtn.disabled = true;
 
-        const blob = new Blob(recordedChunks, { type: "audio/webm" });
+        const blob = new Blob(recordedChunks, { type: audioMimeType });
 
         const audio_base64 = await new Promise((resolve, reject) => {
             const reader = new FileReader();
@@ -706,12 +709,12 @@ async function toggleMicrophone() {
             const resp = await fetch("/api/stt", {
                 method: "POST",
                 headers: { "Content-Type": "application/json" },
-                body: JSON.stringify({ audio_base64 }),
+                body: JSON.stringify({ audio_base64, audio_mime_type: audioMimeType }),
             });
 
             if (!resp.ok) {
                 console.error("STT request failed:", resp.status);
-                appendErrorBubble("Speech recognition failed. Microphone disabled.");
+                appendErrorBubble("Unable to process STT data.");
                 sttFailed = true;
                 return;
             }
@@ -726,7 +729,7 @@ async function toggleMicrophone() {
             }
         } catch (err) {
             console.error("STT error:", err);
-            appendErrorBubble("Speech recognition failed. Microphone disabled.");
+            appendErrorBubble("Unable to process STT data.");
             sttFailed = true;
         } finally {
             if (!sttFailed) micBtn.disabled = false;
