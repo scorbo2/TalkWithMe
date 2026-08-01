@@ -115,6 +115,11 @@ async function sendMessage() {
             body: JSON.stringify({ message: text, who_answers: who }),
         });
 
+        if (!resp.ok || !resp.body) {
+            handleSSEEvent({ type: "error", message: `Chat request failed (HTTP ${resp.status}).` }, assistantRow);
+            return;
+        }
+
         const reader = resp.body.getReader();
         const decoder = new TextDecoder();
         let buffer = "";
