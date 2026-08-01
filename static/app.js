@@ -1493,7 +1493,7 @@ function renderPersonaPickerList() {
         checkbox.checked = false;
         checkbox.addEventListener("click", (e) => {
             e.stopPropagation();
-            togglePickerSelection(p.name, checkbox.checked, e.target);
+            togglePickerSelection(p.name, checkbox.checked, item);
         });
 
         const avatar = document.createElement("div");
