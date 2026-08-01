@@ -20,6 +20,7 @@
                     <option value="blues">Blues</option>
                 </select>
                 <button id="btn-persona-editor" title="Open persona editor">&#9998; Personas</button>
+                <button id="btn-settings" title="Open settings">&#9881; Settings</button>
                 <button id="btn-new-chat" title="Start a new chat">New Chat</button>
                 <button id="btn-tts-toggle" title="Toggle TTS playback" class="icon-btn">
                     <span id="tts-icon">&#128266;</span>
@@ -156,6 +157,112 @@
                 <button id="pe-confirm-cancel" class="btn-secondary">Cancel</button>
                 <button id="pe-confirm-delete" class="btn-danger">Delete</button>
             </div>
+        </div>
+    </div>
+
+    <!-- Settings Modal -->
+    <div id="settings-overlay" class="modal-overlay hidden" role="dialog" aria-modal="true" aria-labelledby="settings-title">
+        <div class="modal-box">
+            <div class="modal-header">
+                <h2 id="settings-title">Settings</h2>
+                <button id="settings-btn-close" class="btn-icon-close" title="Close">&#10005;</button>
+            </div>
+            <div id="settings-error" class="pe-form-error hidden"></div>
+            <form id="settings-form" novalidate>
+                <div class="settings-body">
+                    <!-- LLM Section (always enabled) -->
+                    <fieldset class="settings-section">
+                        <legend>LLM</legend>
+                        <div class="form-row">
+                            <label for="sf-llm-base-url">Base URL</label>
+                            <input id="sf-llm-base-url" type="text" required>
+                        </div>
+                        <div class="form-row">
+                            <label for="sf-llm-model">Model</label>
+                            <input id="sf-llm-model" type="text" required>
+                        </div>
+                        <div class="form-row form-row-inline">
+                            <div class="form-col">
+                                <label for="sf-llm-max-tokens">Max Tokens</label>
+                                <input id="sf-llm-max-tokens" type="number" min="1" required>
+                            </div>
+                            <div class="form-col">
+                                <label for="sf-llm-temperature">Temperature</label>
+                                <input id="sf-llm-temperature" type="number" min="0" max="1" step="0.01" required>
+                            </div>
+                        </div>
+                    </fieldset>
+
+                    <!-- TTS Section -->
+                    <fieldset class="settings-section">
+                        <legend>
+                            <label class="settings-toggle-label">
+                                <input id="sf-tts-enabled" type="checkbox" class="settings-toggle">
+                                <span class="settings-toggle-slider"></span>
+                                <span class="settings-toggle-text">TTS</span>
+                            </label>
+                        </legend>
+                        <div id="sf-tts-fields" class="settings-fields">
+                            <div class="form-row">
+                                <label for="sf-tts-base-url">Base URL</label>
+                                <input id="sf-tts-base-url" type="text">
+                            </div>
+                            <div class="form-row form-row-inline">
+                                <div class="form-col">
+                                    <label for="sf-tts-num-steps">Step Count <span class="field-hint">(4–20)</span></label>
+                                    <input id="sf-tts-num-steps" type="number" min="4" max="20">
+                                </div>
+                                <div class="form-col">
+                                    <label for="sf-tts-guidance-scale">CFG <span class="field-hint">(1.0–2.0)</span></label>
+                                    <input id="sf-tts-guidance-scale" type="number" min="1.0" max="2.0" step="0.1">
+                                </div>
+                            </div>
+                            <div class="form-row form-row-inline">
+                                <div class="form-col">
+                                    <label for="sf-tts-seed">Seed <span class="field-hint">(0 = random)</span></label>
+                                    <input id="sf-tts-seed" type="number" min="0">
+                                </div>
+                                <div class="form-col">
+                                    <label for="sf-tts-timeout">Timeout <span class="field-hint">(5–300s)</span></label>
+                                    <input id="sf-tts-timeout" type="number" min="5" max="300">
+                                </div>
+                            </div>
+                            <div class="form-row">
+                                <label class="settings-checkbox-label">
+                                    <input id="sf-tts-streaming" type="checkbox">
+                                    <span>Streaming (sentence-by-sentence)</span>
+                                </label>
+                            </div>
+                        </div>
+                    </fieldset>
+
+                    <!-- STT Section -->
+                    <fieldset class="settings-section">
+                        <legend>
+                            <label class="settings-toggle-label">
+                                <input id="sf-stt-enabled" type="checkbox" class="settings-toggle">
+                                <span class="settings-toggle-slider"></span>
+                                <span class="settings-toggle-text">STT</span>
+                            </label>
+                        </legend>
+                        <div id="sf-stt-fields" class="settings-fields">
+                            <div class="form-row">
+                                <label for="sf-stt-base-url">Base URL</label>
+                                <input id="sf-stt-base-url" type="text">
+                            </div>
+                            <div class="form-row">
+                                <label for="sf-stt-timeout">Timeout <span class="field-hint">(5–300s)</span></label>
+                                <input id="sf-stt-timeout" type="number" min="5" max="300">
+                            </div>
+                        </div>
+                    </fieldset>
+                </div>
+
+                <div class="form-actions">
+                    <button type="button" id="settings-btn-cancel" class="btn-secondary">Cancel</button>
+                    <button type="submit" id="settings-btn-save" class="btn-accent">Save</button>
+                </div>
+            </form>
         </div>
     </div>
 

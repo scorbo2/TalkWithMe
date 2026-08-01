@@ -867,3 +867,156 @@ html, body {
     font-size: 0.9rem;
     color: var(--text-secondary);
 }
+
+/* ==========================================================================
+   Settings Modal
+   ========================================================================== */
+
+#settings-form {
+    display: flex;
+    flex-direction: column;
+}
+
+.settings-body {
+    padding: 16px 20px;
+    overflow-y: auto;
+    display: flex;
+    flex-direction: column;
+    gap: 16px;
+    max-height: 65vh;
+}
+
+/* Fieldset sections */
+.settings-section {
+    border: 1px solid var(--border-color);
+    border-radius: 8px;
+    padding: 12px 14px;
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+}
+
+.settings-section legend {
+    padding: 0 6px;
+    font-size: 0.82rem;
+    font-weight: 700;
+    color: var(--text-primary);
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    cursor: default;
+}
+
+/* Settings fields container (shown/hidden based on toggle) */
+.settings-fields {
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+}
+
+.settings-fields.disabled {
+    opacity: 0.35;
+    pointer-events: none;
+}
+
+/* Toggle switch (for TTS/STT enable/disable) */
+.settings-toggle-label {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    cursor: pointer;
+    user-select: none;
+}
+
+.settings-toggle {
+    position: absolute;
+    opacity: 0;
+    width: 0;
+    height: 0;
+}
+
+.settings-toggle-slider {
+    position: relative;
+    display: inline-block;
+    width: 36px;
+    height: 20px;
+    background: var(--border-color);
+    border-radius: 10px;
+    transition: background 0.2s;
+    flex-shrink: 0;
+}
+
+.settings-toggle-slider::after {
+    content: "";
+    position: absolute;
+    top: 2px;
+    left: 2px;
+    width: 16px;
+    height: 16px;
+    background: var(--text-secondary);
+    border-radius: 50%;
+    transition: transform 0.2s, background 0.2s;
+}
+
+.settings-toggle:checked + .settings-toggle-slider {
+    background: var(--accent);
+}
+
+.settings-toggle:checked + .settings-toggle-slider::after {
+    transform: translateX(16px);
+    background: #fff;
+}
+
+.settings-toggle-text {
+    font-size: 0.82rem;
+    font-weight: 700;
+    color: var(--text-primary);
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+}
+
+/* Styled checkbox (for streaming toggle) */
+.settings-checkbox-label {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    cursor: pointer;
+    font-size: 0.85rem;
+    color: var(--text-secondary);
+    user-select: none;
+}
+
+.settings-checkbox-label input[type="checkbox"] {
+    accent-color: var(--accent);
+    width: 16px;
+    height: 16px;
+    cursor: pointer;
+}
+
+/* Number input styling for settings */
+.settings-body .form-row input[type="number"] {
+    background: var(--bg-input);
+    color: var(--text-primary);
+    border: 1px solid var(--border-color);
+    border-radius: 6px;
+    padding: 8px 10px;
+    font-size: 0.88rem;
+    font-family: inherit;
+    outline: none;
+    transition: border-color 0.15s;
+    width: 100%;
+}
+
+.settings-body .form-row input[type="number"]:focus {
+    border-color: var(--accent);
+}
+
+/* Remove spinner arrows from number inputs */
+.settings-body input[type="number"]::-webkit-inner-spin-button,
+.settings-body input[type="number"]::-webkit-outer-spin-button {
+    -webkit-appearance: none;
+    margin: 0;
+}
+
+.settings-body input[type="number"] {
+    -moz-appearance: textfield;
+}

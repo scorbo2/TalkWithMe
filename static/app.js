@@ -14,6 +14,7 @@ let selectedPersona = null;   // The persona selected in the sidebar
 let ttsEnabled = false;        // Whether TTS playback is toggled on
 let ttsAvailable = false;      // Whether the TTS server is reachable
 let ttsStreaming = false;       // Whether streaming (sentence-by-sentence) TTS is enabled
+let sttAvailable = false;      // Whether the STT server is reachable
 let isStreaming = false;       // Guard: prevent double-sends during streaming
 
 // Microphone / STT state
@@ -59,6 +60,7 @@ async function init() {
     initTheme();
     await loadPersonas();
     await checkTTSHealth();
+    await checkSTTHealth();
     setupEventListeners();
     showEmptyState();
 }
@@ -99,6 +101,23 @@ async function checkTTSHealth() {
         ttsEnabled = false;
         updateTTSToggleUI();
     }
+}
+
+async function checkSTTHealth() {
+    try {
+        const resp = await fetch("/api/stt/health");
+        const data = await resp.json();
+        sttAvailable = data.available;
+        updateMicButtonUI();
+    } catch (err) {
+        console.warn("STT health check failed:", err);
+        sttAvailable = false;
+        updateMicButtonUI();
+    }
+}
+
+function updateMicButtonUI() {
+    micBtn.disabled = !sttAvailable;
 }
 
 function setupEventListeners() {
@@ -1038,7 +1057,7 @@ function showPersonaFormError(msg) {
 
 function escapeHtml(str) {
   if (typeof str !== 'string') return str;
-  
+
   return str.replace(/[&<>"']/g, match => {
     return {
       '&': '&amp;',
@@ -1048,5 +1067,222 @@ function escapeHtml(str) {
       "'": '&#39;'
     }[match];
   });
+}
+
+/* ==========================================================================
+   Settings Modal
+   ========================================================================== */
+
+const settingsOverlay   = document.getElementById("settings-overlay");
+const settingsForm      = document.getElementById("settings-form");
+const settingsError     = document.getElementById("settings-error");
+
+// LLM fields
+const sfLlmBaseUrl      = document.getElementById("sf-llm-base-url");
+const sfLlmModel        = document.getElementById("sf-llm-model");
+const sfLlmMaxTokens    = document.getElementById("sf-llm-max-tokens");
+const sfLlmTemperature  = document.getElementById("sf-llm-temperature");
+
+// TTS fields
+const sfTtsEnabled      = document.getElementById("sf-tts-enabled");
+const sfTtsFields       = document.getElementById("sf-tts-fields");
+const sfTtsBaseUrl      = document.getElementById("sf-tts-base-url");
+const sfTtsNumSteps     = document.getElementById("sf-tts-num-steps");
+const sfTtsGuidanceScale = document.getElementById("sf-tts-guidance-scale");
+const sfTtsSeed         = document.getElementById("sf-tts-seed");
+const sfTtsTimeout      = document.getElementById("sf-tts-timeout");
+const sfTtsStreaming    = document.getElementById("sf-tts-streaming");
+
+// STT fields
+const sfSttEnabled      = document.getElementById("sf-stt-enabled");
+const sfSttFields       = document.getElementById("sf-stt-fields");
+const sfSttBaseUrl      = document.getElementById("sf-stt-base-url");
+const sfSttTimeout      = document.getElementById("sf-stt-timeout");
+
+// Event listeners
+document.getElementById("btn-settings").addEventListener("click", openSettings);
+document.getElementById("settings-btn-close").addEventListener("click", closeSettings);
+document.getElementById("settings-btn-cancel").addEventListener("click", closeSettings);
+settingsForm.addEventListener("submit", submitSettings);
+
+// Close on backdrop click
+settingsOverlay.addEventListener("click", (e) => {
+    if (e.target === settingsOverlay) closeSettings();
+});
+
+// Toggle TTS/STT fields visibility on checkbox change
+sfTtsEnabled.addEventListener("change", () => {
+    updateTtsFieldsState();
+});
+sfSttEnabled.addEventListener("change", () => {
+    updateSttFieldsState();
+});
+
+function openSettings() {
+    settingsOverlay.classList.remove("hidden");
+    settingsError.classList.add("hidden");
+    loadSettingsIntoForm();
+}
+
+function closeSettings() {
+    settingsOverlay.classList.add("hidden");
+}
+
+async function loadSettingsIntoForm() {
+    try {
+        const resp = await fetch("/api/settings");
+        if (!resp.ok) {
+            console.error("Failed to load settings:", resp.status);
+            return;
+        }
+        const data = await resp.json();
+        populateSettingsForm(data);
+    } catch (err) {
+        console.error("Failed to load settings:", err);
+    }
+}
+
+function populateSettingsForm(data) {
+    // LLM (always populated)
+    sfLlmBaseUrl.value = data.llm.base_url || "";
+    sfLlmModel.value = data.llm.model || "";
+    sfLlmMaxTokens.value = data.llm.max_tokens || 1024;
+    sfLlmTemperature.value = data.llm.temperature ?? 0.8;
+
+    // TTS
+    sfTtsEnabled.checked = data.tts.enabled;
+    sfTtsBaseUrl.value = data.tts.base_url || "";
+    sfTtsNumSteps.value = data.tts.num_steps ?? 12;
+    sfTtsGuidanceScale.value = data.tts.guidance_scale ?? 1.5;
+    // seed: null from API -> 0 in form (0 means "no seed")
+    sfTtsSeed.value = data.tts.seed ?? 0;
+    sfTtsTimeout.value = data.tts.timeout ?? 120;
+    sfTtsStreaming.checked = data.tts.streaming || false;
+    updateTtsFieldsState();
+
+    // STT
+    sfSttEnabled.checked = data.stt.enabled;
+    sfSttBaseUrl.value = data.stt.base_url || "";
+    sfSttTimeout.value = data.stt.timeout ?? 30;
+    updateSttFieldsState();
+}
+
+function updateTtsFieldsState() {
+    if (sfTtsEnabled.checked) {
+        sfTtsFields.classList.remove("disabled");
+    } else {
+        sfTtsFields.classList.add("disabled");
+    }
+}
+
+function updateSttFieldsState() {
+    if (sfSttEnabled.checked) {
+        sfSttFields.classList.remove("disabled");
+    } else {
+        sfSttFields.classList.add("disabled");
+    }
+}
+
+function showSettingsError(msg) {
+    settingsError.textContent = msg;
+    settingsError.classList.remove("hidden");
+}
+
+function collectSettingsFromForm() {
+    return {
+        llm: {
+            base_url: sfLlmBaseUrl.value.trim(),
+            model: sfLlmModel.value.trim(),
+            max_tokens: parseInt(sfLlmMaxTokens.value, 10),
+            temperature: parseFloat(sfLlmTemperature.value),
+        },
+        tts: {
+            enabled: sfTtsEnabled.checked,
+            base_url: sfTtsBaseUrl.value.trim(),
+            num_steps: parseInt(sfTtsNumSteps.value, 10),
+            guidance_scale: parseFloat(sfTtsGuidanceScale.value),
+            // 0 in form means null (no seed)
+            seed: sfTtsEnabled.checked ? parseInt(sfTtsSeed.value, 10) : 0,
+            timeout: parseFloat(sfTtsTimeout.value),
+            streaming: sfTtsStreaming.checked,
+        },
+        stt: {
+            enabled: sfSttEnabled.checked,
+            base_url: sfSttBaseUrl.value.trim(),
+            timeout: parseFloat(sfSttTimeout.value),
+        },
+    };
+}
+
+function validateSettings(data) {
+    // LLM validation
+    if (!data.llm.base_url) return "LLM Base URL is required.";
+    if (!data.llm.model) return "LLM Model is required.";
+    if (isNaN(data.llm.max_tokens) || data.llm.max_tokens < 1) return "LLM Max Tokens must be a positive number.";
+    if (isNaN(data.llm.temperature) || data.llm.temperature < 0 || data.llm.temperature > 1) {
+        return "LLM Temperature must be between 0.0 and 1.0.";
+    }
+
+    // TTS validation (only if enabled)
+    if (data.tts.enabled) {
+        if (!data.tts.base_url) return "TTS Base URL is required when TTS is enabled.";
+        if (isNaN(data.tts.num_steps) || data.tts.num_steps < 4 || data.tts.num_steps > 20) {
+            return "TTS Step Count must be between 4 and 20.";
+        }
+        if (isNaN(data.tts.guidance_scale) || data.tts.guidance_scale < 1.0 || data.tts.guidance_scale > 2.0) {
+            return "TTS CFG must be between 1.0 and 2.0.";
+        }
+        if (isNaN(data.tts.seed) || data.tts.seed < 0) {
+            return "TTS Seed must be a non-negative integer.";
+        }
+        if (isNaN(data.tts.timeout) || data.tts.timeout < 5 || data.tts.timeout > 300) {
+            return "TTS Timeout must be between 5 and 300 seconds.";
+        }
+    }
+
+    // STT validation (only if enabled)
+    if (data.stt.enabled) {
+        if (!data.stt.base_url) return "STT Base URL is required when STT is enabled.";
+        if (isNaN(data.stt.timeout) || data.stt.timeout < 5 || data.stt.timeout > 300) {
+            return "STT Timeout must be between 5 and 300 seconds.";
+        }
+    }
+
+    return null; // No errors
+}
+
+async function submitSettings(e) {
+    e.preventDefault();
+    settingsError.classList.add("hidden");
+
+    const data = collectSettingsFromForm();
+    const error = validateSettings(data);
+    if (error) {
+        return showSettingsError(error);
+    }
+
+    try {
+        const resp = await fetch("/api/settings", {
+            method: "PUT",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(data),
+        });
+
+        if (!resp.ok) {
+            const err = await resp.json().catch(() => ({}));
+            return showSettingsError(err.detail || `Server error ${resp.status}`);
+        }
+
+        // Update in-memory TTS state based on new settings
+        ttsStreaming = data.tts.streaming;
+        // Re-check service health to update UI availability after settings change
+        await checkTTSHealth();
+        await checkSTTHealth();
+
+        closeSettings();
+    } catch (err) {
+        console.error("Failed to save settings:", err);
+        showSettingsError("Request failed. Is the server running?");
+    }
 }
 

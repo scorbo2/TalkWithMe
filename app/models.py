@@ -127,6 +127,76 @@ class STTHealthResponse(BaseModel):
 
 
 # ---------------------------------------------------------------------------
+# Settings models
+# ---------------------------------------------------------------------------
+
+class LLMSettingsRequest(BaseModel):
+    """LLM configuration from the settings editor."""
+    base_url: str = Field(..., min_length=1)
+    model: str = Field(..., min_length=1)
+    max_tokens: int = Field(..., ge=1)
+    temperature: float = Field(..., ge=0.0, le=1.0)
+
+
+class TTSSettingsRequest(BaseModel):
+    """TTS configuration from the settings editor."""
+    enabled: bool = True
+    base_url: str = Field(default="", min_length=0)
+    num_steps: int = Field(..., ge=4, le=20)
+    guidance_scale: float = Field(..., ge=1.0, le=2.0)
+    seed: int = Field(default=0, description="0 means null (no seed)")
+    timeout: float = Field(..., ge=5, le=300)
+    streaming: bool = False
+
+
+class STTSettingsRequest(BaseModel):
+    """STT configuration from the settings editor."""
+    enabled: bool = True
+    base_url: str = Field(default="", min_length=0)
+    timeout: float = Field(..., ge=5, le=300)
+
+
+class SettingsUpdateRequest(BaseModel):
+    """Full settings payload from the frontend settings editor."""
+    llm: LLMSettingsRequest
+    tts: TTSSettingsRequest
+    stt: STTSettingsRequest
+
+
+class LLMSettingsResponse(BaseModel):
+    """LLM configuration for the frontend."""
+    base_url: str
+    model: str
+    max_tokens: int
+    temperature: float
+
+
+class TTSSettingsResponse(BaseModel):
+    """TTS configuration for the frontend."""
+    enabled: bool
+    base_url: Optional[str] = None
+    num_steps: int
+    guidance_scale: float
+    seed: Optional[int] = None
+    timeout: float
+    streaming: bool
+
+
+class STTSettingsResponse(BaseModel):
+    """STT configuration for the frontend."""
+    enabled: bool
+    base_url: Optional[str] = None
+    timeout: float
+
+
+class SettingsResponse(BaseModel):
+    """Full settings payload returned to the frontend."""
+    llm: LLMSettingsResponse
+    tts: TTSSettingsResponse
+    stt: STTSettingsResponse
+
+
+# ---------------------------------------------------------------------------
 # Internal models (not exposed over the API)
 # ---------------------------------------------------------------------------
 

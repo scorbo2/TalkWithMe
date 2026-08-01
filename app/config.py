@@ -162,6 +162,20 @@ def save_personas(config: PersonasConfig, path: Optional[Path] = None) -> None:
     _personas_cache = config
 
 
+def save_settings(config: AppSettings, path: Optional[Path] = None) -> None:
+    """Serialize AppSettings back to settings.yaml and update the in-memory cache."""
+    global _settings_cache
+    target = path or _PROJECT_ROOT / "settings.yaml"
+    raw = {
+        "llm": config.llm.model_dump(exclude_none=False),
+        "tts": config.tts.model_dump(exclude_none=False),
+        "stt": config.stt.model_dump(exclude_none=False),
+    }
+    with open(target, "w") as f:
+        yaml.dump(raw, f, default_flow_style=False, allow_unicode=True, sort_keys=False)
+    _settings_cache = config
+
+
 def reload_all():
     """Force-reload both config files. Useful for dev hot-reload."""
     global _settings_cache, _personas_cache
