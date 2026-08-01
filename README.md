@@ -1,3 +1,4 @@
+
 # TalkWithMe
 
 A local single-user chat web application that connects to a locally running **llama.cpp** server and supports **multi-persona group chats** with optional **TTS playback**.
@@ -207,6 +208,7 @@ If you want to hear each sentence as soon as it has been synthesized, without ha
   - Split TTS and STT into separate features with separate configuration (#19)
   - Add UI for server connection settings (#23)
   - Clicking a persona now updates "Who should answer?" to "Selected persona" (#24)
+  - Added configurable chat rooms for grouping personas (#18)
 
 ## License
 

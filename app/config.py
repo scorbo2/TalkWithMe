@@ -95,12 +95,27 @@ class PersonasConfig(BaseModel):
 
 
 # ---------------------------------------------------------------------------
+# Chat Rooms
+# ---------------------------------------------------------------------------
+
+class ChatRoom(BaseModel):
+    """A named grouping of personas."""
+    name: str
+    persona_names: List[str] = Field(default_factory=list)
+
+
+class ChatRoomsConfig(BaseModel):
+    chat_rooms: List[ChatRoom] = Field(default_factory=list)
+
+
+# ---------------------------------------------------------------------------
 # Loading helpers
 # ---------------------------------------------------------------------------
 
 _PROJECT_ROOT = Path(__file__).resolve().parent.parent
 _settings_cache: Optional[AppSettings] = None
 _personas_cache: Optional[PersonasConfig] = None
+_chatrooms_cache: Optional[ChatRoomsConfig] = None
 
 
 def load_settings(path: Optional[Path] = None) -> AppSettings:
@@ -176,10 +191,48 @@ def save_settings(config: AppSettings, path: Optional[Path] = None) -> None:
     _settings_cache = config
 
 
+def get_chatrooms() -> ChatRoomsConfig:
+    """Return cached chat rooms, loading if necessary."""
+    if _chatrooms_cache is None:
+        return load_chatrooms()
+    return _chatrooms_cache
+
+
+def load_chatrooms(path: Optional[Path] = None) -> ChatRoomsConfig:
+    """Parse chatrooms.yaml. Returns empty config if file is missing."""
+    global _chatrooms_cache
+    target = path or _PROJECT_ROOT / "chatrooms.yaml"
+    if not target.exists():
+        return ChatRoomsConfig()
+    with open(target) as f:
+        raw = yaml.safe_load(f) or {}
+    _chatrooms_cache = ChatRoomsConfig(
+        chat_rooms=[ChatRoom(**cr) for cr in raw.get("chat_rooms", [])]
+    )
+    return _chatrooms_cache
+
+
+def save_chatrooms(config: ChatRoomsConfig, path: Optional[Path] = None) -> None:
+    """Serialize ChatRoomsConfig back to chatrooms.yaml and update the in-memory cache."""
+    global _chatrooms_cache
+    target = path or _PROJECT_ROOT / "chatrooms.yaml"
+    raw = {
+        "chat_rooms": [
+            cr.model_dump(exclude_none=False)
+            for cr in config.chat_rooms
+        ]
+    }
+    with open(target, "w") as f:
+        yaml.dump(raw, f, default_flow_style=False, allow_unicode=True, sort_keys=False)
+    _chatrooms_cache = config
+
+
 def reload_all():
-    """Force-reload both config files. Useful for dev hot-reload."""
-    global _settings_cache, _personas_cache
+    """Force-reload all config files. Useful for dev hot-reload."""
+    global _settings_cache, _personas_cache, _chatrooms_cache
     _settings_cache = None
     _personas_cache = None
+    _chatrooms_cache = None
     load_settings()
     load_personas()
+    load_chatrooms()

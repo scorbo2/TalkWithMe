@@ -28,8 +28,9 @@ router = APIRouter(prefix="/api/chat", tags=["chat"])
 
 def _build_router_prompt(user_message: str) -> list[dict]:
     """Build a minimal prompt that asks the LLM to pick a persona by name."""
-    config = get_personas()
-    persona_choices = ", ".join(p.name for p in config.personas)
+    active = session.active_personas or [p.name for p in get_personas().personas]
+    active_personas = [p for p in get_personas().personas if p.name in active]
+    persona_choices = ", ".join(p.name for p in active_personas)
 
     # Build router hints block
     hints = "\n".join(
@@ -88,7 +89,7 @@ async def _pick_persona(who_answers: str, user_message: str) -> str:
         return random.choice(active)
 
     # Explicit persona name — validate it exists
-    if who_answers in all_names:
+    if who_answers in active:
         return who_answers
 
     # Unknown value — fall back to random

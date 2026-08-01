@@ -20,6 +20,7 @@
                     <option value="blues">Blues</option>
                 </select>
                 <button id="btn-persona-editor" title="Open persona editor">&#9998; Personas</button>
+                <button id="btn-chat-rooms" title="Manage chat rooms">&#127970; Chat Rooms</button>
                 <button id="btn-settings" title="Open settings">&#9881; Settings</button>
                 <button id="btn-new-chat" title="Start a new chat">New Chat</button>
                 <button id="btn-tts-toggle" title="Toggle TTS playback" class="icon-btn">
@@ -31,6 +32,14 @@
         <div id="main-layout">
             <!-- Left sidebar -->
             <aside id="sidebar">
+                <!-- Chat room selector -->
+                <div id="chat-room-selector">
+                    <h3>Chat Room</h3>
+                    <select id="chat-room-dropdown" title="Choose a chat room">
+                        <!-- Populated by JS -->
+                    </select>
+                </div>
+
                 <h3>Who should answer?</h3>
                 <div id="who-chooser">
                     <label class="chooser-option">
@@ -48,6 +57,7 @@
                 </div>
 
                 <h3>Personas</h3>
+                <button id="btn-add-persona" class="btn-add-persona hidden" title="Add personas to this chat room">+ Add Persona</button>
                 <div id="persona-list">
                     <!-- Populated by JS -->
                 </div>
@@ -156,6 +166,67 @@
             <div class="form-actions">
                 <button id="pe-confirm-cancel" class="btn-secondary">Cancel</button>
                 <button id="pe-confirm-delete" class="btn-danger">Delete</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Chat Rooms Editor Modal -->
+    <div id="chatrooms-overlay" class="modal-overlay hidden" role="dialog" aria-modal="true" aria-labelledby="chatrooms-title">
+        <div class="modal-box modal-box-sm">
+            <div class="modal-header">
+                <h2 id="chatrooms-title">Chat Rooms</h2>
+                <div class="modal-header-actions">
+                    <button id="cr-btn-new" class="btn-accent" title="Create new chat room">&#43; New Room</button>
+                    <button id="cr-btn-close" class="btn-icon-close" title="Close">&#10005;</button>
+                </div>
+            </div>
+            <div id="cr-form-error" class="pe-form-error hidden"></div>
+            <!-- New room form (initially hidden) -->
+            <div id="cr-new-form" class="hidden">
+                <div class="form-row" style="padding: 12px 20px;">
+                    <label for="cr-name-input">Room Name <span class="required">*</span></label>
+                    <input id="cr-name-input" type="text" maxlength="20" placeholder="Max 20 chars">
+                    <span class="field-hint">20 chars max, must be unique (not 'default')</span>
+                </div>
+                <div class="form-actions">
+                    <button type="button" id="cr-new-cancel" class="btn-secondary">Cancel</button>
+                    <button type="button" id="cr-new-save" class="btn-accent">Create</button>
+                </div>
+            </div>
+            <!-- Room list -->
+            <div id="cr-list" class="cr-list">
+                <!-- Populated by JS -->
+            </div>
+        </div>
+    </div>
+
+    <!-- Chat Room delete confirmation modal -->
+    <div id="cr-confirm-overlay" class="modal-overlay hidden" role="dialog" aria-modal="true">
+        <div class="modal-box modal-box-sm">
+            <div class="modal-header">
+                <h2>Delete Chat Room</h2>
+            </div>
+            <p id="cr-confirm-msg" class="pe-confirm-msg"></p>
+            <div class="form-actions">
+                <button id="cr-confirm-cancel" class="btn-secondary">Cancel</button>
+                <button id="cr-confirm-delete" class="btn-danger">Delete</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Persona Picker Modal (for adding personas to a chat room) -->
+    <div id="persona-picker-overlay" class="modal-overlay hidden" role="dialog" aria-modal="true" aria-labelledby="persona-picker-title">
+        <div class="modal-box modal-box-sm">
+            <div class="modal-header">
+                <h2 id="persona-picker-title">Add Personas</h2>
+                <button id="pp-btn-close" class="btn-icon-close" title="Close">&#10005;</button>
+            </div>
+            <div id="pp-list" class="pp-list">
+                <!-- Populated by JS -->
+            </div>
+            <div class="form-actions">
+                <button type="button" id="pp-btn-cancel" class="btn-secondary">Cancel</button>
+                <button type="button" id="pp-btn-add" class="btn-accent">Add Selected</button>
             </div>
         </div>
     </div>

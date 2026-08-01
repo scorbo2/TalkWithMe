@@ -163,8 +163,8 @@ html, body {
 }
 
 /* --------------------------------------------------------------------------
-   Sidebar
-   -------------------------------------------------------------------------- */
+    Sidebar
+    -------------------------------------------------------------------------- */
 #sidebar {
     width: var(--sidebar-width);
     min-width: var(--sidebar-width);
@@ -183,6 +183,74 @@ html, body {
     color: var(--text-muted);
     letter-spacing: 1px;
     margin-top: 8px;
+}
+
+/* Chat room selector dropdown */
+#chat-room-selector {
+    margin-bottom: 4px;
+}
+
+#chat-room-dropdown {
+    background: var(--bg-tertiary);
+    color: var(--text-primary);
+    border: 1px solid var(--border-color);
+    border-radius: 6px;
+    padding: 6px 8px;
+    font-size: 0.85rem;
+    width: 100%;
+    cursor: pointer;
+    outline: none;
+    transition: border-color 0.15s;
+}
+
+#chat-room-dropdown:focus {
+    border-color: var(--accent);
+}
+
+/* "Add persona" button in sidebar */
+.btn-add-persona {
+    background: var(--bg-tertiary);
+    color: var(--text-secondary);
+    border: 1px dashed var(--border-color);
+    border-radius: 6px;
+    padding: 6px 10px;
+    font-size: 0.8rem;
+    cursor: pointer;
+    width: 100%;
+    text-align: center;
+    transition: background 0.15s, border-color 0.15s, color 0.15s;
+}
+
+.btn-add-persona:hover {
+    background: var(--accent);
+    border-color: var(--accent);
+    border-style: solid;
+    color: #fff;
+}
+
+.btn-add-persona.hidden {
+    display: none;
+}
+
+/* Remove persona "x" button on persona cards */
+.persona-remove-btn {
+    background: transparent;
+    border: none;
+    color: #e74c3c;
+    font-size: 1rem;
+    font-weight: 700;
+    cursor: pointer;
+    padding: 2px 6px;
+    border-radius: 4px;
+    line-height: 1;
+    flex-shrink: 0;
+    transition: background 0.15s, color 0.15s;
+    opacity: 0.5;
+}
+
+.persona-remove-btn:hover {
+    background: rgba(231, 76, 60, 0.2);
+    opacity: 1;
 }
 
 /* Who-chooser */
@@ -1019,4 +1087,151 @@ html, body {
 
 .settings-body input[type="number"] {
     -moz-appearance: textfield;
+}
+
+/* ==========================================================================
+   Chat Rooms Editor Modal
+   ========================================================================== */
+
+.cr-list {
+    overflow-y: auto;
+    padding: 12px 20px;
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    min-height: 60px;
+    max-height: 50vh;
+}
+
+.cr-list-item {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 10px 12px;
+    border-radius: 8px;
+    border: 1px solid var(--border-color);
+    background: var(--bg-primary);
+}
+
+.cr-list-item-name {
+    flex: 1;
+    font-weight: 600;
+    font-size: 0.9rem;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.cr-list-item-count {
+    font-size: 0.75rem;
+    color: var(--text-muted);
+    flex-shrink: 0;
+}
+
+.cr-list-item-delete {
+    background: transparent;
+    border: none;
+    color: var(--text-muted);
+    font-size: 0.85rem;
+    cursor: pointer;
+    padding: 4px 8px;
+    border-radius: 4px;
+    transition: color 0.15s, background 0.15s;
+    flex-shrink: 0;
+}
+
+.cr-list-item-delete:hover {
+    color: #e74c3c;
+    background: rgba(231, 76, 60, 0.15);
+}
+
+.cr-empty {
+    color: var(--text-muted);
+    font-size: 0.9rem;
+    text-align: center;
+    padding: 24px 0;
+}
+
+/* ==========================================================================
+   Persona Picker Modal (for adding to chat rooms)
+   ========================================================================== */
+
+.pp-list {
+    overflow-y: auto;
+    padding: 12px 20px;
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    min-height: 60px;
+    max-height: 50vh;
+}
+
+.pp-list-item {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 8px 10px;
+    border-radius: 8px;
+    cursor: pointer;
+    transition: background 0.15s;
+    border: 1px solid transparent;
+}
+
+.pp-list-item:hover {
+    background: var(--bg-tertiary);
+}
+
+.pp-list-item.selected {
+    background: var(--bg-tertiary);
+    border-color: var(--accent);
+}
+
+.pp-list-item-avatar {
+    width: 28px;
+    height: 28px;
+    border-radius: 50%;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-weight: 700;
+    font-size: 0.8rem;
+    color: #fff;
+    flex-shrink: 0;
+}
+
+.pp-list-item-info {
+    flex: 1;
+    min-width: 0;
+}
+
+.pp-list-item-name {
+    font-weight: 600;
+    font-size: 0.85rem;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.pp-list-item-desc {
+    font-size: 0.72rem;
+    color: var(--text-secondary);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+/* Custom checkbox for persona picker */
+.pp-checkbox {
+    accent-color: var(--accent);
+    width: 16px;
+    height: 16px;
+    flex-shrink: 0;
+    cursor: pointer;
+}
+
+.pp-empty {
+    color: var(--text-muted);
+    font-size: 0.9rem;
+    text-align: center;
+    padding: 24px 0;
 }

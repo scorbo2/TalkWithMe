@@ -206,3 +206,23 @@ class ChatMessage(BaseModel):
     content: str
     # Which persona produced this message (only set for assistant messages)
     persona: Optional[str] = None
+
+
+# ---------------------------------------------------------------------------
+# Chat Room models
+# ---------------------------------------------------------------------------
+
+class ChatRoomResponse(BaseModel):
+    """A chat room returned to the frontend."""
+    name: str
+    persona_names: List[str] = Field(default_factory=list)
+
+
+class ChatRoomCreateRequest(BaseModel):
+    """Create a new chat room."""
+    name: str = Field(..., min_length=1, max_length=20)
+
+
+class AssignPersonasRequest(BaseModel):
+    """Assign personas to a chat room."""
+    persona_names: List[str] = Field(..., min_length=1)

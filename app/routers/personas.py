@@ -7,12 +7,53 @@ from typing import List
 from fastapi import APIRouter, HTTPException
 from fastapi.responses import FileResponse, Response
 
-from app.config import get_personas, save_personas
+from app.config import (
+    ChatRoom,
+    ChatRoomsConfig,
+    get_chatrooms,
+    get_personas,
+    save_chatrooms,
+    save_personas,
+)
 from app.config import Persona, PersonasConfig
 from app.models import PersonaResponse, PersonaDetailResponse, PersonaCreateRequest, PersonaUpdateRequest
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/personas", tags=["personas"])
+
+
+def _cascade_persona_rename(old_name: str, new_name: str) -> None:
+    """Update persona name references in all chat rooms.
+
+    When a persona is renamed, every chat room that references it
+    must be updated to use the new name so assignments stay valid.
+    """
+    config = get_chatrooms()
+    if not config.chat_rooms:
+        return
+    updated = []
+    for room in config.chat_rooms:
+        new_names = [new_name if p == old_name else p for p in room.persona_names]
+        updated.append(ChatRoom(name=room.name, persona_names=new_names))
+    save_chatrooms(ChatRoomsConfig(chat_rooms=updated))
+    logger.info("Cascaded persona rename '%s' -> '%s' to chat rooms", old_name, new_name)
+
+
+def _cascade_persona_delete(persona_name: str) -> None:
+    """Remove a persona from all chat rooms.
+
+    When a persona is deleted, it must be removed from every chat room
+    that had it assigned to avoid dangling references.
+    """
+    config = get_chatrooms()
+    if not config.chat_rooms:
+        return
+    updated = []
+    for room in config.chat_rooms:
+        new_names = [p for p in room.persona_names if p != persona_name]
+        updated.append(ChatRoom(name=room.name, persona_names=new_names))
+    save_chatrooms(ChatRoomsConfig(chat_rooms=updated))
+    logger.info("Cascaded persona delete '%s' from chat rooms", persona_name)
 
 
 def _to_response(p: Persona) -> PersonaResponse:
@@ -110,16 +151,23 @@ def update_persona(name: str, req: PersonaUpdateRequest):
     )
     new_list = [updated_persona if p.name == name else p for p in config.personas]
     save_personas(PersonasConfig(personas=new_list))
+
+    # If the persona was renamed, update all chat rooms referencing it
+    if new_name != name:
+        _cascade_persona_rename(name, new_name)
+
     return _to_detail(updated_persona)
 
 
 @router.delete("/{name}", status_code=204)
 def delete_persona(name: str):
-    """Remove a persona from personas.yaml."""
+    """Remove a persona from personas.yaml and all chat rooms."""
     config = get_personas()
     if not any(p.name == name for p in config.personas):
         raise HTTPException(status_code=404, detail=f"Persona '{name}' not found")
     save_personas(PersonasConfig(personas=[p for p in config.personas if p.name != name]))
+    # Remove this persona from every chat room that had it assigned
+    _cascade_persona_delete(name)
 
 
 @router.post("/{name}/clone", response_model=PersonaDetailResponse, status_code=201)

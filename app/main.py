@@ -14,7 +14,7 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
 from app import config as app_config
-from app.routers import chat, personas, session as session_router, settings, stt, tts
+from app.routers import chat, chatrooms, personas, session as session_router, settings, stt, tts
 from app.session import session
 
 logger = logging.getLogger(__name__)
@@ -29,6 +29,7 @@ async def lifespan(app: FastAPI):
     # Load configuration files
     personas_cfg = app_config.load_personas()
     settings = app_config.load_settings()
+    app_config.load_chatrooms()
 
     # Seed session with all configured personas as active
     all_names = [p.name for p in personas_cfg.personas]
@@ -59,6 +60,7 @@ app.mount("/static", StaticFiles(directory=str(Path(__file__).resolve().parent.p
 
 # Register routers
 app.include_router(personas.router)
+app.include_router(chatrooms.router)
 app.include_router(session_router.router)
 app.include_router(chat.router)
 app.include_router(tts.router)
