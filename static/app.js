@@ -1118,10 +1118,15 @@ sfSttEnabled.addEventListener("change", () => {
     updateSttFieldsState();
 });
 
-function openSettings() {
+async function openSettings() {
     settingsOverlay.classList.remove("hidden");
     settingsError.classList.add("hidden");
-    loadSettingsIntoForm();
+
+    const saveBtn = document.getElementById("settings-btn-save");
+    saveBtn.disabled = true;
+
+    const ok = await loadSettingsIntoForm();
+    saveBtn.disabled = !ok;
 }
 
 function closeSettings() {
@@ -1133,12 +1138,16 @@ async function loadSettingsIntoForm() {
         const resp = await fetch("/api/settings");
         if (!resp.ok) {
             console.error("Failed to load settings:", resp.status);
-            return;
+            showSettingsError(`Failed to load settings (HTTP ${resp.status}).`);
+            return false;
         }
         const data = await resp.json();
         populateSettingsForm(data);
+        return true;
     } catch (err) {
         console.error("Failed to load settings:", err);
+        showSettingsError("Failed to load settings. Is the server running?");
+        return false;
     }
 }
 
