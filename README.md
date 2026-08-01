@@ -44,6 +44,8 @@ Open `http://localhost:8000` in your browser.
 
 ### `settings.yaml`
 
+(Note: as of v3, you can also edit these settings in-application via the "settings" control in the top right of the page).
+
 Configure your LLM, TTS, and STT server endpoints:
 
 ```yaml
@@ -203,6 +205,7 @@ If you want to hear each sentence as soon as it has been synthesized, without ha
   - In-app persona editor: create, edit, clone, and delete personas from the browser UI (#11)
   - Migrate STT to OpenAI-compatible `/v1/audio/transcriptions` endpoint (#21)
   - Split TTS and STT into separate features with separate configuration (#19)
+  - Add UI for server connection settings (#23)
 
 ## License
 
