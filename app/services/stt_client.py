@@ -64,6 +64,7 @@ async def transcribe_audio(audio_bytes: bytes, mime_type: str = "audio/webm") ->
 
     # Derive a sensible filename from the MIME type so the STT server
     # can identify the format. E.g. "audio/ogg" -> "audio.ogg"
+    mime_type = (mime_type or "audio/webm").split(";", 1)[0].strip() or "audio/webm"
     ext = _mime_to_extension(mime_type)
     files = {
         "file": (f"audio.{ext}", audio_bytes, mime_type),
