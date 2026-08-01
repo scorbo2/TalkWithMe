@@ -8,7 +8,7 @@ from pathlib import Path
 from typing import List, Optional
 
 import yaml
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 
 # ---------------------------------------------------------------------------
@@ -24,19 +24,43 @@ class LLMSettings(BaseModel):
 
 class TTSConfig(BaseModel):
     enabled: bool = True
-    base_url: str = "http://localhost:5500"
+    base_url: Optional[str] = None
     num_steps: int = 10
     guidance_scale: float = 3.0
     seed: Optional[int] = None
     timeout: float = 60.0
     streaming: bool = False
 
+    @model_validator(mode="after")
+    def _normalize_base_url(self) -> "TTSConfig":
+        """Treat blank strings as None so a missing URL implicitly disables TTS."""
+        if self.base_url is not None and not self.base_url.strip():
+            self.base_url = None
+        return self
+
+    @property
+    def is_active(self) -> bool:
+        """Feature is active only when explicitly enabled AND a base_url is configured."""
+        return self.enabled and bool(self.base_url)
+
 
 class STTConfig(BaseModel):
     """Speech-to-text configuration, independent of TTS."""
     enabled: bool = True
-    base_url: str = "http://localhost:5500"
+    base_url: Optional[str] = None
     timeout: float = 30.0
+
+    @model_validator(mode="after")
+    def _normalize_base_url(self) -> "STTConfig":
+        """Treat blank strings as None so a missing URL implicitly disables STT."""
+        if self.base_url is not None and not self.base_url.strip():
+            self.base_url = None
+        return self
+
+    @property
+    def is_active(self) -> bool:
+        """Feature is active only when explicitly enabled AND a base_url is configured."""
+        return self.enabled and bool(self.base_url)
 
 
 class AppSettings(BaseModel):

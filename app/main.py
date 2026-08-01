@@ -35,8 +35,8 @@ async def lifespan(app: FastAPI):
     session.set_active_personas(all_names)
     logger.info("TalkWithMe started with %d personas: %s", len(all_names), all_names)
     logger.info("LLM endpoint: %s", settings.llm.base_url)
-    logger.info("TTS enabled: %s (endpoint: %s)", settings.tts.enabled, settings.tts.base_url)
-    logger.info("STT enabled: %s (endpoint: %s)", settings.stt.enabled, settings.stt.base_url)
+    logger.info("TTS active: %s (endpoint: %s)", settings.tts.is_active, settings.tts.base_url)
+    logger.info("STT active: %s (endpoint: %s)", settings.stt.is_active, settings.stt.base_url)
 
     yield
 

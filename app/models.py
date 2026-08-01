@@ -112,6 +112,15 @@ class TTSHealthResponse(BaseModel):
     )
 
 
+class STTHealthResponse(BaseModel):
+    """STT availability status."""
+    enabled: bool
+    available: bool = Field(
+        default=False,
+        description="True if the STT server responded to /health",
+    )
+
+
 # ---------------------------------------------------------------------------
 # Internal models (not exposed over the API)
 # ---------------------------------------------------------------------------

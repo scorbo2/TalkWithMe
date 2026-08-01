@@ -10,11 +10,22 @@ from fastapi import APIRouter
 from fastapi.responses import JSONResponse
 
 from app.config import get_settings
-from app.models import STTRequest, STTResponse
-from app.services.stt_client import parse_audio
+from app.models import STTRequest, STTResponse, STTHealthResponse
+from app.services.stt_client import check_stt_health, parse_audio
 
 logger = logging.getLogger(__name__)
 router = APIRouter(tags=["stt"])
+
+
+@router.get("/api/stt/health", response_model=STTHealthResponse)
+async def stt_health():
+    """Report STT availability status to the frontend."""
+    settings = get_settings()
+    available = await check_stt_health() if settings.stt.is_active else False
+    return STTHealthResponse(
+        enabled=settings.stt.is_active,
+        available=available,
+    )
 
 
 @router.post("/api/stt", response_model=STTResponse)
@@ -24,7 +35,7 @@ async def stt_proxy(req: STTRequest):
     Accepts base64-encoded audio and returns the transcribed text.
     """
     settings = get_settings()
-    if not settings.stt.enabled:
+    if not settings.stt.is_active:
         return JSONResponse(status_code=503, content={"detail": "STT is disabled in settings"})
 
     try:
