@@ -39,15 +39,23 @@ async function toggleMicrophone() {
 
         const blob = new Blob(recordedChunks, { type: audioMimeType });
 
-        const audio_base64 = await new Promise((resolve, reject) => {
-            const reader = new FileReader();
-            reader.onerror = () => reject(reader.error);
-            reader.onload = () => {
-                const result = String(reader.result || "");
-                resolve(result.split(",")[1] || "");
-            };
-            reader.readAsDataURL(blob);
-        });
+        let audio_base64 = "";
+        try {
+            audio_base64 = await new Promise((resolve, reject) => {
+                const reader = new FileReader();
+                reader.onerror = () => reject(reader.error);
+                reader.onload = () => {
+                    const result = String(reader.result || "");
+                    resolve(result.split(",")[1] || "");
+                };
+                reader.readAsDataURL(blob);
+            });
+        } catch (err) {
+            console.error("Failed to read recorded audio:", err);
+            appendErrorBubble("Unable to read recorded audio.");
+            updateMicButtonUI();
+            return;
+        }
         let sttFailed = false;
         try {
             const resp = await fetch("/api/stt", {
