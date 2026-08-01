@@ -140,9 +140,11 @@ def assign_personas(name: str, req: AssignPersonasRequest):
                 detail=f"Persona '{pname}' does not exist.",
             )
 
-    # Add new personas (avoid duplicates)
-    existing = set(room.persona_names)
-    updated_names = list(existing) + [p for p in req.persona_names if p not in existing]
+    # Add new personas (avoid duplicates, preserving existing order)
+    updated_names = list(room.persona_names)
+    for pname in req.persona_names:
+        if pname not in updated_names:
+            updated_names.append(pname)
 
     updated_room = ChatRoom(name=room.name, persona_names=updated_names)
     updated_rooms = [updated_room if r.name == room.name else r for r in config.chat_rooms]

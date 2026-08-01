@@ -1,4 +1,3 @@
-
 # TalkWithMe
 
 A local single-user chat web application that connects to a locally running **llama.cpp** server and supports **multi-persona group chats** with optional **TTS playback**.
