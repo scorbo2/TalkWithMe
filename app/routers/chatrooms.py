@@ -61,6 +61,8 @@ def create_chatroom(req: ChatRoomCreateRequest):
     - New rooms start with zero personas assigned.
     """
     name = req.name.strip()
+    if not name:
+        raise HTTPException(status_code=422, detail="Room name is required.")
     if name.lower() == DEFAULT_ROOM:
         raise HTTPException(
             status_code=409,
