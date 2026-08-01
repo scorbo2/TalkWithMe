@@ -123,10 +123,10 @@ The "Who should answer?" chooser in the UI offers the following options:
 - **Surprise me** - each prompt causes a randomly-selected persona in the current room to answer.
 - **Selected persona** - the highlighted persona in the persona list will answer next.
 
-Note that if `persona\_name\_mentions` is `true` in `settings.yaml`, mentioning a specific persona in your prompt will override
+Note that if `persona_name_mentions` is `true` in `settings.yaml`, mentioning a specific persona in your prompt will override
 the above settings and force that persona to answer you. For example, prompting "What do you think, Alex?" will automatically
 switch "Who should answer?" to "Selected persona", and make Alex the selected persona, before proceeding with the chat flow.
-If you don't like this feature, you can set `persona\_name\_mentions` to `false` and restart the application. (There is currently
+If you don't like this feature, you can set `persona_name_mentions` to `false` and restart the application. (There is currently
 no UI control over this setting - it has to be hand-edited in `settings.yaml` and is only read once on startup).
 
 ## In-App Persona Editor
