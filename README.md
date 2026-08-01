@@ -68,6 +68,9 @@ stt:
   enabled: true
   base_url: http://localhost:8181
   timeout: 30
+
+general:
+  persona_name_mentions: true
 ```
 
 The STT `base_url` should point to an OpenAI-compatible server. The app sends audio
@@ -112,6 +115,19 @@ personas:
 | `language` | Two-letter language code describing the reference audio (defaults to `en`) |
 
 **TTS support**: Both `reference_audio` and `reference_audio_transcript` must be set for a persona to have TTS capability.
+
+#### Who answers next?
+
+The "Who should answer?" chooser in the UI offers the following options:
+- **LLM decides** - based on your prompt, and the personas currently in the room, the LLM will decide who is best suited to answer.
+- **Surprise me** - each prompt causes a randomly-selected persona in the current room to answer.
+- **Selected persona** - the highlighted persona in the persona list will answer next.
+
+Note that if `persona\_name\_mentions` is `true` in `settings.yaml`, mentioning a specific persona in your prompt will override
+the above settings and force that persona to answer you. For example, prompting "What do you think, Alex?" will automatically
+switch "Who should answer?" to "Selected persona", and make Alex the selected persona, before proceeding with the chat flow.
+If you don't like this feature, you can set `persona\_name\_mentions` to `false` and restart the application. (There is currently
+no UI control over this setting - it has to be hand-edited in `settings.yaml` and is only read once on startup).
 
 ## In-App Persona Editor
 
@@ -208,6 +224,7 @@ If you want to hear each sentence as soon as it has been synthesized, without ha
   - Add UI for server connection settings (#23)
   - Clicking a persona now updates "Who should answer?" to "Selected persona" (#24)
   - Added configurable chat rooms for grouping personas (#18)
+  - Mentioning a persona causes them to answer next (can be disabled in settings.yaml) (#28)
 
 ## License
 

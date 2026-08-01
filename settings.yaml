@@ -17,3 +17,6 @@ stt:
   enabled: true
   base_url: http://saturn-lm:8181
   timeout: 30
+
+general:
+  persona_name_mentions: true

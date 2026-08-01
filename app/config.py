@@ -63,10 +63,16 @@ class STTConfig(BaseModel):
         return self.enabled and bool(self.base_url)
 
 
+class GeneralConfig(BaseModel):
+    """Application-wide feature flags and preferences."""
+    persona_name_mentions: bool = True
+
+
 class AppSettings(BaseModel):
     llm: LLMSettings = LLMSettings()
     tts: TTSConfig = TTSConfig()
     stt: STTConfig = STTConfig()
+    general: GeneralConfig = GeneralConfig()
 
 
 # ---------------------------------------------------------------------------
@@ -130,6 +136,7 @@ def load_settings(path: Optional[Path] = None) -> AppSettings:
         llm=LLMSettings(**raw.get("llm", {})),
         tts=TTSConfig(**raw.get("tts", {})),
         stt=STTConfig(**raw.get("stt", {})),
+        general=GeneralConfig(**raw.get("general", {})),
     )
     return _settings_cache
 
@@ -185,6 +192,7 @@ def save_settings(config: AppSettings, path: Optional[Path] = None) -> None:
         "llm": config.llm.model_dump(exclude_none=False),
         "tts": config.tts.model_dump(exclude_none=False),
         "stt": config.stt.model_dump(exclude_none=False),
+        "general": config.general.model_dump(exclude_none=False),
     }
     with open(target, "w") as f:
         yaml.dump(raw, f, default_flow_style=False, allow_unicode=True, sort_keys=False)

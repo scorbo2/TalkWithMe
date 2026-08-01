@@ -156,11 +156,17 @@ class STTSettingsRequest(BaseModel):
     timeout: float = Field(..., ge=5, le=300)
 
 
+class GeneralSettingsRequest(BaseModel):
+    """General configuration from the settings editor."""
+    persona_name_mentions: bool = True
+
+
 class SettingsUpdateRequest(BaseModel):
     """Full settings payload from the frontend settings editor."""
     llm: LLMSettingsRequest
     tts: TTSSettingsRequest
     stt: STTSettingsRequest
+    general: GeneralSettingsRequest = GeneralSettingsRequest()
 
 
 class LLMSettingsResponse(BaseModel):
@@ -189,11 +195,17 @@ class STTSettingsResponse(BaseModel):
     timeout: float
 
 
+class GeneralSettingsResponse(BaseModel):
+    """General configuration for the frontend."""
+    persona_name_mentions: bool
+
+
 class SettingsResponse(BaseModel):
     """Full settings payload returned to the frontend."""
     llm: LLMSettingsResponse
     tts: TTSSettingsResponse
     stt: STTSettingsResponse
+    general: GeneralSettingsResponse
 
 
 # ---------------------------------------------------------------------------

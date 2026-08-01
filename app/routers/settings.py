@@ -5,8 +5,9 @@ import logging
 from fastapi import APIRouter
 
 from app import config as app_config
-from app.config import AppSettings, LLMSettings, STTConfig, TTSConfig
+from app.config import AppSettings, GeneralConfig, LLMSettings, STTConfig, TTSConfig
 from app.models import (
+    GeneralSettingsResponse,
     LLMSettingsResponse,
     SettingsResponse,
     SettingsUpdateRequest,
@@ -40,6 +41,9 @@ def _to_response(cfg: AppSettings) -> SettingsResponse:
             enabled=cfg.stt.enabled,
             base_url=cfg.stt.base_url,
             timeout=cfg.stt.timeout,
+        ),
+        general=GeneralSettingsResponse(
+            persona_name_mentions=cfg.general.persona_name_mentions,
         ),
     )
 
@@ -82,6 +86,9 @@ def update_settings(req: SettingsUpdateRequest):
             enabled=req.stt.enabled,
             base_url=stt_base,
             timeout=req.stt.timeout,
+        ),
+        general=GeneralConfig(
+            persona_name_mentions=req.general.persona_name_mentions,
         ),
     )
 

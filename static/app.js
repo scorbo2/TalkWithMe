@@ -11,6 +11,7 @@
 
 let personas = [];
 let selectedPersona = null;   // The persona selected in the sidebar
+let personaNameMentionsEnabled = true;  // From settings.general.persona_name_mentions
 let ttsEnabled = false;        // Whether TTS playback is toggled on
 let ttsAvailable = false;      // Whether the TTS server is reachable
 let ttsStreaming = false;       // Whether streaming (sentence-by-sentence) TTS is enabled
@@ -70,9 +71,27 @@ async function init() {
     await loadPersonas(); // Also loads chat rooms internally
     await checkTTSHealth();
     await checkSTTHealth();
+    await loadGeneralSettings();
     setupEventListeners();
     setupChatRoomEventListeners();
     showEmptyState();
+}
+
+/**
+ * Fetch general settings from the server. Currently only used to gate
+ * the persona-name-mention detection feature.
+ */
+async function loadGeneralSettings() {
+    try {
+        const resp = await fetch("/api/settings");
+        if (!resp.ok) return;
+        const data = await resp.json();
+        if (data.general != null) {
+            personaNameMentionsEnabled = data.general.persona_name_mentions;
+        }
+    } catch (err) {
+        console.warn("Failed to load general settings, using defaults:", err);
+    }
 }
 
 async function loadPersonas() {
@@ -378,6 +397,27 @@ function showEmptyState() {
     `;
 }
 
+/**
+ * Detect if the user mentioned any persona from the current room by name.
+ * Uses case-insensitive word-boundary matching to avoid partial matches
+ * (e.g., "Sam" won't trigger "Samuel"). Returns the first matching persona
+ * name, or null if none found.
+ */
+function detectMentionedPersona(text, roomPersonaNames) {
+    for (const name of roomPersonaNames) {
+        // Escape regex special characters in the name
+        const escaped = name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+        // For multi-word names like "Dr. Smith", allow flexible whitespace
+        const flexible = escaped.split(/\s+/).join("\\s+");
+        const regex = new RegExp(`\\b${flexible}\\b`, "i");
+
+        if (regex.test(text)) {
+            return name;
+        }
+    }
+    return null;
+}
+
 function getWhoAnswers() {
     const chosen = document.querySelector('input[name="who_answers"]:checked').value;
     if (chosen === "selected") {
@@ -395,6 +435,23 @@ async function sendMessage() {
     if (roomPersonaNames.length === 0) {
         appendErrorBubble("No one is here.");
         return;
+    }
+
+    // Auto-select a persona if the user mentioned one by name in their message.
+    // This runs before getWhoAnswers() so the "Selected persona" radio is
+    // already checked by the time we determine who should respond.
+    // Feature can be disabled via settings.yaml: general.persona_name_mentions
+    if (personaNameMentionsEnabled) {
+        const mentioned = detectMentionedPersona(text, roomPersonaNames);
+        if (mentioned) {
+            selectedPersona = mentioned;
+            highlightSelectedPersona();
+            const selectedRadio = document.querySelector('input[name="who_answers"][value="selected"]');
+            if (selectedRadio) {
+                selectedRadio.checked = true;
+                selectedRadio.dispatchEvent(new Event("change", { bubbles: true }));
+            }
+        }
     }
 
     // Clear empty state if present
@@ -1704,6 +1761,11 @@ function collectSettingsFromForm() {
             max_tokens: parseInt(sfLlmMaxTokens.value, 10),
             temperature: parseFloat(sfLlmTemperature.value),
         },
+        // No UI for general settings yet; preserve current values so they
+        // survive a settings save round-trip.
+        general: {
+            persona_name_mentions: personaNameMentionsEnabled,
+        },
         tts: {
             enabled: sfTtsEnabled.checked,
             base_url: sfTtsBaseUrl.value.trim(),
@@ -1783,6 +1845,10 @@ async function submitSettings(e) {
 
         // Update in-memory TTS state based on new settings
         ttsStreaming = data.tts.streaming;
+        // Update in-memory general settings
+        if (data.general != null) {
+            personaNameMentionsEnabled = data.general.persona_name_mentions;
+        }
         // Re-check service health to update UI availability after settings change
         await checkTTSHealth();
         await checkSTTHealth();
