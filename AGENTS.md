@@ -30,7 +30,7 @@ To force a re-read of all three files, call `app.config.reload_all()`.
 
 | File | Responsibility |
 |------|---------------|
-| `state.js` | Shared globals (personas, session state, TTS/STT flags, audio queue) |
+| `state.js` | Shared globals (personas, session state, chat room state, TTS/STT flags, audio queue) |
 | `app.js` | Bootstrap, SSE stream handling, message sending |
 | `chat.js` | Message rendering, scroll behavior |
 | `persona.js` | Persona sidebar + editor modal (CRUD) |

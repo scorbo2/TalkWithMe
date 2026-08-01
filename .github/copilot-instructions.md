@@ -60,11 +60,11 @@ There is no test suite. Manual testing is done by running the app and using the 
 | `GET` | `/api/tts/health` | TTS availability status |
 | `POST` | `/api/tts` | Proxy text → TTS `/synthesize`; returns `{audio_base64, sample_rate}` |
 | `GET` | `/api/stt/health` | STT availability status |
-| `POST` | `/api/stt` | Proxy audio → STT `/parse`; returns `{text, language}` |
+| `POST` | `/api/stt` | Proxy audio → STT `/v1/audio/transcriptions`; returns `{text, language}` |
 | `GET` | `/api/settings` | Get current settings |
 | `PUT` | `/api/settings` | Update and persist settings to `settings.yaml` |
 
-**STT flow**: The microphone button in the input bar uses `getUserMedia` + `MediaRecorder`. Click to start, click again to stop. The recorded blob is base64-encoded and POSTed to `/api/stt`, which proxies to `/parse` at `settings.stt.base_url`. On success, the transcribed text is appended to the input box (never replaces) and `sendMessage()` is called automatically. A 5xx response disables the mic button for the session. STT is independently enabled/disabled via `settings.stt.enabled` — it has no dependency on TTS.
+**STT flow**: The microphone button in the input bar uses `getUserMedia` + `MediaRecorder`. Click to start, click again to stop. The recorded blob is base64-encoded and POSTed to `/api/stt`, which proxies to `/v1/audio/transcriptions` at `settings.stt.base_url`. On success, the transcribed text is appended to the input box (never replaces) and `sendMessage()` is called automatically. A 5xx response disables the mic button for the session. STT is independently enabled/disabled via `settings.stt.enabled` — it has no dependency on TTS.
 
 **TTS server** (`app/routers/tts.py`, `app/services/tts_client.py`): The `/api/tts` and `/api/tts/health` routes live in `app/routers/tts.py`. The client functions `synthesize()` and `check_tts_health()` are in `app/services/tts_client.py`. TTS is independently enabled/disabled via `settings.tts.enabled`. A persona is TTS-capable only when both `reference_audio` and `reference_audio_transcript` are set in `personas.yaml` (computed as a `@property` on `Persona` in `app/config.py`). TTS supports a `streaming` mode (sentence-by-sentence) controlled by `settings.tts.streaming`.
 
