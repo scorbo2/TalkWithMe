@@ -225,6 +225,8 @@ function handleSSEEvent(event, assistantRow) {
                 if (assistantRow) {
                     assistantRow.dataset.messageId = event.message_id;
                 }
+                // Persist any streaming-mode audio that was buffered before the ID was known.
+                flushTtsAudioBuffer(event.message_id);
             }
 
             if (ttsEnabled && event.text) {
