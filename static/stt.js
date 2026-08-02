@@ -85,15 +85,16 @@ async function toggleMicrophone() {
                 if (!pendingUserMessageId) {
                     pendingUserMessageId = crypto.randomUUID();
                 }
-                uploadAudioBlob(currentChatRoom, pendingUserMessageId, blob, audioMimeType)
-                    .then(result => {
-                        if (result && result.filename) {
-                            // Inject a playback button into the live user bubble
-                            addAudioButtonToUserMessage(pendingUserMessageId, result.filename);
-                        }
-                    })
-                    .catch(err => console.warn("Failed to persist STT audio:", err));
 
+                try {
+                    const result = await uploadAudioBlob(currentChatRoom, pendingUserMessageId, blob, audioMimeType);
+                    if (result && result.filename) {
+                        // Inject a playback button into the live user bubble
+                        addAudioButtonToUserMessage(pendingUserMessageId, result.filename);
+                    }
+                } catch (err) {
+                    console.warn("Failed to persist STT audio:", err);
+                }
                 sendMessage();
             }
         } catch (err) {
