@@ -2,19 +2,25 @@
 
 A local single-user chat web application that connects to a locally running **llama.cpp** server and supports **multi-persona group chats** with optional **TTS playback**.
 
-As seen on YouTube!: https://www.youtube.com/watch?v=1VPydYNt4R8
+![Main chat interface](screenshots/chat_panel.png)
+
+Follow the development of this app on my YouTube channel:
+
+- Initial creation: https://www.youtube.com/watch?v=1VPydYNt4R8
+- Multi-lingual voice cloning: https://www.youtube.com/watch?v=1yiyFYaUlU4
+- Better TTS support: (coming soon!)
+- MCP integrations: (coming soon!)
 
 ## Features
 
 - Chat with one or more AI personas in a simulated group chat
+- Set up chat rooms and assign personas to them
 - Smart persona routing: let the LLM decide, pick randomly, or choose manually
-- Streaming responses rendered incrementally
-- Optional TTS: AI responses spoken aloud via a local TTS server
+- Optional TTS: AI responses spoken aloud via a TTS server
 - Optional STT: Click the microphone icon to speak your prompt
-- **In-app Persona Editor**: create, edit, clone and delete personas without touching `personas.yaml`
 - Fully local — no internet required, no authentication
 - Theme chooser in the top-right: Dark (default), Light, Matrix, and Blues
-- Theme preference persists between visits in local browser storage
+- Each room persists its text and audio messages
 
 ## Prerequisites
 
@@ -42,11 +48,19 @@ Open `http://localhost:8000` in your browser.
 
 ## Configuration
 
-### `settings.yaml`
+Most settings can be changed in the UI. Behind the scenes, configuration is stored on disk:
 
-(Note: as of v3, you can also edit these settings in-application via the "settings" control in the top right of the page).
+- `settings.yaml` stores LLM, TTS, and STT server endpoints
+- `chatrooms.yaml` stores configured chat rooms (if any)
+- `personas.yaml` stores all personas
 
-Configure your LLM, TTS, and STT server endpoints:
+### Server settings
+
+The UI offers a "Settings" control in the top right, which brings up the server settings dialog:
+
+![Server settings](screenshots/server_settings.png)
+
+The `settings.yaml` file on disk persists these settings:
 
 ```yaml
 llm:
@@ -73,19 +87,28 @@ general:
   persona_name_mentions: true
 ```
 
-The STT `base_url` should point to an OpenAI-compatible server. The app sends audio
-as a multipart form POST to `{base_url}/v1/audio/transcriptions` with
-`response_format=json`. The server must return a JSON object containing at least a
-`text` field. Optional response fields `language` (defaults to `"en"`) and
-`language_probability` are also supported.
-
 Note that TTS and STT are both optional! You can mark them as disabled
 and/or leave the base_url field blank or null. The only mandatory
 configuration here is the LLM.
 
-### `personas.yaml`
+### Personas
 
-Define your AI personas:
+Select the "Personas" control in the top right to bring up the Personas editor:
+
+![Personas editor](screenshots/persona_setup.png)
+
+In this editor, you can:
+
+- **Create** a new persona with the **+ New Persona** button
+- **Edit** any existing persona's properties inline
+- **Clone** a persona (a numeric suffix is added to the name, e.g. `Mark_2`)
+- **Delete** a persona (with a confirmation prompt)
+
+Changes are persisted immediately to `personas.yaml` and the sidebar persona list is refreshed automatically. No server restart is needed.
+
+> **Note**: renaming or deleting a persona does not modify messages already visible in the chat panel — those retain the name they were created with.
+
+The `personas.yaml` file persists these settings:
 
 ```yaml
 personas:
@@ -99,6 +122,10 @@ personas:
     reference_audio_transcript: null
     language: "en"
 ```
+
+(Note that the `language` field does not control what language the persona speaks. It refers
+specifically to the language of the supplied reference audio, if any, so that voice cloning
+can be more accurate)
 
 #### Persona fields
 
@@ -129,56 +156,53 @@ switch "Who should answer?" to "Selected persona", and make Alex the selected pe
 If you don't like this feature, you can set `persona_name_mentions` to `false` and restart the application. (There is currently
 no UI control over this setting - it has to be hand-edited in `settings.yaml` and is only read once on startup).
 
-## In-App Persona Editor
+### Chat rooms
 
-Click the **✎ Personas** button in the top-right to open the Persona Editor. You can:
+Selecting the "Chat rooms" control in the top right brings up the chat room editor:
 
-- **Create** a new persona with the **+ New Persona** button
-- **Edit** any existing persona's properties inline
-- **Clone** a persona (a numeric suffix is added to the name, e.g. `Mark_2`)
-- **Delete** a persona (with a confirmation prompt)
+![Chat room setup](screenshots/chatroom_setup.png)
 
-Changes are persisted immediately to `personas.yaml` and the sidebar persona list is refreshed automatically. No server restart is needed.
+Here, you can:
 
-> **Note**: renaming or deleting a persona does not modify messages already visible in the chat panel — those retain the name they were created with.
+- **Create** a new chat room (names must be unique)
+- **Delete** a chat room (and its chat history)
 
-## API Endpoints
+The `chatrooms.yaml` file persists these settings:
 
-| Method | Path | Description |
-|--------|------|-------------|
-| `GET` | `/` | Chat UI |
-| `GET` | `/api/personas` | List all personas |
-| `POST` | `/api/personas` | Create a new persona |
-| `GET` | `/api/personas/{name}/detail` | Full persona detail (all editable fields) |
-| `PUT` | `/api/personas/{name}` | Update a persona |
-| `DELETE` | `/api/personas/{name}` | Delete a persona |
-| `POST` | `/api/personas/{name}/clone` | Clone a persona |
-| `GET` | `/api/personas/{name}/avatar` | Serve persona avatar image |
-| `GET` | `/api/session` | Current session state |
-| `POST` | `/api/session/new` | Reset session |
-| `POST` | `/api/session/personas` | Update active personas |
-| `POST` | `/api/chat` | Send message (SSE stream response) |
-| `GET` | `/api/tts/health` | TTS availability status |
-| `POST` | `/api/tts` | Synthesize speech from text |
-| `POST` | `/api/stt` | Transcribe speech from voice |
-
-## Project Structure
-
+```yaml
+chat_rooms:
+- name: TNG
+  persona_names:
+  - Worf
+  - Troi
+  - Data
+  - Picard
+- name: Language_learning
+  persona_names:
+  - English expert
+  - German expert
+  - Spanish expert
+- name: chit-chat
+  persona_names:
+  - kstew
 ```
-TalkWithMe/
-├── app/
-│   ├── main.py              # FastAPI entry point
-│   ├── config.py            # YAML config loading
-│   ├── models.py            # Pydantic models
-│   ├── session.py           # In-memory session state
-│   ├── routers/             # API route handlers
-│   └── services/            # LLM and TTS clients
-├── static/                  # CSS and JavaScript
-├── templates/               # Jinja2 HTML templates
-├── personas.yaml            # Persona definitions
-├── settings.yaml            # Server configuration
-└── requirements.txt
-```
+
+Personas can be added/removed to a chat room via the main chat interface's left panel:
+
+![Left panel](screenshots/left_panel.png)
+
+The "Chat room" control at the top allows you to switch chat rooms. The messages in the current
+chat room are persisted, so you can come back later without losing anything.
+
+Select "Add persona" to add personas to the current room.
+
+Click the red "x" control next to a persona in the list to unassign them from this room.
+This does not delete the persona - they are still available to be assigned to other rooms.
+A persona can be assigned to any number of rooms simultaneously.
+
+## API Endpoints and project structure
+
+Moved to [copilot-instructions.md](.github/copilot-instructions.md)
 
 ## Cloning non-English voices
 
@@ -213,15 +237,48 @@ A small "replay" icon will appear underneath messages that have audio associated
 to persona-generated messages that were sent to the TTS server, and also user-supplied microphone input.
 Clicking this "replay" button will replay the audio for that message. 
 
-Note: in `streaming` mode, personas will generate a separate audio file for each sentence in their message.
-A separate "replay" icon will be showed for each sentence, side-by-each.
+In non-streaming mode, a single "replay" button will be shown underneath each persona message:
 
-## Notes
+![Chat replay non-streaming](screenshots/chat_audio_replay.png)
 
-- The TTS server is optional. If unreachable, TTS is silently disabled.
-- The STT server is optional. If unreachable or misconfigured, STT is gracefully disabled with an error message.
-- Single-user design: only one active chat session exists at a time.
-- "New Chat" clears all conversation history.
+In streaming mode, there will be one replay icon per sentence in the response. Clicking each button
+will play the respective sentence:
+
+![Chat replay streaming](screenshots/chat_audio_replay_streaming.png)
+
+## Detailed setup guide
+
+I have tested this application against `llama-server` running on a local server.
+Security and authentication were **not** considered, as the intent is for everything
+to run on a secure local network. Other LLM providers such as LMStudio should also
+work, if they provide an OpenAI-compatible API.
+
+Because both TTS and STT are optional, you have several options for running the
+application, depending on how much VRAM you can throw at it.
+
+### Minimal setup (~4GB VRAM)
+
+- Recommended LLM: Gemma 4 E4B Q4
+- Recommended TTS: (disabled)
+- Recommended STT: `whisper-fastapi`, any model, running on CPU (not on cuda!)
+
+### Modest setup (~12GB VRAM)
+
+- Recommended LLM: Gemma 4 E4B Q4
+- Recommended TTS: `dots.tts`
+- Recommended STT: `whisper-fastapi`, small model, running on CPU or cuda
+
+### Large setup (~16GB VRAM)
+
+- Recommended LLM: Gemma 4 E4B Q6
+- Recommended TTS: `dots.tts`
+- Recommended STT: `whisper-fastapi`, large-v3-turbo, running on cuda
+
+### X-Large setup (24GB or higher)
+
+- Recommended LLM: Gemma 4 26B A4B
+- Recommended TTS: `dots.tts`
+- Recommended STT: `whisper-fastapi`, large-v3-turbo, running on cuda
 
 ## Release history
 
