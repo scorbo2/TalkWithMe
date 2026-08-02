@@ -4,6 +4,10 @@
  * Supports two modes:
  *  - Non-streaming: enqueue full text after LLM finishes responding.
  *  - Streaming: split response into sentences, fetch and play in a pipeline.
+ *
+ * Audio persistence: each TTS fetch carries its own message ID so audio
+ * is always associated with the correct message, even when the global
+ * currentAssistantMessageId has been cleared by a subsequent message.
  */
 
 /* ==========================================================================
@@ -31,7 +35,10 @@ function toggleTTS() {
    ========================================================================== */
 
 function enqueueTTS(personaName, text) {
-    audioQueue.push({ personaName, text });
+    // Capture the current assistant message ID so this audio request
+    // knows which message it belongs to, even if the global ID changes
+    // before the async fetch completes.
+    audioQueue.push({ personaName, text, messageId: currentAssistantMessageId });
     processAudioQueue();
 }
 
@@ -41,7 +48,7 @@ async function processAudioQueue() {
 
     const item = audioQueue.shift();
     try {
-        const audioBuffer = await fetchTTS(item.personaName, item.text);
+        const audioBuffer = await fetchTTS(item.personaName, item.text, item.messageId);
         if (audioBuffer) {
             await playAudio(audioBuffer);
         }
@@ -88,7 +95,9 @@ function accumulateForTTS(token, personaName) {
 
 /** Push a sentence into the fetch queue and kick off the fetch pipeline. */
 function enqueueStreamingTTS(personaName, text) {
-    ttsRequestQueue.push({ personaName, text });
+    // In streaming mode, message_id isn't known until the "done" event.
+    // Pass null here; the buffer will be flushed with the correct ID later.
+    ttsRequestQueue.push({ personaName, text, messageId: null });
     processTTSRequests();
 }
 
@@ -103,7 +112,7 @@ async function processTTSRequests() {
 
     const item = ttsRequestQueue.shift();
     try {
-        const audioBuffer = await fetchTTS(item.personaName, item.text);
+        const audioBuffer = await fetchTTS(item.personaName, item.text, item.messageId);
         if (audioBuffer) {
             audioBufferQueue.push(audioBuffer);
             processAudioBufferQueue();
@@ -142,7 +151,16 @@ async function processAudioBufferQueue() {
    Shared TTS helpers
    ========================================================================== */
 
-async function fetchTTS(personaName, text) {
+/**
+ * Fetch TTS audio from the server and persist it to disk.
+ *
+ * @param {string} personaName - Which persona to synthesize for.
+ * @param {string} text - Text to synthesize.
+ * @param {string|null} messageId - The message ID this audio belongs to.
+ *   If null (streaming mode), falls back to currentAssistantMessageId,
+ *   which is set by the "done" event handler before audio fetches complete.
+ */
+async function fetchTTS(personaName, text, messageId) {
     const resp = await fetch("/api/tts", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -157,7 +175,25 @@ async function fetchTTS(personaName, text) {
     const data = await resp.json();
     if (!data.audio_base64) return null;
 
-    // Decode base64 to ArrayBuffer
+    // Use the passed messageId if available (non-streaming), otherwise fall
+    // back to the global currentAssistantMessageId (streaming mode, where the
+    // "done" event sets it before async audio fetches resolve).
+    const effectiveId = messageId || currentAssistantMessageId;
+    if (effectiveId) {
+        uploadAudio(currentChatRoom, effectiveId, data.audio_base64, "audio/wav")
+            .then(result => {
+                if (result && result.filename) {
+                    // Inject a playback button into the live chat bubble
+                    addAudioButtonToAssistantMessage(effectiveId, result.filename);
+                }
+            })
+            .catch(err => console.warn("Failed to persist TTS audio:", err));
+    } else {
+        // Safety net: if somehow no ID is available, buffer for later flush.
+        ttsAudioBuffer.push({ audio_base64: data.audio_base64, mime_type: "audio/wav" });
+    }
+
+    // Decode base64 to ArrayBuffer for playback
     const binary = atob(data.audio_base64);
     const bytes = new Uint8Array(binary.length);
     for (let i = 0; i < binary.length; i++) {
@@ -180,4 +216,25 @@ function playAudio(buffer) {
         source.onended = resolve;
         source.start();
     });
+}
+
+/**
+ * Persist any audio buffered during streaming TTS.
+ *
+ * During streaming, TTS sentences are fetched as tokens arrive, but the
+ * assistant's message_id isn't known until the "done" event. This function
+ * flushes the buffer once the ID is available.
+ */
+function flushTtsAudioBuffer(messageId) {
+    if (!messageId || ttsAudioBuffer.length === 0) return;
+    for (const entry of ttsAudioBuffer) {
+        uploadAudio(currentChatRoom, messageId, entry.audio_base64, entry.mime_type)
+            .then(result => {
+                if (result && result.filename) {
+                    addAudioButtonToAssistantMessage(messageId, result.filename);
+                }
+            })
+            .catch(err => console.warn("Failed to persist buffered TTS audio:", err));
+    }
+    ttsAudioBuffer = [];
 }

@@ -22,7 +22,10 @@ async function init() {
     await loadGeneralSettings();
     setupEventListeners();
     setupChatRoomEventListeners();
-    showEmptyState();
+
+    // Load persisted history for the current room
+    const history = await loadPersistedHistory(currentChatRoom);
+    renderPersistedHistory(history.messages, currentChatRoom);
 }
 
 /**
@@ -134,6 +137,8 @@ function setupEventListeners() {
 
 async function newChat() {
     try {
+        // POST /api/session/new clears both the in-memory session AND
+        // the persisted files for the current room.
         await fetch("/api/session/new", { method: "POST" });
         messagesEl.innerHTML = "";
         showEmptyState();

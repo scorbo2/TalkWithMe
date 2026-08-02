@@ -1,22 +1,19 @@
 llm:
   base_url: http://saturn-lm:8080
-  model: "default"
+  model: default
   max_tokens: 1024
   temperature: 0.8
-
 tts:
   enabled: true
   base_url: http://saturn-lm:8181
-  num_steps: 12
-  guidance_scale: 1.7
+  num_steps: 14
+  guidance_scale: 1.5
   seed: null
-  timeout: 120
-  streaming: false
-
+  timeout: 120.0
+  streaming: true
 stt:
   enabled: true
-  base_url: http://saturn-lm:8181
-  timeout: 30
-
+  base_url: http://saturn-lm:5000
+  timeout: 30.0
 general:
   persona_name_mentions: true

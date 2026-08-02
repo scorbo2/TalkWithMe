@@ -77,6 +77,23 @@ async function toggleMicrophone() {
                 const existing = inputEl.value;
                 inputEl.value = existing ? existing + " " + data.text : data.text;
                 inputEl.dispatchEvent(new Event("input")); // trigger auto-resize
+
+                // Persist the recorded audio before sending the message.
+                // pendingUserMessageId is set by sendMessage() right before the
+                // message is sent, but we need it here *before* sendMessage().
+                // So we generate it now if it's not already set.
+                if (!pendingUserMessageId) {
+                    pendingUserMessageId = crypto.randomUUID();
+                }
+                uploadAudioBlob(currentChatRoom, pendingUserMessageId, blob, audioMimeType)
+                    .then(result => {
+                        if (result && result.filename) {
+                            // Inject a playback button into the live user bubble
+                            addAudioButtonToUserMessage(pendingUserMessageId, result.filename);
+                        }
+                    })
+                    .catch(err => console.warn("Failed to persist STT audio:", err));
+
                 sendMessage();
             }
         } catch (err) {

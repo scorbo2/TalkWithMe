@@ -16,6 +16,14 @@ class ChatRequest(BaseModel):
         default="router",
         description='One of "router", "random", or a persona name',
     )
+    chat_room: str = Field(
+        default="default",
+        description="The chat room this message belongs to (for persistence)",
+    )
+    message_id: Optional[str] = Field(
+        default=None,
+        description="Frontend-generated UUID for this message (for audio association)",
+    )
 
 
 class SessionPersonasRequest(BaseModel):
@@ -89,6 +97,29 @@ class SessionState(BaseModel):
     """Current session snapshot for the frontend."""
     history: List[dict] = Field(default_factory=list)
     active_personas: List[str] = Field(default_factory=list)
+    current_room: str = Field(default="default", description="The currently active chat room")
+
+
+class PersistedMessage(BaseModel):
+    """A persisted chat message loaded from disk."""
+    id: str
+    sender: str
+    text: str
+    audio: List[str] = Field(default_factory=list)
+
+
+class PersistedHistoryResponse(BaseModel):
+    """Persisted chat history for a room."""
+    room: str
+    datetime: Optional[str] = None
+    messages: List[PersistedMessage] = Field(default_factory=list)
+
+
+class AudioUploadRequest(BaseModel):
+    """Frontend uploads audio for a persisted message."""
+    message_id: str
+    audio_base64: str
+    mime_type: Optional[str] = None
 
 
 class TTSResponse(BaseModel):

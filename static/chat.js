@@ -3,6 +3,7 @@
  *
  * Handles the full message lifecycle: user input → POST to server →
  * streaming SSE response → TTS enqueue → bubble rendering.
+ * Also handles rendering persisted chat history from disk.
  */
 
 /* ==========================================================================
@@ -94,8 +95,14 @@ async function sendMessage() {
         messagesEl.innerHTML = "";
     }
 
-    // Append user bubble
-    appendUserBubble(text);
+    // Generate a UUID for this user message (used for audio association).
+    // If STT already generated one (for audio upload), reuse it.
+    if (!pendingUserMessageId) {
+        pendingUserMessageId = crypto.randomUUID();
+    }
+
+    // Append user bubble with the message ID
+    appendUserBubble(text, pendingUserMessageId);
     inputEl.value = "";
     inputEl.style.height = "auto";
 
@@ -112,7 +119,12 @@ async function sendMessage() {
         const resp = await fetch("/api/chat", {
             method: "POST",
             headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ message: text, who_answers: who }),
+            body: JSON.stringify({
+                message: text,
+                who_answers: who,
+                chat_room: currentChatRoom,
+                message_id: pendingUserMessageId,
+            }),
         });
 
         if (!resp.ok || !resp.body) {
@@ -145,11 +157,13 @@ async function sendMessage() {
                 }
             }
         }
+    } catch (err) {
         console.error("Chat error:", err);
         handleSSEEvent({ type: "error", message: "Connection failed. Is the LLM server running?" }, assistantRow);
     } finally {
         isStreaming = false;
         sendBtn.disabled = false;
+        pendingUserMessageId = null;
         inputEl.focus();
     }
 }
@@ -161,6 +175,11 @@ async function sendMessage() {
 function handleSSEEvent(event, assistantRow) {
     switch (event.type) {
         case "start": {
+            // A new response is starting — clear any leftover message ID from
+            // the previous response so its late-arriving audio doesn't get
+            // associated with this new message.
+            currentAssistantMessageId = null;
+
             // Update the bubble with the actual persona name
             const persona = personas.find(p => p.name === event.persona);
             setupAssistantBubble(assistantRow, persona || { name: event.persona, avatar_color: "#888" });
@@ -195,6 +214,19 @@ function handleSSEEvent(event, assistantRow) {
             break;
         }
         case "done": {
+            // Track the assistant message ID for TTS audio association.
+            // In streaming mode, async audio fetches are still in-flight when
+            // this event arrives. They will use currentAssistantMessageId as
+            // a fallback when they resolve (see fetchTTS).
+            if (event.message_id) {
+                currentAssistantMessageId = event.message_id;
+                // Tag the live assistant bubble with the message ID so audio
+                // buttons can be injected into the correct DOM node later.
+                if (assistantRow) {
+                    assistantRow.dataset.messageId = event.message_id;
+                }
+            }
+
             if (ttsEnabled && event.text) {
                 const persona = personas.find(p => p.name === event.persona);
                 if (persona && persona.tts_capable) {
@@ -222,7 +254,9 @@ function handleSSEEvent(event, assistantRow) {
             break;
         }
         case "complete": {
-            // Final signal — nothing to do
+            // Final signal — don't clear currentAssistantMessageId here.
+            // In streaming mode, async audio fetches may still be in-flight.
+            // The ID will be cleared by the next "start" event instead.
             break;
         }
     }
@@ -232,15 +266,24 @@ function handleSSEEvent(event, assistantRow) {
    Bubble creation
    ========================================================================== */
 
-function appendUserBubble(text) {
+function appendUserBubble(text, messageId) {
     const row = document.createElement("div");
     row.className = "message-row user";
+    if (messageId) {
+        row.dataset.messageId = messageId;
+    }
+
+    // Wrapper keeps bubble + audio stacked vertically (row-reverse would
+    // otherwise place audio to the left of the bubble).
+    const wrapper = document.createElement("div");
+    wrapper.className = "user-message-content";
 
     const bubble = document.createElement("div");
     bubble.className = "bubble";
     bubble.textContent = text;
 
-    row.appendChild(bubble);
+    wrapper.appendChild(bubble);
+    row.appendChild(wrapper);
     messagesEl.appendChild(row);
     scrollToBottom();
 }
@@ -320,4 +363,229 @@ function appendErrorBubble(text) {
     row.appendChild(bubble);
     messagesEl.appendChild(row);
     scrollToBottom();
+}
+
+/* ==========================================================================
+   Persisted history rendering
+   ========================================================================== */
+
+/**
+ * Render persisted chat history into the message panel.
+ * Called when loading a room's history from disk.
+ */
+function renderPersistedHistory(messages, roomName) {
+    messagesEl.innerHTML = "";
+
+    if (!messages || messages.length === 0) {
+        showEmptyState();
+        return;
+    }
+
+    for (const msg of messages) {
+        if (msg.sender === "USER") {
+            appendPersistedUserBubble(msg, roomName);
+        } else {
+            appendPersistedAssistantBubble(msg, roomName);
+        }
+    }
+
+    scrollToBottom();
+}
+
+function appendPersistedUserBubble(msg, roomName) {
+    const row = document.createElement("div");
+    row.className = "message-row user";
+    if (msg.id) {
+        row.dataset.messageId = msg.id;
+    }
+
+    // Wrapper keeps bubble + audio stacked vertically.
+    const wrapper = document.createElement("div");
+    wrapper.className = "user-message-content";
+
+    const bubble = document.createElement("div");
+    bubble.className = "bubble";
+    bubble.textContent = msg.text;
+
+    wrapper.appendChild(bubble);
+
+    // Add audio playback buttons if this message has audio files
+    if (msg.audio && msg.audio.length > 0) {
+        const audioContainer = document.createElement("div");
+        audioContainer.className = "message-audio";
+        for (const filename of msg.audio) {
+            const playBtn = document.createElement("button");
+            playBtn.className = "audio-play-btn";
+            playBtn.innerHTML = "\u{1F501}"; // play icon
+            playBtn.title = "Play audio";
+            playBtn.addEventListener("click", () => playPersistedAudio(roomName, filename));
+            audioContainer.appendChild(playBtn);
+        }
+        wrapper.appendChild(audioContainer);
+    }
+
+    row.appendChild(wrapper);
+    messagesEl.appendChild(row);
+}
+
+function appendPersistedAssistantBubble(msg, roomName) {
+    const row = document.createElement("div");
+    row.className = "message-row assistant";
+    if (msg.id) {
+        row.dataset.messageId = msg.id;
+    }
+
+    // Find persona info for avatar
+    const persona = personas.find(p => p.name === msg.sender);
+    const personaData = persona || { name: msg.sender, avatar_color: "#888" };
+
+    // Avatar
+    const avatar = document.createElement("div");
+    avatar.className = "bubble-avatar";
+    avatar.style.backgroundColor = personaData.avatar_color;
+
+    if (persona && persona.avatar_image) {
+        const img = document.createElement("img");
+        img.src = `/api/personas/${encodeURIComponent(persona.name)}/avatar`;
+        img.alt = persona.name;
+        img.onerror = () => {
+            avatar.innerHTML = persona.name.charAt(0).toUpperCase();
+        };
+        avatar.appendChild(img);
+    } else {
+        avatar.textContent = personaData.name.charAt(0).toUpperCase();
+    }
+
+    const content = document.createElement("div");
+    content.className = "bubble-content";
+
+    const nameEl = document.createElement("div");
+    nameEl.className = "bubble-name";
+    nameEl.textContent = personaData.name;
+
+    const bubble = document.createElement("div");
+    bubble.className = "bubble";
+    bubble.textContent = msg.text;
+
+    // Add audio playback buttons if this message has audio files
+    if (msg.audio && msg.audio.length > 0) {
+        const audioContainer = document.createElement("div");
+        audioContainer.className = "message-audio";
+        for (const filename of msg.audio) {
+            const playBtn = document.createElement("button");
+            playBtn.className = "audio-play-btn";
+            playBtn.innerHTML = "\u{1F501}"; // 🔁 play icon
+            playBtn.title = "Play audio";
+            playBtn.addEventListener("click", () => playPersistedAudio(roomName, filename));
+            audioContainer.appendChild(playBtn);
+        }
+        content.appendChild(nameEl);
+        content.appendChild(bubble);
+        content.appendChild(audioContainer);
+    } else {
+        content.appendChild(nameEl);
+        content.appendChild(bubble);
+    }
+
+    row.appendChild(avatar);
+    row.appendChild(content);
+    messagesEl.appendChild(row);
+}
+
+/**
+ * Play a persisted audio file using Web Audio API.
+ */
+async function playPersistedAudio(roomName, filename) {
+    const url = getAudioUrl(roomName, filename);
+    try {
+        const resp = await fetch(url);
+        if (!resp.ok) {
+            console.warn(`Failed to fetch audio: HTTP ${resp.status}`);
+            return;
+        }
+        const arrayBuffer = await resp.arrayBuffer();
+
+        if (!audioCtx) {
+            audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+        }
+
+        const audioBuffer = await audioCtx.decodeAudioData(arrayBuffer);
+        const source = audioCtx.createBufferSource();
+        source.buffer = audioBuffer;
+        source.connect(audioCtx.destination);
+        source.start();
+    } catch (err) {
+        console.error("Failed to play persisted audio:", err);
+    }
+}
+
+/**
+ * Inject an audio playback button into a live assistant bubble.
+ * Called from tts.js after each audio file is persisted.
+ *
+ * @param {string} messageId - The message ID to locate the bubble by.
+ * @param {string} filename - The persisted audio filename.
+ */
+function addAudioButtonToAssistantMessage(messageId, filename) {
+    const row = messagesEl.querySelector(`.message-row.assistant[data-message-id="${messageId}"]`);
+    if (!row) {
+        console.warn("addAudioButtonToAssistantMessage: no bubble found for message", messageId);
+        return;
+    }
+
+    const content = row.querySelector(".bubble-content");
+    if (!content) return;
+
+    // Lazily create the audio container on first button
+    let audioContainer = content.querySelector(".message-audio");
+    if (!audioContainer) {
+        audioContainer = document.createElement("div");
+        audioContainer.className = "message-audio";
+        content.appendChild(audioContainer);
+    }
+
+    const playBtn = document.createElement("button");
+    playBtn.className = "audio-play-btn";
+    playBtn.innerHTML = "\u{1F501}"; // play icon
+    playBtn.title = "Play audio";
+    playBtn.addEventListener("click", () => playPersistedAudio(currentChatRoom, filename));
+    audioContainer.appendChild(playBtn);
+}
+
+/**
+ * Inject an audio playback button into a live user bubble.
+ * Called from stt.js after the recorded audio is persisted.
+ * Uses a retry mechanism in case the bubble isn't in the DOM yet.
+ *
+ * @param {string} messageId - The message ID to locate the bubble by.
+ * @param {string} filename - The persisted audio filename.
+ */
+function addAudioButtonToUserMessage(messageId, filename, retries = 3) {
+    const row = messagesEl.querySelector(`.message-row.user[data-message-id="${messageId}"]`);
+    if (!row) {
+        if (retries > 0) {
+            // Bubble not in DOM yet — retry after a short delay.
+            setTimeout(() => addAudioButtonToUserMessage(messageId, filename, retries - 1), 150);
+        }
+        return;
+    }
+
+    // User bubbles use a .user-message-content wrapper for proper stacking.
+    const wrapper = row.querySelector(".user-message-content");
+    if (!wrapper) return;
+
+    // Lazily create the audio container on first button
+    let audioContainer = wrapper.querySelector(".message-audio");
+    if (!audioContainer) {
+        audioContainer = document.createElement("div");
+        audioContainer.className = "message-audio";
+        wrapper.appendChild(audioContainer);
+    }
+
+    const playBtn = document.createElement("button");
+    playBtn.className = "audio-play-btn";
+    playBtn.innerHTML = "\u{1F501}"; // play icon
+    playBtn.title = "Play audio";
+    playBtn.addEventListener("click", () => playPersistedAudio(currentChatRoom, filename));
+    audioContainer.appendChild(playBtn);
 }

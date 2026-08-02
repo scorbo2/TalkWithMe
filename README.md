@@ -197,6 +197,25 @@ If you prefer to hear the persona's response in one clear, contiguous audio play
 
 If you want to hear each sentence as soon as it has been synthesized, without having to wait for the ENTIRE response to be synthesized, and you don't mind the occasional pause in between sentences, then enable streaming mode in configuration.
 
+## Chat persistence
+
+Each chat room persists its chat history to a dedicated subdirectory in the top-level `chatrooms` directory.
+For example, a chat room named `chit-chat` will persist to `<projectDir>/chatrooms/chit-chat`. All text and
+audio are saved there. If the history gets too long, you may overflow the context limit of the LLM. You can
+select "New Chat" at any time to clear the chat history and start over. 
+
+Each chat room persists separately! Selecting "New Chat" in the `chit-chat-1` room will not clear the
+history in the `chit-chat-2` room, and vice versa.
+
+## Replaying audio
+
+A small "replay" icon will appear underneath messages that have audio associated with them. This applies both
+to persona-generated messages that were sent to the TTS server, and also user-supplied microphone input.
+Clicking this "replay" button will replay the audio for that message. 
+
+Note: in `streaming` mode, personas will generate a separate audio file for each sentence in their message.
+A separate "replay" icon will be showed for each sentence, side-by-each.
+
 ## Notes
 
 - The TTS server is optional. If unreachable, TTS is silently disabled.
@@ -226,6 +245,8 @@ If you want to hear each sentence as soon as it has been synthesized, without ha
   - Added configurable chat rooms for grouping personas (#18)
   - Mentioning a persona causes them to answer next (can be disabled in settings.yaml) (#28)
   - Break up the `app.js` monolith for code maintainability (#29)
+  - Chat persistence (#4)
+  - Save generated audio and allow replay (#5)
 
 ## License
 

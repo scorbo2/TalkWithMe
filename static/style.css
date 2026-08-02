@@ -1235,3 +1235,44 @@ html, body {
     text-align: center;
     padding: 24px 0;
 }
+
+/* ==========================================================================
+   Message audio playback (persisted chat)
+   ========================================================================== */
+
+/* Wrapper for user messages — keeps bubble + audio stacked vertically
+   despite the row using flex-direction: row-reverse. */
+.user-message-content {
+    display: flex;
+    flex-direction: column;
+    align-items: flex-end;
+}
+
+.message-audio {
+    display: flex;
+    gap: 6px;
+    margin-top: 6px;
+    flex-wrap: wrap;
+}
+
+.audio-play-btn {
+    background: var(--bg-tertiary);
+    border: 1px solid var(--border-color);
+    border-radius: 6px;
+    color: var(--text-secondary);
+    font-size: 0.85rem;
+    padding: 3px 8px;
+    cursor: pointer;
+    transition: background 0.15s, color 0.15s;
+    line-height: 1;
+}
+
+.audio-play-btn:hover {
+    background: var(--accent);
+    color: #fff;
+    border-color: var(--accent);
+}
+
+.audio-play-btn:active {
+    transform: scale(0.95);
+}

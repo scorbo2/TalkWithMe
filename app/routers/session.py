@@ -1,11 +1,13 @@
 """Session router — inspect, reset, and configure the active session."""
 
 import logging
+import uuid
 
 from fastapi import APIRouter
 
 from app.config import get_personas
-from app.models import SessionPersonasRequest, SessionState
+from app.models import SessionPersonasRequest, SessionState, PersistedHistoryResponse, PersistedMessage
+from app.persistence import load_history_with_metadata
 from app.session import session
 
 logger = logging.getLogger(__name__)
@@ -18,6 +20,7 @@ def get_session():
     return SessionState(
         history=session.get_history_dicts(),
         active_personas=session.active_personas,
+        current_room=session.current_room,
     )
 
 
@@ -45,3 +48,19 @@ def update_active_personas(req: SessionPersonasRequest):
 
     session.set_active_personas(list(requested & valid_names))
     return {"status": "updated", "active_personas": session.active_personas}
+
+
+@router.get("/load-room/{room_name}")
+def load_room(room_name: str):
+    """Load persisted chat history for a room into the active session.
+
+    Used when switching chat rooms. Clears any existing in-memory history
+    and populates from the room's persisted data.
+    """
+    session.load_room(room_name)
+    metadata = load_history_with_metadata(room_name)
+    return PersistedHistoryResponse(
+        room=room_name,
+        datetime=metadata["datetime"],
+        messages=[PersistedMessage(**m) for m in metadata["messages"]],
+    )

@@ -14,7 +14,7 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
 from app import config as app_config
-from app.routers import chat, chatrooms, personas, session as session_router, settings, stt, tts
+from app.routers import chat, chatrooms, personas, persistence, session as session_router, settings, stt, tts
 from app.session import session
 
 logger = logging.getLogger(__name__)
@@ -66,6 +66,7 @@ app.include_router(chat.router)
 app.include_router(tts.router)
 app.include_router(stt.router)
 app.include_router(settings.router)
+app.include_router(persistence.router)
 
 # Jinja2 templates
 templates = Jinja2Templates(directory=str(Path(__file__).resolve().parent.parent / "templates"))

@@ -160,19 +160,19 @@ function setupChatRoomEventListeners() {
    ========================================================================== */
 
 /**
- * Switch to a different chat room. Clears the chat panel and updates the
- * persona list to match the room's assigned personas.
+ * Switch to a different chat room. Clears the chat display, loads the
+ * persisted history for the new room, and updates the persona list.
  */
-function switchChatRoom(roomName) {
+async function switchChatRoom(roomName) {
     currentChatRoom = roomName;
 
-    // Clear chat panel — same as "New Chat"
+    // Clear chat panel momentarily
     messagesEl.innerHTML = "";
     showEmptyState();
 
-    // Reset session history on backend
-    fetch("/api/session/new", { method: "POST" })
-        .catch(err => console.error("Failed to reset session:", err));
+    // Load persisted history for this room (also resets the backend session)
+    const history = await loadPersistedHistory(roomName);
+    renderPersistedHistory(history.messages, roomName);
 
     // Re-apply filter
     applyChatRoomFilter();

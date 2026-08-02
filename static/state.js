@@ -42,6 +42,13 @@ const audioBufferQueue = [];
 let isFetchingTTS = false;
 let isPlayingAudioBuffer = false;
 
+// Chat persistence — track message IDs for audio association
+let pendingUserMessageId = null; // UUID generated before sending, used for STT audio
+let currentAssistantMessageId = null; // UUID from server's "done" event, used for TTS audio
+// Buffers audio fetched during streaming TTS (before message_id is known).
+// Each entry: { audio_base64, mime_type }. Flushed when "done" event arrives.
+let ttsAudioBuffer = [];
+
 const THEME_STORAGE_KEY = "talkwithme_theme";
 
 /* ==========================================================================

@@ -2,12 +2,13 @@
 
 Receives a user message, decides which persona should respond (router, random,
 or explicit selection), streams tokens back via SSE, and appends the full
-response to session history.
+response to session history. Messages are persisted to disk per chat room.
 """
 
 import json
 import logging
 import random
+import uuid
 from typing import AsyncIterator
 
 from fastapi import APIRouter
@@ -104,6 +105,9 @@ async def _pick_persona(who_answers: str, user_message: str) -> str:
 
 async def _chat_stream(req: ChatRequest) -> AsyncIterator[str]:
     """Generator that yields SSE-formatted JSON lines."""
+    # Switch to the requested chat room for persistence
+    session.set_current_room(req.chat_room)
+
     persona_name = await _pick_persona(req.who_answers, req.message)
     config = get_personas()
     persona = next((p for p in config.personas if p.name == persona_name), None)
@@ -111,8 +115,11 @@ async def _chat_stream(req: ChatRequest) -> AsyncIterator[str]:
         yield f'data: {json.dumps({"type": "error", "message": f"Persona {persona_name} not found"})}\n\n'
         return
 
-    # Add user message to history
-    session.add_user_message(req.message)
+    # Use frontend-provided message ID or generate one
+    user_message_id = req.message_id or str(uuid.uuid4())
+
+    # Add user message to history (persisted automatically)
+    session.add_user_message(req.message, user_message_id)
 
     # Build LLM messages with the responding persona's system prompt
     messages = session.build_llm_messages(
@@ -120,12 +127,8 @@ async def _chat_stream(req: ChatRequest) -> AsyncIterator[str]:
         responding_persona=persona_name,
     )
 
-    # Append the user's message to the messages list (it's the latest)
-    # Actually, build_llm_messages already includes all history including the
-    # user message we just added. So we're good.
-
-    # Emit start event
-    yield f'data: {json.dumps({"type": "start", "persona": persona_name})}\n\n'
+    # Emit start event — include the user's message_id so frontend can track it
+    yield f'data: {json.dumps({"type": "start", "persona": persona_name, "user_message_id": user_message_id})}\n\n'
 
     # Stream tokens
     full_text = ""
@@ -138,11 +141,14 @@ async def _chat_stream(req: ChatRequest) -> AsyncIterator[str]:
         yield f'data: {json.dumps({"type": "error", "message": str(exc)})}\n\n'
         return
 
-    # Append full response to session history
-    session.add_assistant_message(full_text, persona_name)
+    # Generate assistant message ID
+    assistant_message_id = str(uuid.uuid4())
 
-    # Emit done and complete events
-    yield f'data: {json.dumps({"type": "done", "persona": persona_name, "text": full_text})}\n\n'
+    # Append full response to session history (persisted automatically)
+    session.add_assistant_message(full_text, persona_name, assistant_message_id)
+
+    # Emit done and complete events — include assistant message_id
+    yield f'data: {json.dumps({"type": "done", "persona": persona_name, "text": full_text, "message_id": assistant_message_id})}\n\n'
     yield f'data: {json.dumps({"type": "complete"})}\n\n'
 
 
