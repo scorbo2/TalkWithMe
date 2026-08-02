@@ -301,6 +301,11 @@ async function createChatRoom() {
         crFormError.classList.remove("hidden");
         return;
     }
+    if (!/^[a-zA-Z0-9_-]+$/.test(name)) {
+        crFormError.textContent = "Name may only contain letters, numbers, hyphens, and underscores.";
+        crFormError.classList.remove("hidden");
+        return;
+    }
 
     try {
         const resp = await fetch("/api/chatrooms", {

@@ -68,8 +68,11 @@ def create_chatroom(req: ChatRoomCreateRequest):
             status_code=409,
             detail=f"'{DEFAULT_ROOM}' is a reserved chat room name and cannot be created.",
         )
-    if not re.match(r'^[a-zA-Z0-9 _-]+$', name):
-        raise HTTPException(status_code=422, detail="Room name contains invalid characters.")
+    if not re.match(r'^[a-zA-Z0-9_-]+$', name):
+        raise HTTPException(
+            status_code=422,
+            detail="Room name may only contain letters, numbers, hyphens, and underscores.",
+        )
 
     config = get_chatrooms()
     if any(r.name.lower() == name.lower() for r in config.chat_rooms):

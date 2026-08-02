@@ -109,7 +109,7 @@
                     <div class="form-row">
                         <label for="pf-name">Name <span class="required">*</span></label>
                         <input id="pf-name" type="text" maxlength="25" placeholder="Max 25 chars" required>
-                        <span class="field-hint">25 chars max, must be unique</span>
+                        <span class="field-hint">25 chars max, must be unique (not 'user')</span>
                     </div>
                     <div class="form-row">
                         <label for="pf-description">Description</label>
@@ -186,7 +186,7 @@
                 <div class="form-row" style="padding: 12px 20px;">
                     <label for="cr-name-input">Room Name <span class="required">*</span></label>
                     <input id="cr-name-input" type="text" maxlength="20" placeholder="Max 20 chars">
-                    <span class="field-hint">20 chars max, must be unique (not 'default')</span>
+                    <span class="field-hint">Letters, numbers, hyphens, underscores only. 20 chars max, must be unique (not 'default')</span>
                 </div>
                 <div class="form-actions">
                     <button type="button" id="cr-new-cancel" class="btn-secondary">Cancel</button>

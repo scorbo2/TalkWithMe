@@ -94,6 +94,11 @@ def create_persona(req: PersonaCreateRequest):
     lower_name = req.name.strip().lower()
     if not lower_name:
         raise HTTPException(status_code=422, detail="Name may not be blank")
+    if lower_name == "user":
+        raise HTTPException(
+            status_code=422,
+            detail="'user' is a reserved persona name and cannot be used.",
+        )
     if any(p.name.lower() == lower_name for p in config.personas):
         raise HTTPException(status_code=409, detail=f"A persona named '{req.name}' already exists")
 
@@ -133,6 +138,11 @@ def update_persona(name: str, req: PersonaUpdateRequest):
     new_name = req.name.strip()
     if not new_name:
         raise HTTPException(status_code=422, detail="Name may not be blank")
+    if new_name.lower() == "user":
+        raise HTTPException(
+            status_code=422,
+            detail="'user' is a reserved persona name and cannot be used.",
+        )
 
     if new_name.lower() != name.lower():
         if any(p.name.lower() == new_name.lower() for p in config.personas if p.name != name):

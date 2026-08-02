@@ -272,6 +272,7 @@ async function submitPersonaForm(e) {
     const refAudioTx   = pfReferenceAudioTx.value.trim();
 
     if (!name) return showPersonaFormError("Name is required.");
+    if (name.toLowerCase() === "user") return showPersonaFormError("'user' is a reserved name and cannot be used.");
     if (!systemPrompt) return showPersonaFormError("System prompt is required.");
     if (!routerHints) return showPersonaFormError("Router hints are required.");
     if (language.length !== 2) return showPersonaFormError("Language must be a 2-letter code.");
