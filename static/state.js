@@ -15,6 +15,7 @@ let personaNameMentionsEnabled = true;
 let ttsEnabled = false;
 let ttsAvailable = false;
 let ttsStreaming = false;
+let ttsServerType = "";
 let sttAvailable = false;
 let isStreaming = false;
 
@@ -129,6 +130,7 @@ const sfTtsGuidanceScale = document.getElementById("sf-tts-guidance-scale");
 const sfTtsSeed = document.getElementById("sf-tts-seed");
 const sfTtsTimeout = document.getElementById("sf-tts-timeout");
 const sfTtsStreaming = document.getElementById("sf-tts-streaming");
+const sfTtsServerType = document.getElementById("sf-tts-server-type");
 
 // Settings form fields — STT
 const sfSttEnabled = document.getElementById("sf-stt-enabled");

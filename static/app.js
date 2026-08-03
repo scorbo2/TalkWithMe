@@ -73,12 +73,14 @@ async function checkTTSHealth() {
         ttsAvailable = data.available;
         ttsStreaming = data.streaming || false;
         ttsEnabled = data.available; // Default on if server is available
+        ttsServerType = data.server_type || "";
         updateTTSToggleUI();
     } catch (err) {
         console.warn("TTS health check failed:", err);
         ttsAvailable = false;
         ttsStreaming = false;
         ttsEnabled = false;
+        ttsServerType = "";
         updateTTSToggleUI();
     }
 }

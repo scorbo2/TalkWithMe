@@ -885,6 +885,17 @@ html, body {
     border-color: var(--accent);
 }
 
+// Read-only fields — slightly muted, no focus ring
+.form-input-readonly {
+    background: var(--bg-tertiary);
+    color: var(--text-muted);
+    cursor: default;
+}
+
+.form-input-readonly:focus {
+    border-color: var(--border-color);
+}
+
 .form-row input[type="color"] {
     width: 48px;
     height: 34px;

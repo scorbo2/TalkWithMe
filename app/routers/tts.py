@@ -23,11 +23,12 @@ router = APIRouter(tags=["tts"])
 async def tts_health():
     """Report TTS availability status to the frontend."""
     settings = get_settings()
-    available = await check_tts_health() if settings.tts.is_active else False
+    available, server_type = await check_tts_health() if settings.tts.is_active else (False, None)
     return TTSHealthResponse(
         enabled=settings.tts.is_active,
         available=available,
         streaming=settings.tts.streaming,
+        server_type=server_type,
     )
 
 

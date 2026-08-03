@@ -19,21 +19,31 @@ from app.config import get_settings
 logger = logging.getLogger(__name__)
 
 
-async def check_tts_health() -> bool:
-    """Return True if the TTS server is reachable.
+async def check_tts_health() -> tuple[bool, Optional[str]]:
+    """Return (is_reachable, server_type) from the TTS server's /health endpoint.
 
     Accepts both 200 (endpoint exists) and 404 (server is up but lacks /health).
     Any other outcome — connection error, timeout, 5xx — means the server is down.
+    server_type is extracted from the optional `serverType` field in the JSON response.
     """
     settings = get_settings()
     if not settings.tts.is_active:
-        return False
+        return False, None
     try:
         async with httpx.AsyncClient(timeout=3.0) as client:
             resp = await client.get(f"{settings.tts.base_url}/health")
-            return resp.status_code in (200, 404)
+            if resp.status_code not in (200, 404):
+                return False, None
+            # Extract serverType if the response body is valid JSON
+            server_type = None
+            try:
+                body = resp.json()
+                server_type = body.get("serverType")
+            except Exception:
+                pass  # Non-JSON or empty body is fine — just no server type
+            return True, server_type
     except Exception:
-        return False
+        return False, None
 
 
 async def synthesize(

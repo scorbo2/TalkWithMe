@@ -146,6 +146,10 @@ class TTSHealthResponse(BaseModel):
         default=False,
         description="True if streaming (sentence-by-sentence) TTS mode is configured",
     )
+    server_type: Optional[str] = Field(
+        default=None,
+        description="Server type reported by the TTS server's /health endpoint (e.g. dots.tts)",
+    )
 
 
 class STTHealthResponse(BaseModel):

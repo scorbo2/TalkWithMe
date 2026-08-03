@@ -4,3 +4,4 @@ app/routers/__pycache__/
 personas.yaml.*
 future*.md
 chatrooms/
+chatrooms.yaml.*

@@ -39,6 +39,9 @@ async function openSettings() {
 
     const ok = await loadSettingsIntoForm();
     saveBtn.disabled = !ok;
+
+    // Server type is ephemeral — comes from health check, not settings
+    updateTtsServerTypeField();
 }
 
 function closeSettings() {
@@ -106,6 +109,11 @@ function updateSttFieldsState() {
     } else {
         sfSttFields.classList.add("disabled");
     }
+}
+
+// Display the TTS server type from the latest health check, truncated to 12 chars.
+function updateTtsServerTypeField() {
+    sfTtsServerType.value = ttsServerType.length > 12 ? ttsServerType.slice(0, 12) : ttsServerType;
 }
 
 function showSettingsError(msg) {
