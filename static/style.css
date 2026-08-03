@@ -885,14 +885,14 @@ html, body {
     border-color: var(--accent);
 }
 
-// Read-only fields — slightly muted, no focus ring
-.form-input-readonly {
+/* Read-only fields — slightly muted, no focus ring */
+.form-row input.form-input-readonly {
     background: var(--bg-tertiary);
     color: var(--text-muted);
     cursor: default;
 }
 
-.form-input-readonly:focus {
+.form-row input.form-input-readonly:focus {
     border-color: var(--border-color);
 }
 
