@@ -75,4 +75,8 @@ templates = Jinja2Templates(directory=str(Path(__file__).resolve().parent.parent
 @app.get("/", response_class=HTMLResponse)
 async def index(request: Request):
     """Serve the main chat UI."""
-    return templates.TemplateResponse("index.html", {"request": request})
+    return templates.TemplateResponse(
+        request=request, 
+        name="index.html", 
+        context={} # optional additional context
+    )
