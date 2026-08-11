@@ -11,7 +11,9 @@ routers, the session manager, or tests without pulling in FastAPI deps.
 import base64
 import json
 import logging
+import os
 import shutil
+import tempfile
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -64,12 +66,14 @@ def persist_message(room_name: str, message: ChatMessage, message_id: str) -> st
     room.mkdir(parents=True, exist_ok=True)
     path = _history_path(room_name)
 
-    # Load existing history or start fresh
+    # Load existing history or start fresh (handles corrupted JSON cleanly)
+    data = {"datetime": None, "messages": []}
     if path.exists():
-        with open(path) as f:
-            data: Dict[str, Any] = json.load(f)
-    else:
-        data = {"datetime": None, "messages": []}
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                data = json.load(f)
+        except (json.JSONDecodeError, UnicodeDecodeError):
+            logger.warning(f"Corrupted JSON found in room '{room_name}'. Starting fresh.")
 
     now = datetime.now().astimezone().isoformat()
     data["datetime"] = now
@@ -82,8 +86,12 @@ def persist_message(room_name: str, message: ChatMessage, message_id: str) -> st
         "audio": [],
     })
 
-    with open(path, "w") as f:
-        json.dump(data, f, indent=2, ensure_ascii=False)
+    # Atomic write to prevent partial saves crashing the app on the next load
+    with tempfile.NamedTemporaryFile("w", dir=path.parent, delete=False, encoding="utf-8") as tf:
+        json.dump(data, tf, indent=2, ensure_ascii=False)
+        temp_path = tf.name
+    
+    os.replace(temp_path, path)
 
     logger.debug("Persisted message %s to room '%s'", message_id, room_name)
     return message_id
@@ -106,8 +114,11 @@ def persist_audio(
     # Single read — determine next index and locate the target message
     data: Dict[str, Any] = {"datetime": None, "messages": []}
     if path.exists():
-        with open(path) as f:
-            data = json.load(f)
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                data = json.load(f)
+        except (json.JSONDecodeError, UnicodeDecodeError):
+            logger.warning(f"Corrupted JSON found in room '{room_name}'. Continuing with blank data.")
 
     index = 0
     msg_found = None
@@ -119,16 +130,20 @@ def persist_audio(
 
     filename = _audio_filename(message_id, index, mime_type)
 
-    # Write the raw audio bytes
+    # Write the raw audio bytes (binary mode, so no encoding needed)
     raw = base64.b64decode(audio_base64)
     with open(room / filename, "wb") as f:
         f.write(raw)
 
-    # Update the message's audio list in a single write
+    # Update the message's audio list in a single atomic write
     if msg_found:
         msg_found.setdefault("audio", []).append(filename)
-    with open(path, "w") as f:
-        json.dump(data, f, indent=2, ensure_ascii=False)
+        
+    with tempfile.NamedTemporaryFile("w", dir=path.parent, delete=False, encoding="utf-8") as tf:
+        json.dump(data, tf, indent=2, ensure_ascii=False)
+        temp_path = tf.name
+        
+    os.replace(temp_path, path)
 
     logger.debug("Persisted audio '%s' for message %s in room '%s'", filename, message_id, room_name)
     return filename
@@ -138,14 +153,17 @@ def load_history(room_name: str) -> List[Dict[str, Any]]:
     """Load persisted messages for a room.
 
     Returns a list of message dicts matching the JSON schema.
-    Returns an empty list if no history exists.
+    Returns an empty list if no history exists or file is corrupted.
     """
     path = _history_path(room_name)
     if not path.exists():
         return []
 
-    with open(path) as f:
-        data: Dict[str, Any] = json.load(f)
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            data: Dict[str, Any] = json.load(f)
+    except (json.JSONDecodeError, UnicodeDecodeError):
+        return []
 
     return data.get("messages", [])
 
@@ -154,14 +172,17 @@ def load_history_with_metadata(room_name: str) -> Dict[str, Any]:
     """Load persisted messages and metadata for a room.
 
     Returns a dict with "datetime" and "messages" keys.
-    Returns {"datetime": None, "messages": []} if no history exists.
+    Returns {"datetime": None, "messages": []} if no history exists or file is corrupted.
     """
     path = _history_path(room_name)
     if not path.exists():
         return {"datetime": None, "messages": []}
 
-    with open(path) as f:
-        data: Dict[str, Any] = json.load(f)
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            data: Dict[str, Any] = json.load(f)
+    except (json.JSONDecodeError, UnicodeDecodeError):
+        return {"datetime": None, "messages": []}
 
     return {
         "datetime": data.get("datetime"),
