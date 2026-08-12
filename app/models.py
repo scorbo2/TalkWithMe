@@ -43,7 +43,7 @@ class PersonaCreateRequest(BaseModel):
     avatar_image: Optional[str] = None
     reference_audio: Optional[str] = None
     reference_audio_transcript: Optional[str] = None
-    language: str = Field(default="en", min_length=2, max_length=2)
+    reference_audio_language: str = Field(default="en", min_length=2, max_length=2)
 
 
 class PersonaUpdateRequest(PersonaCreateRequest):
@@ -89,7 +89,7 @@ class PersonaDetailResponse(BaseModel):
     avatar_image: Optional[str] = None
     reference_audio: Optional[str] = None
     reference_audio_transcript: Optional[str] = None
-    language: str
+    reference_audio_language: str
     tts_capable: bool = False
 
 

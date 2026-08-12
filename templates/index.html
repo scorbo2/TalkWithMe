@@ -124,16 +124,9 @@
                         <input id="pf-router-hints" type="text" maxlength="256" placeholder="Keywords for routing, e.g. science, math" required>
                         <span class="field-hint">256 chars max</span>
                     </div>
-                    <div class="form-row form-row-inline">
-                        <div class="form-col">
-                            <label for="pf-avatar-color">Avatar Color</label>
-                            <input id="pf-avatar-color" type="color" value="#FF0000">
-                        </div>
-                        <div class="form-col">
-                            <label for="pf-language">Language</label>
-                            <input id="pf-language" type="text" maxlength="2" minlength="2" placeholder="en" style="width:60px">
-                            <span class="field-hint">2-letter code</span>
-                        </div>
+                    <div class="form-row">
+                        <label for="pf-avatar-color">Avatar Color</label>
+                        <input id="pf-avatar-color" type="color" value="#FF0000">
                     </div>
                     <div class="form-row">
                         <label for="pf-avatar-image">Avatar Image Path</label>
@@ -146,6 +139,11 @@
                     <div class="form-row">
                         <label for="pf-reference-audio-transcript">Reference Audio Transcript Path</label>
                         <input id="pf-reference-audio-transcript" type="text" placeholder="Path to transcript TXT file (optional)">
+                    </div>
+                    <div class="form-row">
+                        <label for="pf-reference-audio-language">Reference Audio Language</label>
+                        <input id="pf-reference-audio-language" type="text" maxlength="2" minlength="2" placeholder="en" style="width:60px">
+                        <span class="field-hint">2-letter code</span>
                     </div>
                     <div class="form-actions">
                         <button type="button" id="pe-form-btn-cancel2" class="btn-secondary">Cancel</button>

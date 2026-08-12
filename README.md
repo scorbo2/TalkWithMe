@@ -123,10 +123,10 @@ personas:
     avatar_image: null
     reference_audio: null
     reference_audio_transcript: null
-    language: "en"
+    reference_audio_language: "en"
 ```
 
-(Note that the `language` field does not control what language the persona speaks. It refers
+(Note that the `reference_audio_language` field does not control what language the persona speaks. It refers
 specifically to the language of the supplied reference audio, if any, so that voice cloning
 can be more accurate)
 
@@ -142,7 +142,7 @@ can be more accurate)
 | `avatar_image` | Path to a local image file (optional) |
 | `reference_audio` | Path to a WAV file for TTS voice cloning (optional) |
 | `reference_audio_transcript` | Path to a TXT file with the audio transcript (required with `reference_audio`) |
-| `language` | Two-letter language code describing the reference audio (defaults to `en`) |
+| `reference_audio_language` | Two-letter language code describing the reference audio (defaults to `en`) |
 
 **TTS support**: Both `reference_audio` and `reference_audio_transcript` must be set for a persona to have TTS capability.
 
@@ -211,7 +211,7 @@ Moved to [copilot-instructions.md](.github/copilot-instructions.md)
 
 If your reference audio is in English, you're all set.
 
-If your reference audio is in some other language, you must specify the language code in the `language` field for the persona in question. This helps the voice cloner understand the reference audio. This may also prevent the cloned voice from speaking in languages other than the reference audio language, but your mileage may vary.
+If your reference audio is in some other language, you must specify the language code in the `reference_audio_language` field for the persona in question. This helps the voice cloner understand the reference audio. This may also prevent the cloned voice from speaking in languages other than the reference audio language, but your mileage may vary.
 
 ## Streaming TTS responses
 
@@ -311,6 +311,7 @@ application, depending on how much VRAM you can throw at it.
   - Add read-only "server type" field in TTS server settings (Qwen3-TTS or dots.tts) (#36)
 - **TODO All release notes for v4 go here**
   - Relax chat room name restrictions to allow spaces (#45)
+  - Rename `language` to `reference_audio_language` in persona config (#46)
 
 ## License
 

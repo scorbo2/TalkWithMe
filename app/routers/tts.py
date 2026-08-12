@@ -58,7 +58,7 @@ async def tts_proxy(req: TTSRequest):
         text=req.text,
         prompt_text=transcript,
         audio_base64=audio_b64,
-        language=persona.language,
+        language=persona.reference_audio_language,
     )
 
     if not result:

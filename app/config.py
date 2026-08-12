@@ -4,11 +4,14 @@ Loads settings.yaml and personas.yaml from the project root.
 Caches parsed config so we're not hitting disk on every request.
 """
 
+import logging
 from pathlib import Path
 from typing import List, Optional
 
 import yaml
 from pydantic import BaseModel, Field, model_validator
+
+logger = logging.getLogger(__name__)
 
 
 # ---------------------------------------------------------------------------
@@ -88,7 +91,7 @@ class Persona(BaseModel):
     avatar_image: Optional[str] = None
     reference_audio: Optional[str] = None
     reference_audio_transcript: Optional[str] = None
-    language: str = "en"
+    reference_audio_language: str = "en"
 
     @property
     def tts_capable(self) -> bool:
@@ -142,16 +145,29 @@ def load_settings(path: Optional[Path] = None) -> AppSettings:
 
 
 def load_personas(path: Optional[Path] = None) -> PersonasConfig:
-    """Parse personas.yaml. Returns empty list if file is missing."""
+    """Parse personas.yaml. Returns empty list if file is missing.
+
+    Migrates the legacy 'language' key to 'reference_audio_language' on the
+    fly, so existing personas.yaml files from before the rename still load
+    without requiring manual edits.
+    """
     global _personas_cache
     target = path or _PROJECT_ROOT / "personas.yaml"
     if not target.exists():
         return PersonasConfig()
     with open(target) as f:
         raw = yaml.safe_load(f) or {}
-    _personas_cache = PersonasConfig(
-        personas=[Persona(**p) for p in raw.get("personas", [])]
-    )
+    migrated = []
+    for p in raw.get("personas", []):
+        if "language" in p:
+            name = p.get("name", "<unknown>")
+            logger.info(
+                "Persona '%s': migrating legacy 'language' key to 'reference_audio_language'",
+                name,
+            )
+            p["reference_audio_language"] = p.pop("language")
+        migrated.append(p)
+    _personas_cache = PersonasConfig(personas=[Persona(**p) for p in migrated])
     return _personas_cache
 
 

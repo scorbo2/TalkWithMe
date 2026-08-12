@@ -231,7 +231,7 @@ async function openPersonaForm(name) {
             pfSystemPrompt.value      = p.system_prompt;
             pfRouterHints.value       = p.router_hints;
             pfAvatarColor.value       = p.avatar_color || "#FF0000";
-            pfLanguage.value          = p.language || "en";
+            pfReferenceAudioLanguage.value = p.reference_audio_language || "en";
             pfAvatarImage.value       = p.avatar_image || "";
             pfReferenceAudio.value    = p.reference_audio || "";
             pfReferenceAudioTx.value  = p.reference_audio_transcript || "";
@@ -246,7 +246,7 @@ async function openPersonaForm(name) {
         pfSystemPrompt.value      = "";
         pfRouterHints.value       = "";
         pfAvatarColor.value       = "#FF0000";
-        pfLanguage.value          = "en";
+        pfReferenceAudioLanguage.value = "en";
         pfAvatarImage.value       = "";
         pfReferenceAudio.value    = "";
         pfReferenceAudioTx.value  = "";
@@ -266,7 +266,7 @@ async function submitPersonaForm(e) {
     const systemPrompt = pfSystemPrompt.value.trim();
     const routerHints  = pfRouterHints.value.trim();
     const avatarColor  = pfAvatarColor.value;
-    const language     = pfLanguage.value.trim();
+    const referenceAudioLanguage = pfReferenceAudioLanguage.value.trim();
     const avatarImage  = pfAvatarImage.value.trim();
     const refAudio     = pfReferenceAudio.value.trim();
     const refAudioTx   = pfReferenceAudioTx.value.trim();
@@ -275,7 +275,7 @@ async function submitPersonaForm(e) {
     if (name.toLowerCase() === "user") return showPersonaFormError("'user' is a reserved name and cannot be used.");
     if (!systemPrompt) return showPersonaFormError("System prompt is required.");
     if (!routerHints) return showPersonaFormError("Router hints are required.");
-    if (language.length !== 2) return showPersonaFormError("Language must be a 2-letter code.");
+    if (referenceAudioLanguage.length !== 2) return showPersonaFormError("Language must be a 2-letter code.");
 
     const payload = {
         name,
@@ -283,7 +283,7 @@ async function submitPersonaForm(e) {
         system_prompt: systemPrompt,
         router_hints: routerHints,
         avatar_color: avatarColor,
-        language,
+        reference_audio_language: referenceAudioLanguage,
         avatar_image: avatarImage || null,
         reference_audio: refAudio || null,
         reference_audio_transcript: refAudioTx || null,
