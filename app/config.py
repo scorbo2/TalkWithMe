@@ -159,7 +159,7 @@ def load_personas(path: Optional[Path] = None) -> PersonasConfig:
         raw = yaml.safe_load(f) or {}
     migrated = []
     for p in raw.get("personas", []):
-        if "language" in p:
+        if "language" in p and "reference_audio_language" not in p:
             name = p.get("name", "<unknown>")
             logger.info(
                 "Persona '%s': migrating legacy 'language' key to 'reference_audio_language'",
