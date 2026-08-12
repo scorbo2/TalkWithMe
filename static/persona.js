@@ -275,7 +275,7 @@ async function submitPersonaForm(e) {
     if (name.toLowerCase() === "user") return showPersonaFormError("'user' is a reserved name and cannot be used.");
     if (!systemPrompt) return showPersonaFormError("System prompt is required.");
     if (!routerHints) return showPersonaFormError("Router hints are required.");
-    if (referenceAudioLanguage.length !== 2) return showPersonaFormError("Language must be a 2-letter code.");
+    if (referenceAudioLanguage.length !== 2) return showPersonaFormError("Reference audio language must be a 2-letter code.");
 
     const payload = {
         name,
