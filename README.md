@@ -312,7 +312,7 @@ application, depending on how much VRAM you can throw at it.
 - **TODO All release notes for v4 go here**
   - Relax chat room name restrictions to allow spaces (#45)
   - Rename `language` to `reference_audio_language` in persona config (#46)
-  - Avoid Jinja2 version 3.1.5 due to known bug (#50)
+  - Avoid Jinja2 version 3.1.5 as a mitigation for #50
 
 ## License
 
