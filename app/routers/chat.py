@@ -14,7 +14,7 @@ from typing import AsyncIterator
 from fastapi import APIRouter
 from fastapi.responses import StreamingResponse
 
-from app.config import get_personas
+from app.config import get_chatrooms, get_personas
 from app.models import ChatRequest
 from app.session import session
 from app.services.llm import chat_completion, stream_chat
@@ -121,25 +121,38 @@ async def _chat_stream(req: ChatRequest) -> AsyncIterator[str]:
     # Add user message to history (persisted automatically)
     session.add_user_message(req.message, user_message_id)
 
-    # Build LLM messages with the responding persona's system prompt
-    messages = session.build_llm_messages(
-        system_prompt=persona.system_prompt,
-        responding_persona=persona_name,
+    # Check if echo chamber is enabled for this room (case-insensitive lookup)
+    chatrooms_config = get_chatrooms()
+    room = next(
+        (r for r in chatrooms_config.chat_rooms if r.name.lower() == req.chat_room.lower()),
+        None,
     )
+    echo_enabled = room.echo_chamber if room else False
 
     # Emit start event — include the user's message_id so frontend can track it
     yield f'data: {json.dumps({"type": "start", "persona": persona_name, "user_message_id": user_message_id})}\n\n'
 
-    # Stream tokens
-    full_text = ""
-    try:
-        async for token in stream_chat(messages):
-            full_text += token
-            yield f'data: {json.dumps({"type": "token", "persona": persona_name, "token": token})}\n\n'
-    except Exception as exc:
-        logger.error("Streaming error: %s", exc)
-        yield f'data: {json.dumps({"type": "error", "message": str(exc)})}\n\n'
-        return
+    if echo_enabled:
+        # Echo chamber: bypass the LLM entirely and return the user's message verbatim.
+        # This guarantees exact text reproduction for TTS playback, with zero latency
+        # and no token burn. An LLM system prompt can never guarantee true verbatim echo.
+        full_text = req.message
+        yield f'data: {json.dumps({"type": "token", "persona": persona_name, "token": full_text})}\n\n'
+    else:
+        # Normal path: stream LLM response
+        messages = session.build_llm_messages(
+            system_prompt=persona.system_prompt,
+            responding_persona=persona_name,
+        )
+        full_text = ""
+        try:
+            async for token in stream_chat(messages):
+                full_text += token
+                yield f'data: {json.dumps({"type": "token", "persona": persona_name, "token": token})}\n\n'
+        except Exception as exc:
+            logger.error("Streaming error: %s", exc)
+            yield f'data: {json.dumps({"type": "error", "message": str(exc)})}\n\n'
+            return
 
     # Generate assistant message ID
     assistant_message_id = str(uuid.uuid4())

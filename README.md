@@ -180,6 +180,7 @@ chat_rooms:
   - Troi
   - Data
   - Picard
+  echo_chamber: false
 - name: Language_learning
   persona_names:
   - English expert
@@ -188,6 +189,7 @@ chat_rooms:
 - name: chit-chat
   persona_names:
   - kstew
+  echo_chamber: true
 ```
 
 Personas can be added/removed to a chat room via the main chat interface's left panel:
@@ -248,6 +250,12 @@ In streaming mode, there will be one replay icon per sentence in the response. C
 will play the respective sentence:
 
 ![Chat replay streaming](screenshots/chat_audio_replay_streaming.png)
+
+## Echo chamber
+
+Enabling the "echo chamber" option in a chat room will cause the responding persona to simply echo back
+whatever you type or speak, verbatim. This is useful with TTS servers, if you want to hear a persona
+speak a specific line of dialogue. This option is disabled by default.
 
 ## Detailed setup guide
 
@@ -313,6 +321,7 @@ application, depending on how much VRAM you can throw at it.
   - Relax chat room name restrictions to allow spaces (#45)
   - Rename `language` to `reference_audio_language` in persona config (#46)
   - Avoid Jinja2 version 3.1.5 as a mitigation for #50
+  - Add "echo chamber" option to chat rooms (#51)
 
 ## License
 

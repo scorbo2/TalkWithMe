@@ -111,6 +111,7 @@ class ChatRoom(BaseModel):
     """A named grouping of personas."""
     name: str
     persona_names: List[str] = Field(default_factory=list)
+    echo_chamber: bool = False
 
 
 class ChatRoomsConfig(BaseModel):

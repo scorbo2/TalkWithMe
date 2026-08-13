@@ -263,6 +263,7 @@ class ChatRoomResponse(BaseModel):
     """A chat room returned to the frontend."""
     name: str
     persona_names: List[str] = Field(default_factory=list)
+    echo_chamber: bool = False
 
 
 class ChatRoomCreateRequest(BaseModel):
@@ -273,3 +274,8 @@ class ChatRoomCreateRequest(BaseModel):
 class AssignPersonasRequest(BaseModel):
     """Assign personas to a chat room."""
     persona_names: List[str] = Field(..., min_length=1)
+
+
+class EchoChamberRequest(BaseModel):
+    """Toggle echo chamber mode for a chat room."""
+    echo_chamber: bool

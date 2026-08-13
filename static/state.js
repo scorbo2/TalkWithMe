@@ -69,6 +69,7 @@ const themeSelectEl = document.getElementById("theme-select");
 
 // Chat room selector (used by chatrooms.js)
 const chatRoomDropdown = document.getElementById("chat-room-dropdown");
+const echoChamberToggle = document.getElementById("echo-chamber-toggle");
 const btnAddPersona = document.getElementById("btn-add-persona");
 
 // Persona Editor (used by persona.js)

@@ -94,6 +94,12 @@ function applyChatRoomFilter() {
 
     // Update dropdown selection
     chatRoomDropdown.value = currentChatRoom;
+
+    // Update echo chamber checkbox state (case-insensitive, matching backend behavior)
+    const roomInfo = allChatRooms.find(r => r.name.toLowerCase() === currentChatRoom.toLowerCase());
+    const echoEnabled = roomInfo ? roomInfo.echo_chamber : false;
+    echoChamberToggle.checked = echoEnabled;
+    echoChamberToggle.disabled = !isActiveRoom;
 }
 
 /**
@@ -117,6 +123,11 @@ function setupChatRoomEventListeners() {
     // Dropdown change: switch rooms
     chatRoomDropdown.addEventListener("change", () => {
         switchChatRoom(chatRoomDropdown.value);
+    });
+
+    // Echo chamber toggle
+    echoChamberToggle.addEventListener("change", () => {
+        updateEchoChamber(currentChatRoom, echoChamberToggle.checked);
     });
 
     // "Add persona" button in sidebar
@@ -176,6 +187,40 @@ async function switchChatRoom(roomName) {
 
     // Re-apply filter
     applyChatRoomFilter();
+}
+
+/**
+ * Persist echo chamber toggle for the current chat room.
+ */
+async function updateEchoChamber(roomName, enabled) {
+    if (roomName === "default") {
+        // Default room cannot be modified
+        echoChamberToggle.checked = false;
+        return;
+    }
+    // Skip no-op — prevents recursive API calls when applyChatRoomFilter() sets the checkbox
+    const currentRoom = allChatRooms.find(r => r.name === roomName);
+    if (currentRoom && currentRoom.echo_chamber === enabled) {
+        return;
+    }
+    try {
+        const resp = await fetch(`/api/chatrooms/${encodeURIComponent(roomName)}/echo-chamber`, {
+            method: "PUT",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ echo_chamber: enabled }),
+        });
+        if (!resp.ok) {
+            console.error("Failed to update echo chamber:", resp.status);
+            // Revert UI on failure
+            echoChamberToggle.checked = !enabled;
+            return;
+        }
+        // Reload from server to sync all state (persona lists, echo flag, etc.)
+        await loadChatRooms();
+    } catch (err) {
+        console.error("Update echo chamber error:", err);
+        echoChamberToggle.checked = !enabled;
+    }
 }
 
 /**

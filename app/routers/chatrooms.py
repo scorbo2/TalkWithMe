@@ -22,6 +22,7 @@ from app.models import (
     AssignPersonasRequest,
     ChatRoomCreateRequest,
     ChatRoomResponse,
+    EchoChamberRequest,
 )
 
 logger = logging.getLogger(__name__)
@@ -31,7 +32,7 @@ DEFAULT_ROOM = "default"
 
 
 def _to_response(room: ChatRoom) -> ChatRoomResponse:
-    return ChatRoomResponse(name=room.name, persona_names=list(room.persona_names))
+    return ChatRoomResponse(name=room.name, persona_names=list(room.persona_names), echo_chamber=room.echo_chamber)
 
 
 @router.get("", response_model=List[ChatRoomResponse])
@@ -47,7 +48,7 @@ def list_all_chatrooms():
     config = get_chatrooms()
     # "default" room always contains all configured personas
     all_persona_names = [p.name for p in get_personas().personas]
-    result = [ChatRoomResponse(name=DEFAULT_ROOM, persona_names=all_persona_names)]
+    result = [ChatRoomResponse(name=DEFAULT_ROOM, persona_names=all_persona_names, echo_chamber=False)]
     result.extend(_to_response(r) for r in config.chat_rooms)
     return result
 
@@ -111,7 +112,7 @@ def get_chatroom(name: str):
     """Return a specific chat room's details, including 'default'."""
     if name.lower() == DEFAULT_ROOM:
         all_persona_names = [p.name for p in get_personas().personas]
-        return ChatRoomResponse(name=DEFAULT_ROOM, persona_names=all_persona_names)
+        return ChatRoomResponse(name=DEFAULT_ROOM, persona_names=all_persona_names, echo_chamber=False)
 
     config = get_chatrooms()
     room = next((r for r in config.chat_rooms if r.name.lower() == name.lower()), None)
@@ -149,8 +150,8 @@ def assign_personas(name: str, req: AssignPersonasRequest):
         if pname not in updated_names:
             updated_names.append(pname)
 
-    updated_room = ChatRoom(name=room.name, persona_names=updated_names)
-    updated_rooms = [updated_room if r.name == room.name else r for r in config.chat_rooms]
+    updated_room = ChatRoom(name=room.name, persona_names=updated_names, echo_chamber=room.echo_chamber)
+    updated_rooms = [updated_room if r.name.lower() == room.name.lower() else r for r in config.chat_rooms]
     save_chatrooms(ChatRoomsConfig(chat_rooms=updated_rooms))
     return _to_response(updated_room)
 
@@ -170,7 +171,29 @@ def remove_persona_from_room(name: str, persona_name: str):
         raise HTTPException(status_code=404, detail=f"Chat room '{name}' not found.")
 
     updated_names = [p for p in room.persona_names if p != persona_name]
-    updated_room = ChatRoom(name=room.name, persona_names=updated_names)
-    updated_rooms = [updated_room if r.name == room.name else r for r in config.chat_rooms]
+    updated_room = ChatRoom(name=room.name, persona_names=updated_names, echo_chamber=room.echo_chamber)
+    updated_rooms = [updated_room if r.name.lower() == room.name.lower() else r for r in config.chat_rooms]
+    save_chatrooms(ChatRoomsConfig(chat_rooms=updated_rooms))
+    return _to_response(updated_room)
+
+
+@router.put("/{name}/echo-chamber", response_model=ChatRoomResponse)
+def set_echo_chamber(name: str, req: EchoChamberRequest):
+    """Set the echo chamber flag for a chat room. Cannot modify the 'default' room."""
+    if name.lower() == DEFAULT_ROOM:
+        raise HTTPException(
+            status_code=400,
+            detail=f"The '{DEFAULT_ROOM}' chat room cannot be modified.",
+        )
+    config = get_chatrooms()
+    room = next((r for r in config.chat_rooms if r.name.lower() == name.lower()), None)
+    if not room:
+        raise HTTPException(status_code=404, detail=f"Chat room '{name}' not found.")
+    updated_room = ChatRoom(
+        name=room.name,
+        persona_names=list(room.persona_names),
+        echo_chamber=req.echo_chamber,
+    )
+    updated_rooms = [updated_room if r.name.lower() == room.name.lower() else r for r in config.chat_rooms]
     save_chatrooms(ChatRoomsConfig(chat_rooms=updated_rooms))
     return _to_response(updated_room)

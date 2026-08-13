@@ -281,6 +281,35 @@ html, body {
     height: 16px;
 }
 
+/* Echo chamber checkbox — styled to match the who-chooser radio buttons */
+.checkbox-option {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 8px 10px;
+    border-radius: 6px;
+    cursor: pointer;
+    transition: background 0.15s;
+    font-size: 0.9rem;
+    user-select: none;
+}
+
+.checkbox-option:hover {
+    background: var(--bg-tertiary);
+}
+
+.checkbox-option input[type="checkbox"] {
+    accent-color: var(--accent);
+    width: 16px;
+    height: 16px;
+    cursor: pointer;
+}
+
+.checkbox-option input[type="checkbox"]:disabled {
+    cursor: not-allowed;
+    opacity: 0.5;
+}
+
 /* Persona list */
 #persona-list {
     display: flex;
