@@ -36,7 +36,8 @@ The `persona_name_mentions` override should still behave the same way. That is, 
 persona by name, and `persona_name_mentions` is enabled in configuration, that persona should answer, regardless
 of the state of the "Who should answer?" chooser. This logic is the same as before.
 
-The only difference is the system prompt that we provide to the LLM for the selected persona.
+The only difference is the system prompt that we provide to the LLM for the selected persona, unless the
+suggested optimization is implemented (see "Suggested optimization").
 
 ### UI Changes
 
