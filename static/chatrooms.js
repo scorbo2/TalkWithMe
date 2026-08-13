@@ -198,8 +198,8 @@ async function updateEchoChamber(roomName, enabled) {
         echoChamberToggle.checked = false;
         return;
     }
-    // Skip no-op — prevents recursive API calls when applyChatRoomFilter() sets the checkbox
-    const currentRoom = allChatRooms.find(r => r.name === roomName);
+    // Skip no-op to avoid unnecessary PUTs (and handle case-insensitive room matching)
+    const currentRoom = allChatRooms.find(r => r.name.toLowerCase() === roomName.toLowerCase());
     if (currentRoom && currentRoom.echo_chamber === enabled) {
         return;
     }
