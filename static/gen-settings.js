@@ -90,7 +90,7 @@ async function submitGenSettings(e) {
     const payload = {
         ...current,
         // Restore null seed as 0 (API contract: 0 means no seed)
-        tts: { ...current.tts, seed: current.tts.seed ?? 0 },
+        tts: { ...current.tts, base_url: current.tts.base_url ?? "", seed: current.tts.seed ?? 0 },
         stt: { ...current.stt, base_url: current.stt.base_url ?? "" },
         general: {
             persona_name_mentions: gsfPersonaNameMentions.checked,
