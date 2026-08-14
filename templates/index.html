@@ -21,7 +21,8 @@
                 </select>
                 <button id="btn-persona-editor" title="Open persona editor">&#9998; Personas</button>
                 <button id="btn-chat-rooms" title="Manage chat rooms">&#127970; Chat Rooms</button>
-                <button id="btn-settings" title="Open settings">&#9881; Settings</button>
+                <button id="btn-gen-settings" title="Open settings">&#9881; Settings</button>
+                <button id="btn-settings" title="Open server configuration">&#128268; Servers</button>
                 <button id="btn-new-chat" title="Start a new chat">New Chat</button>
                 <button id="btn-tts-toggle" title="Toggle TTS playback" class="icon-btn">
                     <span id="tts-icon">&#128266;</span>
@@ -240,7 +241,7 @@
     <div id="settings-overlay" class="modal-overlay hidden" role="dialog" aria-modal="true" aria-labelledby="settings-title">
         <div class="modal-box">
             <div class="modal-header">
-                <h2 id="settings-title">Settings</h2>
+                <h2 id="settings-title">Servers</h2>
                 <button id="settings-btn-close" type="button" class="btn-icon-close" title="Close" aria-label="Close settings">&#10005;</button>
             </div>
             <div id="settings-error" class="pe-form-error hidden"></div>
@@ -346,6 +347,40 @@
         </div>
     </div>
 
+    <!-- General Settings Modal -->
+    <div id="gen-settings-overlay" class="modal-overlay hidden" role="dialog" aria-modal="true" aria-labelledby="gen-settings-title">
+        <div class="modal-box">
+            <div class="modal-header">
+                <h2 id="gen-settings-title">Settings</h2>
+                <button id="gen-settings-btn-close" type="button" class="btn-icon-close" title="Close" aria-label="Close settings">&#10005;</button>
+            </div>
+            <div id="gen-settings-error" class="pe-form-error hidden"></div>
+            <form id="gen-settings-form" novalidate>
+                <div class="settings-body">
+                    <fieldset class="settings-section">
+                        <legend>Chat Behaviour</legend>
+                        <div class="form-row form-row-inline">
+                            <div class="form-col">
+                                <label for="gsf-max-persona-replies">Max Persona Replies <span class="field-hint">(1–4)</span></label>
+                                <input id="gsf-max-persona-replies" type="number" min="1" max="4" required>
+                            </div>
+                        </div>
+                        <div class="form-row">
+                            <label class="settings-checkbox-label">
+                                <input id="gsf-persona-name-mentions" type="checkbox">
+                                <span>Auto-select persona on name mention</span>
+                            </label>
+                        </div>
+                    </fieldset>
+                </div>
+                <div class="form-actions">
+                    <button type="button" id="gen-settings-btn-cancel" class="btn-secondary">Cancel</button>
+                    <button type="submit" id="gen-settings-btn-save" class="btn-accent">Save</button>
+                </div>
+            </form>
+        </div>
+    </div>
+
     <!-- Load modules in dependency order -->
     <!-- Be careful with the load order!  -->
     <!-- state.js first, app.js last.     -->
@@ -359,6 +394,7 @@
     <script src="/static/persona.js"></script>
     <script src="/static/chatrooms.js"></script>
     <script src="/static/settings.js"></script>
+    <script src="/static/gen-settings.js"></script>
     <script src="/static/app.js"></script>
 </body>
 </html>

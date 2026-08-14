@@ -88,6 +88,7 @@ stt:
 
 general:
   persona_name_mentions: true
+  max_persona_replies: 1
 ```
 
 Note that TTS and STT are both optional! You can mark them as disabled
@@ -226,6 +227,10 @@ If you prefer to hear the persona's response in one clear, contiguous audio play
 
 If you want to hear each sentence as soon as it has been synthesized, without having to wait for the ENTIRE response to be synthesized, and you don't mind the occasional pause in between sentences, then enable streaming mode in configuration.
 
+## Persona-to-persona chat
+
+By default, only one AI persona in the current chat room will answer your prompt. You can make it feel more like a group chat by turning up the `max_persona_replies` option in `settings.yaml` (or by visiting the settings dialog). You can choose any number between 1 and 4. The given number of AI personas will answer your prompt (or reply to the persona who responded before them). Your personas may argue amongst themselves, depending on their respective system prompts!
+
 ## Chat persistence
 
 Each chat room persists its chat history to a dedicated subdirectory in the top-level `chatrooms` directory.
@@ -322,6 +327,7 @@ application, depending on how much VRAM you can throw at it.
   - Rename `language` to `reference_audio_language` in persona config (#46)
   - Avoid Jinja2 version 3.1.5 as a mitigation for #50
   - Add "echo chamber" option to chat rooms (#51)
+  - Add persona-to-persona chat with new option `max_persona_replies` (#43)
 
 ## License
 

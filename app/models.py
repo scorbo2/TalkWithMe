@@ -194,6 +194,7 @@ class STTSettingsRequest(BaseModel):
 class GeneralSettingsRequest(BaseModel):
     """General configuration from the settings editor."""
     persona_name_mentions: bool = True
+    max_persona_replies: int = Field(default=1, ge=1, le=4)
 
 
 class SettingsUpdateRequest(BaseModel):
@@ -233,6 +234,7 @@ class STTSettingsResponse(BaseModel):
 class GeneralSettingsResponse(BaseModel):
     """General configuration for the frontend."""
     persona_name_mentions: bool
+    max_persona_replies: int
 
 
 class SettingsResponse(BaseModel):

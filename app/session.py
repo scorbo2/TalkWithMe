@@ -107,7 +107,7 @@ class SessionManager:
         - Conversation history, reformatted so:
             * User messages keep role "user".
             * This persona's messages keep role "assistant".
-            * Other personas' messages become "assistant" with prefix "[Name]: <text>".
+            * Other personas' messages become "user" with prefix "[Name]: <text>".
         - Optionally limited to the last *max_turns* history entries.
         """
         messages: List[Dict[str, str]] = [
@@ -125,10 +125,12 @@ class SessionManager:
                 if msg.persona == responding_persona:
                     messages.append({"role": "assistant", "content": msg.content})
                 else:
-                    # Another persona spoke — prefix it so the model knows
+                    # Another persona spoke — use role "user" to avoid consecutive
+                    # assistant messages (which many LLMs reject with 400) and to
+                    # prevent the model from treating another persona's words as its own.
                     messages.append(
                         {
-                            "role": "assistant",
+                            "role": "user",
                             "content": f"[{msg.persona}]: {msg.content}",
                         }
                     )

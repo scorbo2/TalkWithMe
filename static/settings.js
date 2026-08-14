@@ -133,10 +133,11 @@ function collectSettingsFromForm() {
             max_tokens: parseInt(sfLlmMaxTokens.value, 10),
             temperature: parseFloat(sfLlmTemperature.value),
         },
-        // No UI for general settings yet; preserve current values so they
+        // No UI for general settings in this dialog; preserve current values so they
         // survive a settings save round-trip.
         general: {
             persona_name_mentions: personaNameMentionsEnabled,
+            max_persona_replies: maxPersonaReplies,
         },
         tts: {
             enabled: sfTtsEnabled.checked,
@@ -220,6 +221,7 @@ async function submitSettings(e) {
         // Update in-memory general settings
         if (data.general != null) {
             personaNameMentionsEnabled = data.general.persona_name_mentions;
+            maxPersonaReplies = data.general.max_persona_replies ?? 1;
         }
         // Re-check service health to update UI availability after settings change
         await checkTTSHealth();

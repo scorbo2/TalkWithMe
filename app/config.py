@@ -69,6 +69,7 @@ class STTConfig(BaseModel):
 class GeneralConfig(BaseModel):
     """Application-wide feature flags and preferences."""
     persona_name_mentions: bool = True
+    max_persona_replies: int = Field(default=1, ge=1, le=4)
 
 
 class AppSettings(BaseModel):

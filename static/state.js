@@ -12,6 +12,7 @@
 let personas = [];
 let selectedPersona = null;
 let personaNameMentionsEnabled = true;
+let maxPersonaReplies = 1;
 let ttsEnabled = false;
 let ttsAvailable = false;
 let ttsStreaming = false;
@@ -46,9 +47,14 @@ let isPlayingAudioBuffer = false;
 // Chat persistence — track message IDs for audio association
 let pendingUserMessageId = null; // UUID generated before sending, used for STT audio
 let currentAssistantMessageId = null; // UUID from server's "done" event, used for TTS audio
+let currentAssistantRow = null; // The active assistant bubble row (updated on each "start" event)
+// Stable TTS message ID per persona. Set by "done" for each persona.
+// Keyed by persona name so that in-flight fetches for Persona A are not
+// clobbered when Persona B's "start" event fires.
+const streamingTTSMessageIdByPersona = new Map();
 // Buffers audio fetched during streaming TTS (before message_id is known).
-// Each entry: { audio_base64, mime_type }. Flushed when "done" event arrives.
-let ttsAudioBuffer = [];
+// Keyed by persona name. Each value is an array of { audio_base64, mime_type }.
+const ttsAudioBufferByPersona = new Map();
 
 const THEME_STORAGE_KEY = "talkwithme_theme";
 
@@ -138,3 +144,10 @@ const sfSttEnabled = document.getElementById("sf-stt-enabled");
 const sfSttFields = document.getElementById("sf-stt-fields");
 const sfSttBaseUrl = document.getElementById("sf-stt-base-url");
 const sfSttTimeout = document.getElementById("sf-stt-timeout");
+
+// General Settings Modal (used by gen-settings.js)
+const genSettingsOverlay = document.getElementById("gen-settings-overlay");
+const genSettingsForm = document.getElementById("gen-settings-form");
+const genSettingsError = document.getElementById("gen-settings-error");
+const gsfMaxPersonaReplies = document.getElementById("gsf-max-persona-replies");
+const gsfPersonaNameMentions = document.getElementById("gsf-persona-name-mentions");

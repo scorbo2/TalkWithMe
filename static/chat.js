@@ -109,10 +109,10 @@ async function sendMessage() {
     isStreaming = true;
     sendBtn.disabled = true;
 
-    // Create a placeholder assistant bubble for streaming
+    // Create a placeholder assistant bubble for the first responder
     const who = getWhoAnswers();
-    const assistantRow = createAssistantBubble(who);
-    messagesEl.appendChild(assistantRow);
+    currentAssistantRow = createAssistantBubble(who);
+    messagesEl.appendChild(currentAssistantRow);
     scrollToBottom();
 
     try {
@@ -128,7 +128,7 @@ async function sendMessage() {
         });
 
         if (!resp.ok || !resp.body) {
-            handleSSEEvent({ type: "error", message: `Chat request failed (HTTP ${resp.status}).` }, assistantRow);
+            handleSSEEvent({ type: "error", message: `Chat request failed (HTTP ${resp.status}).` });
             return;
         }
 
@@ -151,7 +151,7 @@ async function sendMessage() {
 
                 try {
                     const event = JSON.parse(json);
-                    handleSSEEvent(event, assistantRow);
+                    handleSSEEvent(event);
                 } catch (e) {
                     console.warn("Failed to parse SSE event:", json, e);
                 }
@@ -159,7 +159,7 @@ async function sendMessage() {
         }
     } catch (err) {
         console.error("Chat error:", err);
-        handleSSEEvent({ type: "error", message: "Connection failed. Is the LLM server running?" }, assistantRow);
+        handleSSEEvent({ type: "error", message: "Connection failed. Is the LLM server running?" });
     } finally {
         isStreaming = false;
         sendBtn.disabled = false;
@@ -172,7 +172,7 @@ async function sendMessage() {
    SSE event handling
    ========================================================================== */
 
-function handleSSEEvent(event, assistantRow) {
+function handleSSEEvent(event) {
     switch (event.type) {
         case "start": {
             // A new response is starting — clear any leftover message ID from
@@ -180,12 +180,23 @@ function handleSSEEvent(event, assistantRow) {
             // associated with this new message.
             currentAssistantMessageId = null;
 
+            // If currentAssistantRow already has content, this is a subsequent persona
+            // reply — create a fresh bubble instead of reusing the existing one.
+            const existingBubble = currentAssistantRow && currentAssistantRow.querySelector(".bubble");
+            if (existingBubble && existingBubble.textContent.trim()) {
+                currentAssistantRow = createAssistantBubble(event.persona);
+                messagesEl.appendChild(currentAssistantRow);
+                scrollToBottom();
+            }
+
             // Update the bubble with the actual persona name
             const persona = personas.find(p => p.name === event.persona);
-            setupAssistantBubble(assistantRow, persona || { name: event.persona, avatar_color: "#888" });
+            setupAssistantBubble(currentAssistantRow, persona || { name: event.persona, avatar_color: "#888" });
 
-            // Visual confirmation: update selected persona in sidebar immediately
-            if (event.persona && event.persona !== selectedPersona) {
+            // Visual confirmation: update selected persona in sidebar immediately.
+            // Only on the FIRST start event — subsequent persona replies should not
+            // hijack the user's selection in the sidebar.
+            if (!existingBubble?.textContent?.trim() && event.persona && event.persona !== selectedPersona) {
                 selectedPersona = event.persona;
                 highlightSelectedPersona();
             }
@@ -194,11 +205,13 @@ function handleSSEEvent(event, assistantRow) {
             if (ttsStreaming) {
                 currentStreamingPersona = event.persona;
                 sentenceBuffer = "";
+                // Do NOT clear streamingTTSMessageIdByPersona here — it's keyed per persona,
+                // so a new persona starting does not affect in-flight fetches for prior personas.
             }
             break;
         }
         case "token": {
-            const bubble = assistantRow.querySelector(".bubble");
+            const bubble = currentAssistantRow && currentAssistantRow.querySelector(".bubble");
             if (bubble) {
                 bubble.textContent += event.token;
                 scrollToBottom();
@@ -215,18 +228,18 @@ function handleSSEEvent(event, assistantRow) {
         }
         case "done": {
             // Track the assistant message ID for TTS audio association.
-            // In streaming mode, async audio fetches are still in-flight when
-            // this event arrives. They will use currentAssistantMessageId as
-            // a fallback when they resolve (see fetchTTS).
             if (event.message_id) {
                 currentAssistantMessageId = event.message_id;
                 // Tag the live assistant bubble with the message ID so audio
                 // buttons can be injected into the correct DOM node later.
-                if (assistantRow) {
-                    assistantRow.dataset.messageId = event.message_id;
+                if (currentAssistantRow) {
+                    currentAssistantRow.dataset.messageId = event.message_id;
                 }
+                // Backfill the ID into any still-queued streaming TTS items and
+                // record it per-persona so in-flight fetches resolve correctly.
+                backfillStreamingTTSMessageId(event.persona, event.message_id);
                 // Persist any streaming-mode audio that was buffered before the ID was known.
-                flushTtsAudioBuffer(event.message_id);
+                flushTtsAudioBuffer(event.persona, event.message_id);
             }
 
             if (ttsEnabled && event.text) {
@@ -249,7 +262,7 @@ function handleSSEEvent(event, assistantRow) {
             break;
         }
         case "error": {
-            const bubble = assistantRow.querySelector(".bubble");
+            const bubble = currentAssistantRow && currentAssistantRow.querySelector(".bubble");
             if (bubble) {
                 bubble.textContent += `\n\n[Error: ${event.message}]`;
             }

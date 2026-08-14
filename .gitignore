@@ -5,3 +5,5 @@ personas.yaml.*
 future*.md
 chatrooms/
 chatrooms.yaml.*
+testsetup.sh
+restore.sh

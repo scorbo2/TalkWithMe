@@ -44,6 +44,7 @@ def _to_response(cfg: AppSettings) -> SettingsResponse:
         ),
         general=GeneralSettingsResponse(
             persona_name_mentions=cfg.general.persona_name_mentions,
+            max_persona_replies=cfg.general.max_persona_replies,
         ),
     )
 
@@ -89,6 +90,7 @@ def update_settings(req: SettingsUpdateRequest):
         ),
         general=GeneralConfig(
             persona_name_mentions=req.general.persona_name_mentions,
+            max_persona_replies=req.general.max_persona_replies,
         ),
     )
 
