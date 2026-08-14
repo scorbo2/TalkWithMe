@@ -11,7 +11,7 @@ one of the configured AI personas answers. The method of deciding which persona 
 is driven by the current value of the "Who should answer?" chooser in the left panel:
 
 - LLM decides: the `router_hints` for each persona in the current chat room are sent to the LLM with the user's prompt, 
-  and the LLM returns the the name of the persona who will answer the user.
+  and the LLM returns the name of the persona who will answer the user.
 - Surprise me: a persona is selected at random from the set of personas in the current chat room.
 - Selected persona: the user can click a specific persona to select it, and that persona will answer.
 
