@@ -61,7 +61,7 @@ A new "Settings" dialog should be introduced to represent the "general" config s
 - `persona_name_mentions`, implemented by a previous feature but never exposed in the UI
 
 Bringing up the settings dialog and changing these settings should cause an immediate write of `settings.yaml` with
-the new values as soon as the dialog is confirmed by the user. Changes take effect immedately.
+the new values as soon as the dialog is confirmed by the user. Changes take effect immediately.
 
 There are no changes needed in the left panel, nor in the main chat window. We just need to expose the property
 in the new Settings dialog.
