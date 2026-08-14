@@ -17,4 +17,4 @@ stt:
   timeout: 30.0
 general:
   persona_name_mentions: true
-  max_persona_replies: 2
+  max_persona_replies: 1
