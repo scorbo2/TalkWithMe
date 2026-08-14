@@ -16,7 +16,7 @@ is driven by the current value of the "Who should answer?" chooser in the left p
 - Selected persona: the user can click a specific persona to select it, and that persona will answer.
 
 The "Who should answer?" decision can be overridden by the `persona_name_mentions` flag, which will automatically
-select a specific persona if the user names on in their prompt.
+select a specific persona if the user names one in their prompt.
 
 ## Desired state
 
