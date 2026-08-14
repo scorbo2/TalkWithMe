@@ -328,6 +328,7 @@ application, depending on how much VRAM you can throw at it.
   - Avoid Jinja2 version 3.1.5 as a mitigation for #50
   - Add "echo chamber" option to chat rooms (#51)
   - Add persona-to-persona chat with new option `max_persona_replies` (#43)
+  - Fix scroll problem in Personas dialog (#58)
 
 ## License
 
