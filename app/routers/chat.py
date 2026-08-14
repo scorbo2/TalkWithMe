@@ -45,8 +45,8 @@ def _resolve_room_personas(chat_room: str) -> list[str]:
         (r for r in chatrooms_config.chat_rooms if r.name.lower() == chat_room.lower()),
         None,
     )
-    if room and room.persona_names:
-        # Only include personas that actually exist in the config
+    if room is not None:
+        # Only include personas that actually exist in the config (empty list means "no one is here")
         return [n for n in room.persona_names if n in all_names]
 
     # Unknown room — fall back to all personas rather than blocking the chat
