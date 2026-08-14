@@ -102,6 +102,9 @@ async def _pick_persona(who_answers: str, user_message: str, chat_room: str) -> 
     """
     eligible = _resolve_room_personas(chat_room)
 
+    if not eligible:
+        raise ValueError(f"No eligible personas for room '{chat_room}'")
+
     if who_answers == "random":
         return random.choice(eligible)
 
@@ -140,8 +143,12 @@ async def _chat_stream(req: ChatRequest) -> AsyncIterator[str]:
     config = get_personas()
     eligible = _resolve_room_personas(req.chat_room)
 
+    if not eligible:
+        yield f'data: {json.dumps({"type": "error", "message": "No eligible personas for this room"})}\n\n'
+        return
+
     settings = get_settings()
-    max_replies = min(settings.general.max_persona_replies, max(len(eligible), 1))
+    max_replies = min(settings.general.max_persona_replies, len(eligible))
 
     # Pick the first persona using the configured strategy
     first_persona_name = await _pick_persona(req.who_answers, req.message, req.chat_room)
