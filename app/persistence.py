@@ -6,15 +6,23 @@ written alongside it using the message UUID as filename prefix.
 
 This module is intentionally framework-agnostic so it can be called from
 routers, the session manager, or tests without pulling in FastAPI deps.
+
+Concurrency note: the audio upload endpoint is a sync route (it runs in
+FastAPI's thread pool) and the frontend fires uploads without awaiting
+them, so calls here can interleave. All access to a room's history.json
+is serialized through _HISTORY_LOCK: read-modify-write cycles stay
+atomic, and readers never observe a half-written file.
 """
 
 import base64
 import json
 import logging
 import shutil
+import threading
+import uuid
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 from app.models import ChatMessage
 
@@ -23,6 +31,24 @@ logger = logging.getLogger(__name__)
 # Top-level persistence root — created lazily on first write.
 # app/persistence.py → .parent → app/ → .parent → project root
 _PERSISTENCE_ROOT = Path(__file__).resolve().parent.parent / "chatrooms"
+
+# Serializes all read-modify-write cycles on history.json (and all reads,
+# so a reader can never observe a file mid-truncate).
+_HISTORY_LOCK = threading.Lock()
+
+# Audio that arrived for a message whose row has not been persisted yet.
+# This happens by design in two flows:
+#   - STT: the browser uploads the recording BEFORE the chat request even
+#     creates the user message row.
+#   - streaming TTS: sentences are synthesized (and uploaded) while the
+#     assistant's reply is still streaming; the row only lands after the
+#     token stream finishes.
+# Keyed by (room_name, message_id) -> list of staging filenames written to
+# disk in the meantime. persist_message() drains the list for a new message
+# ID and attaches the files, so no audio is silently dropped or overwritten.
+# The staging registry is in-memory, so a process restart between the upload
+# and the row creation leaves the (valid) files on disk unreferenced.
+_pending_audio: Dict[Tuple[str, str], List[str]] = {}
 
 
 def _room_dir(room_name: str) -> Path:
@@ -51,6 +77,40 @@ def _audio_filename(message_id: str, index: int, mime_type: Optional[str] = None
     return f"{message_id}_{index}{_audio_file_extension(mime_type)}"
 
 
+def _staged_audio_filename(message_id: str, mime_type: Optional[str]) -> str:
+    """Generate a stable, unique filename for pre-row audio.
+
+    The file is written before the message row exists, so its final position
+    in the message's audio list is unknown. A stable unique name (rather than
+    a guessed index) means the name is final on first write: playback
+    buttons injected with it during the live session keep working, and
+    persist_message() simply records the same name in history.json.
+    """
+    return f"{message_id}_pending_{uuid.uuid4().hex[:8]}{_audio_file_extension(mime_type)}"
+
+
+def _read_history_file(room_name: str) -> Dict[str, Any]:
+    """Load the room's history JSON (or a fresh skeleton if none exists).
+
+    Caller must hold _HISTORY_LOCK.
+    """
+    path = _history_path(room_name)
+    if path.exists():
+        with open(path) as f:
+            return json.load(f)
+    return {"datetime": None, "messages": []}
+
+
+def _write_history_file(room_name: str, data: Dict[str, Any]) -> None:
+    """Atomically-enough write the room's history JSON.
+
+    Caller must hold _HISTORY_LOCK. The directory is expected to exist
+    (every public write path creates it first).
+    """
+    with open(_history_path(room_name), "w") as f:
+        json.dump(data, f, indent=2, ensure_ascii=False)
+
+
 # ---------------------------------------------------------------------------
 # Message persistence
 # ---------------------------------------------------------------------------
@@ -58,33 +118,35 @@ def _audio_filename(message_id: str, index: int, mime_type: Optional[str] = None
 def persist_message(room_name: str, message: ChatMessage, message_id: str) -> str:
     """Append a message to the room's persisted history and write to disk.
 
+    Any audio that was uploaded for this message ID before the row existed
+    (see _pending_audio) is attached to the new row's audio list in this
+    same write.
+
     Returns the message ID (same one passed in).
     """
-    room = _room_dir(room_name)
-    room.mkdir(parents=True, exist_ok=True)
-    path = _history_path(room_name)
+    with _HISTORY_LOCK:
+        room = _room_dir(room_name)
+        room.mkdir(parents=True, exist_ok=True)
 
-    # Load existing history or start fresh
-    if path.exists():
-        with open(path) as f:
-            data: Dict[str, Any] = json.load(f)
-    else:
-        data = {"datetime": None, "messages": []}
+        data = _read_history_file(room_name)
+        data["datetime"] = datetime.now().astimezone().isoformat()
 
-    now = datetime.now().astimezone().isoformat()
-    data["datetime"] = now
+        sender = "USER" if message.role == "user" else (message.persona or "unknown")
+        entry = {
+            "id": message_id,
+            "sender": sender,
+            "text": message.content,
+            "audio": list(_pending_audio.pop((room_name, message_id), [])),
+        }
+        data["messages"].append(entry)
 
-    sender = "USER" if message.role == "user" else (message.persona or "unknown")
-    data["messages"].append({
-        "id": message_id,
-        "sender": sender,
-        "text": message.content,
-        "audio": [],
-    })
+        _write_history_file(room_name, data)
 
-    with open(path, "w") as f:
-        json.dump(data, f, indent=2, ensure_ascii=False)
-
+    if entry["audio"]:
+        logger.info(
+            "Attached %d pre-row audio file(s) to message %s in room '%s'",
+            len(entry["audio"]), message_id, room_name,
+        )
     logger.debug("Persisted message %s to room '%s'", message_id, room_name)
     return message_id
 
@@ -97,38 +159,50 @@ def persist_audio(
 ) -> str:
     """Save an audio file for a message and update its audio list in history.
 
+    If the message row does not exist yet (STT audio uploaded before the chat
+    request creates the user message, or a TTS sentence synthesized while the
+    reply is still streaming), the file is staged under a unique name and the
+    name is remembered; persist_message() attaches it when the row is created.
+    Never returns a filename that another upload can overwrite.
+
     Returns the filename that was written.
     """
-    room = _room_dir(room_name)
-    room.mkdir(parents=True, exist_ok=True)
-    path = _history_path(room_name)
+    with _HISTORY_LOCK:
+        room = _room_dir(room_name)
+        room.mkdir(parents=True, exist_ok=True)
 
-    # Single read — determine next index and locate the target message
-    data: Dict[str, Any] = {"datetime": None, "messages": []}
-    if path.exists():
-        with open(path) as f:
-            data = json.load(f)
+        data = _read_history_file(room_name)
 
-    index = 0
-    msg_found = None
-    for msg in data.get("messages", []):
-        if msg["id"] == message_id:
-            index = len(msg.get("audio", []))
-            msg_found = msg
-            break
+        index = 0
+        msg_found = None
+        for msg in data.get("messages", []):
+            if msg["id"] == message_id:
+                index = len(msg.get("audio", []))
+                msg_found = msg
+                break
 
-    filename = _audio_filename(message_id, index, mime_type)
+        raw = base64.b64decode(audio_base64)
 
-    # Write the raw audio bytes
-    raw = base64.b64decode(audio_base64)
-    with open(room / filename, "wb") as f:
-        f.write(raw)
+        if msg_found is None:
+            # Stage until the message row exists. Writing an unlinked
+            # "<id>_0.<ext>" here is how early streaming/STT uploads used to
+            # overwrite each other and vanish on reload.
+            filename = _staged_audio_filename(message_id, mime_type)
+            with open(room / filename, "wb") as f:
+                f.write(raw)
+            _pending_audio.setdefault((room_name, message_id), []).append(filename)
+            logger.warning(
+                "Audio for message %s in room '%s' arrived before the message "
+                "row was persisted; staged as '%s'",
+                message_id, room_name, filename,
+            )
+            return filename
 
-    # Update the message's audio list in a single write
-    if msg_found:
+        filename = _audio_filename(message_id, index, mime_type)
+        with open(room / filename, "wb") as f:
+            f.write(raw)
         msg_found.setdefault("audio", []).append(filename)
-    with open(path, "w") as f:
-        json.dump(data, f, indent=2, ensure_ascii=False)
+        _write_history_file(room_name, data)
 
     logger.debug("Persisted audio '%s' for message %s in room '%s'", filename, message_id, room_name)
     return filename
@@ -140,13 +214,8 @@ def load_history(room_name: str) -> List[Dict[str, Any]]:
     Returns a list of message dicts matching the JSON schema.
     Returns an empty list if no history exists.
     """
-    path = _history_path(room_name)
-    if not path.exists():
-        return []
-
-    with open(path) as f:
-        data: Dict[str, Any] = json.load(f)
-
+    with _HISTORY_LOCK:
+        data = _read_history_file(room_name)
     return data.get("messages", [])
 
 
@@ -156,13 +225,8 @@ def load_history_with_metadata(room_name: str) -> Dict[str, Any]:
     Returns a dict with "datetime" and "messages" keys.
     Returns {"datetime": None, "messages": []} if no history exists.
     """
-    path = _history_path(room_name)
-    if not path.exists():
-        return {"datetime": None, "messages": []}
-
-    with open(path) as f:
-        data: Dict[str, Any] = json.load(f)
-
+    with _HISTORY_LOCK:
+        data = _read_history_file(room_name)
     return {
         "datetime": data.get("datetime"),
         "messages": data.get("messages", []),
@@ -173,15 +237,21 @@ def clear_room(room_name: str) -> None:
     """Delete all persisted files for a room.
 
     The subdirectory itself is preserved (so it still exists for future messages).
+    Staged audio awaiting this room's message rows is dropped from the registry
+    too — the files are being deleted anyway.
     """
-    room = _room_dir(room_name)
-    if not room.exists():
-        return
+    with _HISTORY_LOCK:
+        for key in [k for k in _pending_audio if k[0] == room_name]:
+            _pending_audio.pop(key, None)
 
-    for item in room.iterdir():
-        if item.is_file():
-            item.unlink()
-        elif item.is_dir():
-            shutil.rmtree(item)
+        room = _room_dir(room_name)
+        if not room.exists():
+            return
+
+        for item in room.iterdir():
+            if item.is_file():
+                item.unlink()
+            elif item.is_dir():
+                shutil.rmtree(item)
 
     logger.info("Cleared persistence for room '%s'", room_name)

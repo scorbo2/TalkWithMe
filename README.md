@@ -329,6 +329,7 @@ application, depending on how much VRAM you can throw at it.
   - Add "echo chamber" option to chat rooms (#51)
   - Add persona-to-persona chat with new option `max_persona_replies` (#43)
   - Fix scroll problem in Personas dialog (#58)
+  - Fix audio misattribution bug (#62)
 
 ## License
 
