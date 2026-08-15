@@ -5,9 +5,10 @@
  *  - Non-streaming: enqueue full text after LLM finishes responding.
  *  - Streaming: split response into sentences, fetch and play in a pipeline.
  *
- * Audio persistence: each TTS fetch carries its own message ID so audio
- * is always associated with the correct message, even when the global
- * currentAssistantMessageId has been cleared by a subsequent message.
+ * Audio persistence: each TTS item is stamped with its message ID at
+ * enqueue time (the ID is issued by the server in the "start" event), so
+ * audio is always associated with the correct message regardless of when
+ * the fetch resolves — no shared-state lookup at resolution time.
  */
 
 /* ==========================================================================
@@ -95,25 +96,11 @@ function accumulateForTTS(token, personaName) {
 
 /** Push a sentence into the fetch queue and kick off the fetch pipeline. */
 function enqueueStreamingTTS(personaName, text) {
-    // In streaming mode, message_id isn't known until the "done" event.
-    // Pass null here; backfillStreamingTTSMessageId() will fill it in when "done" fires.
-    ttsRequestQueue.push({ personaName, text, messageId: null });
+    // Stamp the current message ID at enqueue time. It was issued by the
+    // server in the "start" event, so it is already correct for this
+    // response — no backfilling needed when "done" arrives.
+    ttsRequestQueue.push({ personaName, text, messageId: currentAssistantMessageId });
     processTTSRequests();
-}
-
-/**
- * Called by the "done" event handler to assign the now-known message ID to
- * all still-queued (not yet fetched) streaming TTS items for this persona,
- * and to store it so any currently in-flight fetches for this persona resolve
- * correctly via the per-persona map.
- */
-function backfillStreamingTTSMessageId(personaName, messageId) {
-    streamingTTSMessageIdByPersona.set(personaName, messageId);
-    for (const item of ttsRequestQueue) {
-        if (item.personaName === personaName && item.messageId === null) {
-            item.messageId = messageId;
-        }
-    }
 }
 
 /**
@@ -172,11 +159,8 @@ async function processAudioBufferQueue() {
  * @param {string} personaName - Which persona to synthesize for.
  * @param {string} text - Text to synthesize.
  * @param {string|null} messageId - The message ID this audio belongs to.
- *   For queued streaming items this is backfilled by backfillStreamingTTSMessageId()
- *   when "done" fires. For items already dequeued (in-flight), falls back to
- *   streamingTTSMessageIdByPersona, which is keyed per persona so that a
- *   subsequent persona's "start" event never clobbers a prior persona's entry.
- *
+ *   Stamped at enqueue time from the "start" event, so it is correct
+ *   regardless of when this fetch resolves.
  */
 async function fetchTTS(personaName, text, messageId) {
     const resp = await fetch("/api/tts", {
@@ -193,25 +177,21 @@ async function fetchTTS(personaName, text, messageId) {
     const data = await resp.json();
     if (!data.audio_base64) return null;
 
-    // Use the passed messageId if available (non-streaming, or backfilled by backfillStreamingTTSMessageId).
-    // Fall back to the per-persona map for in-flight fetches whose item was already dequeued
-    // before "done" fired. Using a per-persona Map means a subsequent persona's "start" event
-    // cannot clobber the prior persona's entry.
-    const effectiveId = messageId || streamingTTSMessageIdByPersona.get(personaName) || null;
-    if (effectiveId) {
-        uploadAudio(currentChatRoom, effectiveId, data.audio_base64, "audio/wav")
+    // Persist the audio against the message it was enqueued for.
+    if (messageId) {
+        uploadAudio(currentChatRoom, messageId, data.audio_base64, "audio/wav")
             .then(result => {
                 if (result && result.filename) {
                     // Inject a playback button into the live chat bubble
-                    addAudioButtonToAssistantMessage(effectiveId, result.filename);
+                    addAudioButtonToAssistantMessage(messageId, result.filename);
                 }
             })
             .catch(err => console.warn("Failed to persist TTS audio:", err));
     } else {
-        // Safety net: if somehow no ID is available yet, buffer by persona for later flush.
-        const buf = ttsAudioBufferByPersona.get(personaName) || [];
-        buf.push({ audio_base64: data.audio_base64, mime_type: "audio/wav" });
-        ttsAudioBufferByPersona.set(personaName, buf);
+        // Should not happen with the current protocol (the "start" event
+        // always carries a message_id). Warn loudly so a server/frontend
+        // version mismatch is visible instead of silently dropping audio.
+        console.warn("fetchTTS: no message ID available; audio will play but not be persisted");
     }
 
     // Decode base64 to ArrayBuffer for playback
@@ -239,25 +219,3 @@ function playAudio(buffer) {
     });
 }
 
-/**
- * Persist any audio buffered for a persona during streaming TTS.
- *
- * During streaming, TTS sentences are fetched as tokens arrive, but the
- * assistant's message_id isn't known until the "done" event. This function
- * flushes the buffer for the given persona once the ID is available.
- */
-function flushTtsAudioBuffer(personaName, messageId) {
-    if (!messageId || !personaName) return;
-    const buf = ttsAudioBufferByPersona.get(personaName);
-    if (!buf || buf.length === 0) return;
-    for (const entry of buf) {
-        uploadAudio(currentChatRoom, messageId, entry.audio_base64, entry.mime_type)
-            .then(result => {
-                if (result && result.filename) {
-                    addAudioButtonToAssistantMessage(messageId, result.filename);
-                }
-            })
-            .catch(err => console.warn("Failed to persist buffered TTS audio:", err));
-    }
-    ttsAudioBufferByPersona.delete(personaName);
-}

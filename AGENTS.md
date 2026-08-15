@@ -37,7 +37,8 @@ To force a re-read of all three files, call `app.config.reload_all()`.
 | `persistence.js` | History loading, audio upload helpers, audio URL generation |
 | `persona.js` | Persona sidebar + editor modal (CRUD) |
 | `chatrooms.js` | Chat room dropdown, room filtering, room editor, room switching with history load |
-| `settings.js` | Settings modal (LLM/TTS/STT config) |
+| `settings.js` | Servers modal (LLM/TTS/STT config) |
+| `gen-settings.js` | General settings modal (max persona replies, name mentions) |
 | `tts.js` | TTS synthesis, audio queues, Web Audio playback, audio persistence |
 | `stt.js` | Microphone recording, STT proxy, transcript insertion, audio persistence |
 | `theme.js` | Theme toggle |
@@ -47,7 +48,9 @@ To force a re-read of all three files, call `app.config.reload_all()`.
 
 `POST /api/chat` streams SSE with typed JSON events: `start`, `token`, `done`, `error`, `complete`.
 The request body includes `chat_room` (which room to persist to) and `message_id` (frontend-generated UUID for audio association).
-The `done` event returns `message_id` (server-generated UUID for the assistant message).
+With `general.max_persona_replies` > 1, a single request streams multiple `start`/`token`/`done` cycles (one per responding persona).
+Both `start` and `done` carry `message_id` (server-generated UUID for that persona's assistant message).
+`start` carries it first **on purpose**: the frontend stamps it onto streaming TTS items at enqueue time, so the ID must be generated *before* the `start` event is emitted — moving it back after the stream reintroduces cross-turn audio misattribution.
 The frontend switches on `type` in `handleSSEEvent()` in `chat.js`.
 
 Persona selection modes: `"router"` (LLM picks, low-temp 16-token call), `"random"`, or an explicit persona name.
@@ -70,7 +73,7 @@ The `SessionManager.add_user_message()` and `add_assistant_message()` methods ta
 
 Each has its own `enabled` + `base_url` in `settings.yaml`. Use the `is_active` property (requires both enabled AND a non-empty base_url) instead of checking `enabled` alone.
 
-Both TTS and STT capture audio and persist it to the current room via `persistence.js`. TTS audio is associated with the assistant message ID from the `done` event. STT audio is associated with the user message ID generated before `sendMessage()`.
+Both TTS and STT capture audio and persist it to the current room via `persistence.js`. TTS audio is associated with the assistant message ID issued in the `start` event (stamped onto each TTS item at enqueue time — never looked up in shared state at fetch-resolution time). STT audio is associated with the user message ID generated before `sendMessage()`.
 
 ## Persona CRUD cascades
 

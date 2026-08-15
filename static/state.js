@@ -46,15 +46,9 @@ let isPlayingAudioBuffer = false;
 
 // Chat persistence — track message IDs for audio association
 let pendingUserMessageId = null; // UUID generated before sending, used for STT audio
-let currentAssistantMessageId = null; // UUID from server's "done" event, used for TTS audio
+// UUID issued by the server in the "start" event; stamped onto TTS items at enqueue time
+let currentAssistantMessageId = null;
 let currentAssistantRow = null; // The active assistant bubble row (updated on each "start" event)
-// Stable TTS message ID per persona. Set by "done" for each persona.
-// Keyed by persona name so that in-flight fetches for Persona A are not
-// clobbered when Persona B's "start" event fires.
-const streamingTTSMessageIdByPersona = new Map();
-// Buffers audio fetched during streaming TTS (before message_id is known).
-// Keyed by persona name. Each value is an array of { audio_base64, mime_type }.
-const ttsAudioBufferByPersona = new Map();
 
 const THEME_STORAGE_KEY = "talkwithme_theme";
 

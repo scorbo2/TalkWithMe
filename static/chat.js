@@ -175,11 +175,6 @@ async function sendMessage() {
 function handleSSEEvent(event) {
     switch (event.type) {
         case "start": {
-            // A new response is starting — clear any leftover message ID from
-            // the previous response so its late-arriving audio doesn't get
-            // associated with this new message.
-            currentAssistantMessageId = null;
-
             // If currentAssistantRow already has content, this is a subsequent persona
             // reply — create a fresh bubble instead of reusing the existing one.
             const existingBubble = currentAssistantRow && currentAssistantRow.querySelector(".bubble");
@@ -187,6 +182,17 @@ function handleSSEEvent(event) {
                 currentAssistantRow = createAssistantBubble(event.persona);
                 messagesEl.appendChild(currentAssistantRow);
                 scrollToBottom();
+            }
+
+            // Adopt the server-issued message ID for this response. Every TTS item
+            // enqueued from this point on carries this ID explicitly, so audio is
+            // associated with the correct message regardless of when each fetch
+            // resolves. (The old approach — clear the global here and backfill on
+            // "done" — misattributed audio across turns whenever a fetch resolved
+            // before "done", which is the normal timing in streaming mode.)
+            currentAssistantMessageId = event.message_id || null;
+            if (currentAssistantRow && event.message_id) {
+                currentAssistantRow.dataset.messageId = event.message_id;
             }
 
             // Update the bubble with the actual persona name
@@ -205,8 +211,6 @@ function handleSSEEvent(event) {
             if (ttsStreaming) {
                 currentStreamingPersona = event.persona;
                 sentenceBuffer = "";
-                // Do NOT clear streamingTTSMessageIdByPersona here — it's keyed per persona,
-                // so a new persona starting does not affect in-flight fetches for prior personas.
             }
             break;
         }
@@ -227,21 +231,8 @@ function handleSSEEvent(event) {
             break;
         }
         case "done": {
-            // Track the assistant message ID for TTS audio association.
-            if (event.message_id) {
-                currentAssistantMessageId = event.message_id;
-                // Tag the live assistant bubble with the message ID so audio
-                // buttons can be injected into the correct DOM node later.
-                if (currentAssistantRow) {
-                    currentAssistantRow.dataset.messageId = event.message_id;
-                }
-                // Backfill the ID into any still-queued streaming TTS items and
-                // record it per-persona so in-flight fetches resolve correctly.
-                backfillStreamingTTSMessageId(event.persona, event.message_id);
-                // Persist any streaming-mode audio that was buffered before the ID was known.
-                flushTtsAudioBuffer(event.persona, event.message_id);
-            }
-
+            // The message ID was already adopted on "start" and stamped onto
+            // every TTS item at enqueue time, so there is nothing to backfill.
             if (ttsEnabled && event.text) {
                 const persona = personas.find(p => p.name === event.persona);
                 if (persona && persona.tts_capable) {
@@ -269,9 +260,9 @@ function handleSSEEvent(event) {
             break;
         }
         case "complete": {
-            // Final signal — don't clear currentAssistantMessageId here.
-            // In streaming mode, async audio fetches may still be in-flight.
-            // The ID will be cleared by the next "start" event instead.
+            // Final signal — nothing to do. In-flight audio fetches already
+            // carry their own message IDs, and currentAssistantMessageId is
+            // simply overwritten by the next "start" event.
             break;
         }
     }

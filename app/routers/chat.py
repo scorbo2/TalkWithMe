@@ -190,8 +190,17 @@ async def _chat_stream(req: ChatRequest) -> AsyncIterator[str]:
 
         replied_personas.append(persona_name)
 
-        # Emit start event — include the user's message_id so frontend can track it
-        yield f'data: {json.dumps({"type": "start", "persona": persona_name, "user_message_id": user_message_id})}\n\n'
+        # Generate the assistant message ID BEFORE emitting "start". The
+        # frontend stamps it onto every TTS item enqueued during this
+        # response, so audio is associated with the correct message no
+        # matter when each fetch resolves. Generating it after the stream
+        # (and backfilling later) is how audio got misattributed across turns.
+        assistant_message_id = str(uuid.uuid4())
+
+        # Emit start event — include the user's message_id so frontend can track it,
+        # and this response's message_id so streaming TTS audio can be associated
+        # with the correct message from the first token onward.
+        yield f'data: {json.dumps({"type": "start", "persona": persona_name, "user_message_id": user_message_id, "message_id": assistant_message_id})}\n\n'
 
         if echo_enabled:
             # Echo chamber: bypass the LLM entirely and return the user's message verbatim.
@@ -213,8 +222,7 @@ async def _chat_stream(req: ChatRequest) -> AsyncIterator[str]:
                 yield f'data: {json.dumps({"type": "error", "message": str(exc)})}\n\n'
                 return
 
-        # Generate assistant message ID and persist — subsequent personas will see this in history
-        assistant_message_id = str(uuid.uuid4())
+        # Persist — subsequent personas will see this in history
         session.add_assistant_message(full_text, persona_name, assistant_message_id)
 
         yield f'data: {json.dumps({"type": "done", "persona": persona_name, "text": full_text, "message_id": assistant_message_id})}\n\n'
