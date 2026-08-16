@@ -17,6 +17,7 @@ atomic, and readers never observe a half-written file.
 import base64
 import json
 import logging
+import os
 import shutil
 import threading
 import uuid
@@ -96,19 +97,32 @@ def _read_history_file(room_name: str) -> Dict[str, Any]:
     """
     path = _history_path(room_name)
     if path.exists():
-        with open(path) as f:
+        with open(path, encoding="utf-8") as f:
             return json.load(f)
     return {"datetime": None, "messages": []}
 
 
 def _write_history_file(room_name: str, data: Dict[str, Any]) -> None:
-    """Atomically-enough write the room's history JSON.
+    """Atomically write the room's history JSON.
+
+    Writes to a temporary file in the same directory, then swaps it into
+    place with os.replace(). This way readers never observe a
+    half-truncated file, even if the process dies mid-write.
 
     Caller must hold _HISTORY_LOCK. The directory is expected to exist
     (every public write path creates it first).
     """
-    with open(_history_path(room_name), "w") as f:
-        json.dump(data, f, indent=2, ensure_ascii=False)
+    target = _history_path(room_name)
+    # The temp file must live on the same filesystem for os.replace() to be atomic.
+    tmp_path = target.with_suffix(".tmp")
+    try:
+        with open(tmp_path, "w", encoding="utf-8") as f:
+            json.dump(data, f, indent=2, ensure_ascii=False)
+        os.replace(tmp_path, target)
+    except BaseException:
+        # Don't leave a half-written .tmp lying around if anything fails.
+        tmp_path.unlink(missing_ok=True)
+        raise
 
 
 # ---------------------------------------------------------------------------

@@ -332,6 +332,7 @@ application, depending on how much VRAM you can throw at it.
   - Fix scroll problem in Personas dialog (#58)
   - Fix audio misattribution bug (#62)
   - Expose `max_turns_for_context` in config, and wire it up properly (#61)
+  - Force UTF-8 for history file writing, and make it atomic (#49)
 
 ## License
 
