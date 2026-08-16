@@ -323,7 +323,7 @@ application, depending on how much VRAM you can throw at it.
   - Save generated audio and allow replay (#5)
   - Add screenshots and better setup guidance to README (#17)
   - Add read-only "server type" field in TTS server settings (Qwen3-TTS or dots.tts) (#36)
-- **2026-08-15** v4.0
+- **2026-08-16** v4.0
   - Relax chat room name restrictions to allow spaces (#45)
   - Rename `language` to `reference_audio_language` in persona config (#46)
   - Avoid Jinja2 version 3.1.5 as a mitigation for #50
@@ -333,6 +333,7 @@ application, depending on how much VRAM you can throw at it.
   - Fix audio misattribution bug (#62)
   - Expose `max_turns_for_context` in config, and wire it up properly (#61)
   - Force UTF-8 for history file writing, and make it atomic (#49)
+  - Fix chatroom sorting in UI (#66)
 
 ## License
 

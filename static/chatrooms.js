@@ -107,7 +107,13 @@ function applyChatRoomFilter() {
  */
 function renderChatRoomDropdown() {
     chatRoomDropdown.innerHTML = "";
-    for (const room of allChatRooms) {
+    // "default" (All Personas) always first; remainder sorted alphabetically, case-insensitive
+    const sorted = [...allChatRooms].sort((a, b) => {
+        if (a.name === "default") return -1;
+        if (b.name === "default") return 1;
+        return a.name.localeCompare(b.name, undefined, { sensitivity: "base" });
+    });
+    for (const room of sorted) {
         const opt = document.createElement("option");
         opt.value = room.name;
         opt.textContent = room.name === "default" ? "All Personas" : room.name;
@@ -275,8 +281,10 @@ function closeChatRoomsEditor() {
 function renderChatRoomList() {
     crListEl.innerHTML = "";
 
-    // Only show non-default rooms
-    const rooms = allChatRooms.filter(r => r.name !== "default");
+    // Only show non-default rooms, sorted alphabetically (case-insensitive)
+    const rooms = allChatRooms
+        .filter(r => r.name !== "default")
+        .sort((a, b) => a.name.localeCompare(b.name, undefined, { sensitivity: "base" }));
 
     if (rooms.length === 0) {
         crListEl.innerHTML = '<p class="cr-empty">No chat rooms yet. Click &ldquo;+ New Room&rdquo; to create one.</p>';
