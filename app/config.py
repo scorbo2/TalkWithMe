@@ -70,7 +70,7 @@ class GeneralConfig(BaseModel):
     """Application-wide feature flags and preferences."""
     persona_name_mentions: bool = True
     max_persona_replies: int = Field(default=1, ge=1, le=4)
-    max_turns_for_context: int = Field(default=6, ge=1, description="Max history turns sent to the LLM")
+    max_turns_for_context: int = Field(default=6, ge=1, le=50, description="Max history turns sent to the LLM")
 
 
 class AppSettings(BaseModel):
