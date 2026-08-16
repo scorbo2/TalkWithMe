@@ -99,7 +99,7 @@ class SessionManager:
         self,
         system_prompt: str,
         responding_persona: str,
-        max_turns: Optional[int] = None,
+        max_turns_for_context: Optional[int] = None,
     ) -> List[Dict[str, str]]:
         """Build the messages list for an LLM call.
 
@@ -108,15 +108,15 @@ class SessionManager:
             * User messages keep role "user".
             * This persona's messages keep role "assistant".
             * Other personas' messages become "user" with prefix "[Name]: <text>".
-        - Optionally limited to the last *max_turns* history entries.
+        - Optionally limited to the last *max_turns_for_context* history entries.
         """
         messages: List[Dict[str, str]] = [
             {"role": "system", "content": system_prompt}
         ]
 
         history_slice = self._history
-        if max_turns is not None:
-            history_slice = self._history[-max_turns:]
+        if max_turns_for_context is not None:
+            history_slice = self._history[-max_turns_for_context:]
 
         for msg in history_slice:
             if msg.role == "user":

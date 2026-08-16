@@ -70,7 +70,8 @@ def _build_router_prompt(user_message: str, chat_room: str) -> list[dict]:
     )
 
     # Include last N conversation turns for context
-    recent = session.history[-6:] if len(session.history) >= 6 else session.history
+    max_context = get_settings().general.max_turns_for_context
+    recent = session.history[-max_context:]
     context_lines = []
     for msg in recent:
         if msg.role == "user":
@@ -211,6 +212,7 @@ async def _chat_stream(req: ChatRequest) -> AsyncIterator[str]:
             messages = session.build_llm_messages(
                 system_prompt=persona.system_prompt,
                 responding_persona=persona_name,
+                max_turns_for_context=settings.general.max_turns_for_context,
             )
             full_text = ""
             try:

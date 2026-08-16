@@ -145,3 +145,4 @@ const genSettingsForm = document.getElementById("gen-settings-form");
 const genSettingsError = document.getElementById("gen-settings-error");
 const gsfMaxPersonaReplies = document.getElementById("gsf-max-persona-replies");
 const gsfPersonaNameMentions = document.getElementById("gsf-persona-name-mentions");
+const gsfMaxTurnsForContext = document.getElementById("gsf-max-turns-for-context");

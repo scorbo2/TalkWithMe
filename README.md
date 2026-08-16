@@ -89,6 +89,7 @@ stt:
 general:
   persona_name_mentions: true
   max_persona_replies: 1
+  max_turns_for_context: 6
 ```
 
 Note that TTS and STT are both optional! You can mark them as disabled
@@ -330,6 +331,7 @@ application, depending on how much VRAM you can throw at it.
   - Add persona-to-persona chat with new option `max_persona_replies` (#43)
   - Fix scroll problem in Personas dialog (#58)
   - Fix audio misattribution bug (#62)
+  - Expose `max_turns_for_context` in config, and wire it up properly (#61)
 
 ## License
 

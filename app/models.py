@@ -195,6 +195,7 @@ class GeneralSettingsRequest(BaseModel):
     """General configuration from the settings editor."""
     persona_name_mentions: bool = True
     max_persona_replies: int = Field(default=1, ge=1, le=4)
+    max_turns_for_context: int = Field(default=6, ge=1)
 
 
 class SettingsUpdateRequest(BaseModel):
@@ -235,6 +236,7 @@ class GeneralSettingsResponse(BaseModel):
     """General configuration for the frontend."""
     persona_name_mentions: bool
     max_persona_replies: int
+    max_turns_for_context: int
 
 
 class SettingsResponse(BaseModel):

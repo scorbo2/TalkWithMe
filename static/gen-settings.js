@@ -51,6 +51,7 @@ async function loadGenSettingsIntoForm() {
         const data = await resp.json();
         gsfMaxPersonaReplies.value = data.general.max_persona_replies ?? 1;
         gsfPersonaNameMentions.checked = data.general.persona_name_mentions ?? true;
+        gsfMaxTurnsForContext.value = data.general.max_turns_for_context ?? 6;
         return true;
     } catch (err) {
         console.error("Failed to load settings:", err);
@@ -77,6 +78,11 @@ async function submitGenSettings(e) {
         return showGenSettingsError("Max Persona Replies must be between 1 and 4.");
     }
 
+    const maxTurns = parseInt(gsfMaxTurnsForContext.value, 10);
+    if (isNaN(maxTurns) || maxTurns < 1 || maxTurns > 50) {
+        return showGenSettingsError("Max Turns for Context must be between 1 and 50.");
+    }
+
     // Fetch current full settings so we can patch only the general section
     let current;
     try {
@@ -95,6 +101,7 @@ async function submitGenSettings(e) {
         general: {
             persona_name_mentions: gsfPersonaNameMentions.checked,
             max_persona_replies: maxReplies,
+            max_turns_for_context: maxTurns,
         },
     };
 
