@@ -16,6 +16,7 @@ atomic, and readers never observe a half-written file.
 
 import base64
 import json
+import locale
 import logging
 import os
 import shutil
@@ -93,13 +94,34 @@ def _staged_audio_filename(message_id: str, mime_type: Optional[str]) -> str:
 def _read_history_file(room_name: str) -> Dict[str, Any]:
     """Load the room's history JSON (or a fresh skeleton if none exists).
 
-    Caller must hold _HISTORY_LOCK.
+    Tries UTF-8 first. If that fails with a UnicodeDecodeError (e.g. a file
+    written on Windows under cp1252 before the encoding fix), falls back to
+    the system's preferred encoding, then immediately rewrites the file in
+    UTF-8 so the migration is a one-shot operation.
+
+    Caller must hold _HISTORY_LOCK (required for the migration re-write).
     """
     path = _history_path(room_name)
-    if path.exists():
+    if not path.exists():
+        return {"datetime": None, "messages": []}
+
+    try:
         with open(path, encoding="utf-8") as f:
             return json.load(f)
-    return {"datetime": None, "messages": []}
+    except UnicodeDecodeError:
+        # File was likely written in the system's legacy encoding (e.g. cp1252
+        # on Windows). Read it with that encoding, then rewrite in UTF-8 so
+        # future loads don't hit this path again.
+        fallback_encoding = locale.getpreferredencoding(False)
+        logger.warning(
+            "history.json for room '%s' is not valid UTF-8; migrating from "
+            "%s to UTF-8 on first read",
+            room_name, fallback_encoding,
+        )
+        with open(path, encoding=fallback_encoding) as f:
+            data = json.load(f)
+        _write_history_file(room_name, data)
+        return data
 
 
 def _write_history_file(room_name: str, data: Dict[str, Any]) -> None:
