@@ -238,6 +238,7 @@ async def call_tool(server: MCPServerConfig, tool_name: str,
                 ),
                 headers=headers,
             )
+            resp.raise_for_status()
             result = _parse_response_body(resp) or {}
             text = _cap_result(_extract_result_text(result))
             if result.get("isError"):
