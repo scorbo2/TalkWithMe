@@ -203,6 +203,7 @@ async def discover_tools(server: MCPServerConfig) -> List[dict]:
                 json=_rpc_request("tools/list", req_id=2),
                 headers=headers,
             )
+            resp.raise_for_status()
             result = _parse_response_body(resp)
             tools = (result or {}).get("tools", [])
             converted = [t for t in (_to_openai_tool(x) for x in tools) if t]
