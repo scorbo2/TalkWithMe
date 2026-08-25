@@ -235,6 +235,7 @@ async function openPersonaForm(name) {
             pfAvatarImage.value       = p.avatar_image || "";
             pfReferenceAudio.value    = p.reference_audio || "";
             pfReferenceAudioTx.value  = p.reference_audio_transcript || "";
+            pfAllowToolCalls.checked  = p.allow_tool_calls ?? false;
         } catch (err) {
             showPersonaFormError("Failed to load persona details.");
             return;
@@ -250,6 +251,7 @@ async function openPersonaForm(name) {
         pfAvatarImage.value       = "";
         pfReferenceAudio.value    = "";
         pfReferenceAudioTx.value  = "";
+        pfAllowToolCalls.checked  = false;
     }
 
     peListView.classList.add("hidden");
@@ -287,6 +289,7 @@ async function submitPersonaForm(e) {
         avatar_image: avatarImage || null,
         reference_audio: refAudio || null,
         reference_audio_transcript: refAudioTx || null,
+        allow_tool_calls: pfAllowToolCalls.checked,
     };
 
     try {

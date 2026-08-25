@@ -71,6 +71,35 @@ class GeneralConfig(BaseModel):
     persona_name_mentions: bool = True
     max_persona_replies: int = Field(default=1, ge=1, le=4)
     max_turns_for_context: int = Field(default=6, ge=1, le=50, description="Max history turns sent to the LLM")
+    show_tool_calls: bool = True
+
+
+class MCPServerConfig(BaseModel):
+    """A single MCP server endpoint (SSE/HTTP transport only — no stdio)."""
+    name: str
+    url: str
+    # gt=0: with this httpx version a 0.0 timeout does NOT mean "no
+    # timeout" — it fails every request instantly, so the typo would
+    # silently kill the server. le=300: a hung tool call should not be
+    # allowed to stall the SSE stream for unreasonably long.
+    timeout: float = Field(default=10.0, gt=0, le=300)
+
+    @model_validator(mode="after")
+    def _validate_url_scheme(self) -> "MCPServerConfig":
+        # Fail at config load, not per-call: a scheme-less typo
+        # ("localhost:9000") used to surface as a ConnectTimeout warning
+        # buried in the log on every request instead of a clear startup error.
+        if not self.url.startswith(("http://", "https://")):
+            raise ValueError(
+                f"MCP server '{self.name}': url must start with http:// or https://, got {self.url!r}"
+            )
+        return self
+
+
+class MCPConfig(BaseModel):
+    """MCP server configurations and the agentic tool-call loop cap."""
+    servers: List[MCPServerConfig] = Field(default_factory=list)
+    max_tool_iterations: int = Field(default=8, ge=1, le=50, description="Max tool-call rounds per persona reply")
 
 
 class AppSettings(BaseModel):
@@ -78,6 +107,7 @@ class AppSettings(BaseModel):
     tts: TTSConfig = TTSConfig()
     stt: STTConfig = STTConfig()
     general: GeneralConfig = GeneralConfig()
+    mcp: MCPConfig = Field(default_factory=MCPConfig)
 
 
 # ---------------------------------------------------------------------------
@@ -94,6 +124,7 @@ class Persona(BaseModel):
     reference_audio: Optional[str] = None
     reference_audio_transcript: Optional[str] = None
     reference_audio_language: str = "en"
+    allow_tool_calls: bool = False
 
     @property
     def tts_capable(self) -> bool:
@@ -143,6 +174,7 @@ def load_settings(path: Optional[Path] = None) -> AppSettings:
         tts=TTSConfig(**raw.get("tts", {})),
         stt=STTConfig(**raw.get("stt", {})),
         general=GeneralConfig(**raw.get("general", {})),
+        mcp=MCPConfig(**raw.get("mcp", {})),
     )
     return _settings_cache
 
@@ -212,6 +244,7 @@ def save_settings(config: AppSettings, path: Optional[Path] = None) -> None:
         "tts": config.tts.model_dump(exclude_none=False),
         "stt": config.stt.model_dump(exclude_none=False),
         "general": config.general.model_dump(exclude_none=False),
+        "mcp": config.mcp.model_dump(exclude_none=False),
     }
     with open(target, "w") as f:
         yaml.dump(raw, f, default_flow_style=False, allow_unicode=True, sort_keys=False)

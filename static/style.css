@@ -506,6 +506,37 @@ html, body {
     border-bottom-left-radius: 4px;
 }
 
+/* Tool-call chips — display-only indicators of MCP tool invocations.
+   They live in .bubble-content (not inside .bubble) because streaming
+   tokens rewrite bubble.textContent, which would destroy child elements. */
+.tool-chips {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 4px;
+    padding: 0 4px;
+}
+
+.tool-chip {
+    font-size: 0.7rem;
+    line-height: 1.4;
+    padding: 2px 8px;
+    border-radius: 999px;
+    background: var(--bg-input);
+    border: 1px solid var(--border-color);
+    color: var(--text-secondary);
+    cursor: default;
+    user-select: none;
+    max-width: 100%;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.tool-chip.error {
+    color: #ff6b6b;
+    border-color: #ff6b6b;
+}
+
 /* Loading indicator */
 .loading-bubble {
     display: flex;

@@ -46,6 +46,7 @@ def _to_response(cfg: AppSettings) -> SettingsResponse:
             persona_name_mentions=cfg.general.persona_name_mentions,
             max_persona_replies=cfg.general.max_persona_replies,
             max_turns_for_context=cfg.general.max_turns_for_context,
+            show_tool_calls=cfg.general.show_tool_calls,
         ),
     )
 
@@ -67,6 +68,11 @@ def update_settings(req: SettingsUpdateRequest):
     tts_base = req.tts.base_url if req.tts.base_url.strip() else None
     stt_base = req.stt.base_url if req.stt.base_url.strip() else None
     tts_seed = None if req.tts.seed == 0 else req.tts.seed
+
+    # The mcp section is yaml-only for now (deliberately not in the request
+    # model). Carry it over from the current config, otherwise every UI save
+    # would silently wipe it from settings.yaml.
+    current = app_config.get_settings()
 
     updated = AppSettings(
         llm=LLMSettings(
@@ -93,7 +99,9 @@ def update_settings(req: SettingsUpdateRequest):
             persona_name_mentions=req.general.persona_name_mentions,
             max_persona_replies=req.general.max_persona_replies,
             max_turns_for_context=req.general.max_turns_for_context,
+            show_tool_calls=req.general.show_tool_calls,
         ),
+        mcp=current.mcp,
     )
 
     app_config.save_settings(updated)

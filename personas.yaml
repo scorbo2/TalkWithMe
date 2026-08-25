@@ -9,6 +9,7 @@ personas:
   reference_audio: null
   reference_audio_transcript: null
   reference_audio_language: en
+  allow_tool_calls: True
 - name: Luna
   description: A philosophical and poetic thinker
   system_prompt: You are Luna, a thoughtful and poetic AI. You speak in a contemplative,
@@ -19,3 +20,4 @@ personas:
   reference_audio: null
   reference_audio_transcript: null
   reference_audio_language: en
+  allow_tool_calls: False

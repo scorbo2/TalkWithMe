@@ -44,6 +44,7 @@ class PersonaCreateRequest(BaseModel):
     reference_audio: Optional[str] = None
     reference_audio_transcript: Optional[str] = None
     reference_audio_language: str = Field(default="en", min_length=2, max_length=2)
+    allow_tool_calls: bool = False
 
 
 class PersonaUpdateRequest(PersonaCreateRequest):
@@ -90,6 +91,7 @@ class PersonaDetailResponse(BaseModel):
     reference_audio: Optional[str] = None
     reference_audio_transcript: Optional[str] = None
     reference_audio_language: str
+    allow_tool_calls: bool = False
     tts_capable: bool = False
 
 
@@ -196,6 +198,7 @@ class GeneralSettingsRequest(BaseModel):
     persona_name_mentions: bool = True
     max_persona_replies: int = Field(default=1, ge=1, le=4)
     max_turns_for_context: int = Field(default=6, ge=1, le=50)
+    show_tool_calls: bool = True
 
 
 class SettingsUpdateRequest(BaseModel):
@@ -237,6 +240,7 @@ class GeneralSettingsResponse(BaseModel):
     persona_name_mentions: bool
     max_persona_replies: int
     max_turns_for_context: int
+    show_tool_calls: bool
 
 
 class SettingsResponse(BaseModel):

@@ -17,7 +17,8 @@ from fastapi.responses import StreamingResponse
 from app.config import get_chatrooms, get_personas, get_settings
 from app.models import ChatRequest
 from app.session import session
-from app.services.llm import chat_completion, stream_chat
+from app.services.llm import chat_completion, stream_chat, stream_chat_with_tools
+from app.services.tool_registry import get_all_tools
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/chat", tags=["chat"])
@@ -217,9 +218,20 @@ async def _chat_stream(req: ChatRequest) -> AsyncIterator[str]:
             )
             full_text = ""
             try:
-                async for token in stream_chat(messages):
-                    full_text += token
-                    yield f'data: {json.dumps({"type": "token", "persona": persona_name, "token": token})}\n\n'
+                if persona.allow_tool_calls:
+                    # Agentic path: the LLM may invoke MCP tools mid-reply.
+                    # The loop runs regardless of show_tool_calls; that flag
+                    # only controls whether tool_call SSE events are emitted.
+                    async for event in stream_chat_with_tools(messages, get_all_tools()):
+                        if event["type"] == "token":
+                            full_text += event["token"]
+                            yield f'data: {json.dumps({"type": "token", "persona": persona_name, "token": event["token"]})}\n\n'
+                        elif event["type"] == "tool_call" and settings.general.show_tool_calls:
+                            yield f'data: {json.dumps({"type": "tool_call", "persona": persona_name, "tool_name": event["tool_name"], "arguments": event["arguments"], "result": event["result"], "failed": event["failed"]})}\n\n'
+                else:
+                    async for token in stream_chat(messages):
+                        full_text += token
+                        yield f'data: {json.dumps({"type": "token", "persona": persona_name, "token": token})}\n\n'
             except Exception as exc:
                 logger.error("Streaming error: %s", exc)
                 yield f'data: {json.dumps({"type": "error", "message": str(exc)})}\n\n'

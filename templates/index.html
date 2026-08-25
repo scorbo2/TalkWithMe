@@ -133,6 +133,13 @@
                         <span class="field-hint">256 chars max</span>
                     </div>
                     <div class="form-row">
+                        <label class="settings-checkbox-label">
+                            <input id="pf-allow-tool-calls" type="checkbox">
+                            <span>Allow tool calls</span>
+                        </label>
+                        <span class="field-hint">This persona may invoke tools from MCP servers configured in settings.yaml</span>
+                    </div>
+                    <div class="form-row">
                         <label for="pf-avatar-color">Avatar Color</label>
                         <input id="pf-avatar-color" type="color" value="#FF0000">
                     </div>
@@ -370,6 +377,13 @@
                                 <input id="gsf-persona-name-mentions" type="checkbox">
                                 <span>Auto-select persona on name mention</span>
                             </label>
+                        </div>
+                        <div class="form-row">
+                            <label class="settings-checkbox-label">
+                                <input id="gsf-show-tool-calls" type="checkbox">
+                                <span>Show tool calls in chat</span>
+                            </label>
+                            <span class="field-hint">Display a chip when a persona invokes an MCP tool</span>
                         </div>
                         <div class="form-row">
                             <label for="gsf-max-turns-for-context">Max Turns for Context <span class="field-hint">(1–50)</span></label>

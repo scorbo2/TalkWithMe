@@ -177,8 +177,14 @@ function handleSSEEvent(event) {
         case "start": {
             // If currentAssistantRow already has content, this is a subsequent persona
             // reply — create a fresh bubble instead of reusing the existing one.
+            // Tool chips count as content: a persona whose agentic loop produced
+            // only tool calls (no text) still "spent" its row, and reusing it
+            // would merge those chips into the next persona's bubble.
             const existingBubble = currentAssistantRow && currentAssistantRow.querySelector(".bubble");
-            if (existingBubble && existingBubble.textContent.trim()) {
+            const existingRowSpent = !!(existingBubble && (
+                existingBubble.textContent.trim() || currentAssistantRow.querySelector(".tool-chips")
+            ));
+            if (existingRowSpent) {
                 currentAssistantRow = createAssistantBubble(event.persona);
                 messagesEl.appendChild(currentAssistantRow);
                 scrollToBottom();
@@ -202,7 +208,7 @@ function handleSSEEvent(event) {
             // Visual confirmation: update selected persona in sidebar immediately.
             // Only on the FIRST start event — subsequent persona replies should not
             // hijack the user's selection in the sidebar.
-            if (!existingBubble?.textContent?.trim() && event.persona && event.persona !== selectedPersona) {
+            if (!existingRowSpent && event.persona && event.persona !== selectedPersona) {
                 selectedPersona = event.persona;
                 highlightSelectedPersona();
             }
@@ -250,6 +256,10 @@ function handleSSEEvent(event) {
                     }
                 }
             }
+            break;
+        }
+        case "tool_call": {
+            addToolCallChip(event);
             break;
         }
         case "error": {
@@ -355,6 +365,50 @@ function setupAssistantBubble(row, persona) {
         bubble.textContent = "";
         loading.replaceWith(bubble);
     }
+}
+
+/**
+ * Append a non-interactive chip to the active assistant message showing
+ * that the persona invoked an MCP tool.
+ *
+ * The chip row lives in .bubble-content between the name and the bubble —
+ * NOT inside the bubble — because streaming tokens append via
+ * bubble.textContent, which would destroy any child elements within it.
+ *
+ * Events only arrive when general.show_tool_calls is enabled (the server
+ * suppresses them otherwise), so no client-side gating is needed here.
+ */
+function addToolCallChip(event) {
+    if (!currentAssistantRow) return;
+    const content = currentAssistantRow.querySelector(".bubble-content");
+    if (!content) return;
+
+    let chipRow = content.querySelector(".tool-chips");
+    if (!chipRow) {
+        chipRow = document.createElement("div");
+        chipRow.className = "tool-chips";
+        const bubble = content.querySelector(".bubble");
+        content.insertBefore(chipRow, bubble);
+    }
+
+    // The server computes this flag (tool error, unknown tool, or
+    // unparseable/truncated arguments) — don't re-derive it from prose,
+    // a legitimate result may well start with the words "Error: ".
+    const failed = event.failed === true;
+    const chip = document.createElement("span");
+    chip.className = failed ? "tool-chip error" : "tool-chip";
+    chip.textContent = `🔧 ${event.tool_name}`;
+
+    // Display-only tooltip: what was called, with what, and what came back
+    let tooltip = `Arguments: ${JSON.stringify(event.arguments ?? {})}`;
+    if (event.result) {
+        const result = event.result.length > 300 ? event.result.slice(0, 300) + "…" : event.result;
+        tooltip += `\nResult: ${result}`;
+    }
+    chip.title = tooltip;
+
+    chipRow.appendChild(chip);
+    scrollToBottom();
 }
 
 function appendErrorBubble(text) {

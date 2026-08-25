@@ -52,6 +52,7 @@ async function loadGenSettingsIntoForm() {
         gsfMaxPersonaReplies.value = data.general.max_persona_replies ?? 1;
         gsfPersonaNameMentions.checked = data.general.persona_name_mentions ?? true;
         gsfMaxTurnsForContext.value = data.general.max_turns_for_context ?? 6;
+        gsfShowToolCalls.checked = data.general.show_tool_calls ?? true;
         return true;
     } catch (err) {
         console.error("Failed to load settings:", err);
@@ -102,6 +103,7 @@ async function submitGenSettings(e) {
             persona_name_mentions: gsfPersonaNameMentions.checked,
             max_persona_replies: maxReplies,
             max_turns_for_context: maxTurns,
+            show_tool_calls: gsfShowToolCalls.checked,
         },
     };
 

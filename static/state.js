@@ -94,6 +94,7 @@ const pfReferenceAudioLanguage = document.getElementById("pf-reference-audio-lan
 const pfAvatarImage = document.getElementById("pf-avatar-image");
 const pfReferenceAudio = document.getElementById("pf-reference-audio");
 const pfReferenceAudioTx = document.getElementById("pf-reference-audio-transcript");
+const pfAllowToolCalls = document.getElementById("pf-allow-tool-calls");
 
 // Persona editor editing state
 let peEditingName = null;
@@ -147,3 +148,4 @@ const genSettingsError = document.getElementById("gen-settings-error");
 const gsfMaxPersonaReplies = document.getElementById("gsf-max-persona-replies");
 const gsfPersonaNameMentions = document.getElementById("gsf-persona-name-mentions");
 const gsfMaxTurnsForContext = document.getElementById("gsf-max-turns-for-context");
+const gsfShowToolCalls = document.getElementById("gsf-show-tool-calls");

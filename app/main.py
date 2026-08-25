@@ -16,6 +16,7 @@ from fastapi.templating import Jinja2Templates
 from app import config as app_config
 from app.routers import chat, chatrooms, personas, persistence, session as session_router, settings, stt, tts
 from app.session import session
+from app.services.tool_registry import get_all_tools, load_tools
 
 logger = logging.getLogger(__name__)
 
@@ -38,6 +39,10 @@ async def lifespan(app: FastAPI):
     logger.info("LLM endpoint: %s", settings.llm.base_url)
     logger.info("TTS active: %s (endpoint: %s)", settings.tts.is_active, settings.tts.base_url)
     logger.info("STT active: %s (endpoint: %s)", settings.stt.is_active, settings.stt.base_url)
+
+    # Discover MCP tools (per-server details are logged inside load_tools)
+    await load_tools()
+    logger.info("MCP tools available: %d", len(get_all_tools()))
 
     yield
 
