@@ -21,8 +21,5 @@ general:
   max_turns_for_context: 6
   show_tool_calls: true
 mcp:
-  servers:
-    - name: snotes
-      url: http://localhost:5000/mcp
-      timeout: 5
+  servers: []
   max_tool_iterations: 8
