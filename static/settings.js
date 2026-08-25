@@ -214,7 +214,7 @@ async function submitSettings(e) {
 
         if (!resp.ok) {
             const err = await resp.json().catch(() => ({}));
-            return showSettingsError(err.detail || `Server error ${resp.status}`);
+            return showSettingsError(extractApiErrorMessage(err, resp.status));
         }
 
         // Update in-memory TTS state based on new settings

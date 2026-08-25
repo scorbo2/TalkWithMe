@@ -116,7 +116,7 @@ async function submitGenSettings(e) {
 
         if (!resp.ok) {
             const err = await resp.json().catch(() => ({}));
-            return showGenSettingsError(err.detail || `Server error ${resp.status}`);
+            return showGenSettingsError(extractApiErrorMessage(err, resp.status));
         }
 
         // Sync in-memory state

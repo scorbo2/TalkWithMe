@@ -369,7 +369,7 @@ async function createChatRoom() {
 
         if (!resp.ok) {
             const err = await resp.json().catch(() => ({}));
-            crFormError.textContent = err.detail || `Error ${resp.status}`;
+            crFormError.textContent = extractApiErrorMessage(err, resp.status);
             crFormError.classList.remove("hidden");
             return;
         }
@@ -513,7 +513,7 @@ async function addSelectedPersonasToRoom() {
 
         if (!resp.ok) {
             const err = await resp.json().catch(() => ({}));
-            console.error("Failed to add personas to room:", err.detail);
+            console.error("Failed to add personas to room:", extractApiErrorMessage(err, resp.status));
             return;
         }
 

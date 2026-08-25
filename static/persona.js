@@ -310,7 +310,7 @@ async function submitPersonaForm(e) {
 
         if (!resp.ok) {
             const err = await resp.json().catch(() => ({}));
-            return showPersonaFormError(err.detail || `Error ${resp.status}`);
+            return showPersonaFormError(extractApiErrorMessage(err, resp.status));
         }
 
         // Refresh sidebar persona list
@@ -330,7 +330,7 @@ async function clonePersona(name) {
         const resp = await fetch(`/api/personas/${encodeURIComponent(name)}/clone`, { method: "POST" });
         if (!resp.ok) {
             const err = await resp.json().catch(() => ({}));
-            console.error("Clone failed:", err.detail);
+            console.error("Clone failed:", extractApiErrorMessage(err, resp.status));
             return;
         }
         await loadPersonas();
