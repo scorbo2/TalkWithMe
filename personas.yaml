@@ -20,4 +20,4 @@ personas:
   reference_audio: null
   reference_audio_transcript: null
   reference_audio_language: en
-  allow_tool_calls: False
+  allow_tool_calls: false
