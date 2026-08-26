@@ -207,8 +207,6 @@ async def discover_tools(server: MCPServerConfig) -> List[dict]:
             result = _parse_response_body(resp)
             tools = (result or {}).get("tools", [])
             converted = [t for t in (_to_openai_tool(x) for x in tools) if t]
-            logger.info("MCP server '%s' (%s): %d tool(s) discovered",
-                        server.name, server.url, len(converted))
             return converted
     except Exception as exc:
         logger.warning("MCP tool discovery failed for server '%s' (%s): %s",

@@ -388,6 +388,7 @@ application, depending on how much VRAM you can throw at it.
 - **Work in progress; update with release date when ready** v5.0
   - Add MCP support with agentic tool calling (#47)
   - Bug fix: validation errors now properly displayed (#72)
+  - Bug fix: broken INFO logging (#74)
 
 ## License
 

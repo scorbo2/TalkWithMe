@@ -18,6 +18,21 @@ from app.routers import chat, chatrooms, personas, persistence, session as sessi
 from app.session import session
 from app.services.tool_registry import get_all_tools, load_tools
 
+# uvicorn configures its own loggers but leaves the root logger at the
+# Python default level (WARNING), which silently swallows every
+# logger.info() call in this app — including the per-server MCP
+# discovery lines at startup. basicConfig() is a no-op if a host process
+# already attached handlers to the root logger, so this stays out of the
+# way under gunicorn or test harnesses that configure logging themselves.
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s %(levelname)-8s %(name)s: %(message)s",
+)
+# httpx logs every request it makes at INFO. Fine when debugging a client,
+# spammy in normal operation — TTS/STT/LLM/MCP traffic would otherwise
+# flood the console one line per HTTP round-trip.
+logging.getLogger("httpx").setLevel(logging.WARNING)
+
 logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
