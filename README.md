@@ -393,6 +393,7 @@ details about setting up the server-side TTS script.
   - Add MCP support with agentic tool calling (#47)
   - Bug fix: validation errors now properly displayed (#72)
   - Bug fix: broken INFO logging (#74)
+  - Code cleanup: add comprehensive pytest suite (#79)
 
 ## License
 

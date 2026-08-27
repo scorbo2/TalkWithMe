@@ -1,0 +1,2 @@
+# Test-only dependencies (app deps live in requirements.txt).
+pytest

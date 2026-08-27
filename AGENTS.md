@@ -8,7 +8,24 @@ uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
 ```
 
 Requires a locally running **llama.cpp** server with an OpenAI-compatible API. TTS and STT servers are optional.
-Open `http://localhost:8000` in a browser. **There is no test suite.** All verification is manual via the browser UI.
+Open `http://localhost:8000` in a browser.
+
+## Testing — pytest, fully offline
+
+```bash
+pip install -r requirements-dev.txt
+python3 -m pytest        # from the project root; config in pytest.ini
+```
+
+- **No servers needed.** The suite is hermetic: every external HTTP endpoint (LLM, TTS, STT, MCP) is faked via `tests/factories.py` (fake `httpx.AsyncClient`s, config factories, SSE helpers). It must run — and pass — with nothing but Python installed.
+- **Isolation**: `tests/conftest.py` has an autouse fixture that points every module-level global at per-test `tmp_path` state: the config caches in `app/config.py`, `_PERSISTENCE_ROOT` (in both `app/persistence.py` and `app/routers/persistence.py` — the router imported it *by value*, so it needs its own patch), the `session` singleton, and the MCP tool registry. Real `settings.yaml` / `personas.yaml` / `chatrooms.yaml` / `chatrooms/` data is never read or written. **If you add a new module-level global to the app, add it to that fixture.**
+- **Lifespan**: the `client` fixture uses `TestClient` *without* the startup lifespan, because the lifespan re-reads the real YAML files (clobbering test caches) and attempts MCP discovery. Tests that exercise the lifespan do so explicitly with a local `TestClient` in a `with` block and monkeypatched `load_*`/`load_tools` (see `tests/test_main.py`).
+- **Coverage map**: `test_config.py` (config models + YAML load/save), `test_models.py` (API request/response models), `test_persistence.py` (disk persistence + audio staging), `test_session_manager.py`, `test_llm.py` (SSE parsing + agentic tool loop), `test_mcp_client.py`, `test_tool_registry.py`, `test_tts_stt_clients.py`, `test_chat_sse.py` (the `/api/chat` SSE endpoint — LLM stubbed, selection/persistence/echo/tool events for real), `test_main.py`, and one `test_routers_*.py` per API router.
+- **Rules**:
+  - Every code change must be followed by a clean run: `python3 -m pytest`, all green. No exceptions, no skipped tests.
+  - New functionality or API endpoints require new tests in the matching `test_*.py` file before the change is complete.
+  - API tests use the `client` fixture + config caches (re-point `app.config._settings_cache` / `_personas_cache` / `_chatrooms_cache` via `monkeypatch`); router-level stubs are applied at the router's import site (e.g. `app.routers.chat.stream_chat`), since routers import service functions by name.
+  - `httpx` version pin matters: with httpx 0.24, `response.url` / `raise_for_status()` raise `RuntimeError` if no `request` is attached to a `Response`, and the `.request` *getter* itself raises when unset (check `response._request` instead). All fake responses in `tests/factories.py` attach a request for this reason.
 
 ## Config — three YAML files, cached at startup
 
