@@ -1,7 +1,18 @@
-fastapi
-uvicorn[standard]
-httpx
-jinja2>=3.1.2,!=3.1.5
-pyyaml
-python-multipart
-aiofiles
+# Pinned to the known-working environment: the app's behavior (and the
+# test suite) is verified against exactly these versions. In particular,
+# fastapi==0.101.0 pins starlette 0.27, whose legacy
+# Jinja2Templates.TemplateResponse(name, context) signature the index
+# route relies on, and httpx==0.24.1 is the version the test fakes were
+# written against (see the httpx note in AGENTS.md). Bump a pin
+# deliberately, then re-run the full test suite before keeping it.
+fastapi==0.101.0
+uvicorn[standard]==0.23.2
+httpx==0.24.1
+jinja2==3.1.2
+pydantic==2.1.1
+# >= rather than ==: 5.4.1 (the installed dev version) predates Python 3.10
+# and has no cp310 wheel, so a fresh install must take 6.x. The suite
+# passes on both.
+pyyaml>=5.4.1
+python-multipart==0.0.6
+aiofiles==25.1.0

@@ -1,2 +1,5 @@
-# Test-only dependencies (app deps live in requirements.txt).
+# Full dev environment: app deps + test tooling.
+# `-r` pulls in requirements.txt so this file alone is sufficient
+# on a fresh checkout (pip supports stacked requirement files).
+-r requirements.txt
 pytest
