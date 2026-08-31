@@ -91,8 +91,13 @@ const pfSystemPrompt = document.getElementById("pf-system-prompt");
 const pfRouterHints = document.getElementById("pf-router-hints");
 const pfAvatarColor = document.getElementById("pf-avatar-color");
 const pfReferenceAudioLanguage = document.getElementById("pf-reference-audio-language");
-const pfAvatarImage = document.getElementById("pf-avatar-image");
-const pfReferenceAudio = document.getElementById("pf-reference-audio");
+const pfAvatarImage = document.getElementById("pf-avatar-image");      // <input type=file>
+const pfAvatarPreview = document.getElementById("pf-avatar-preview");
+const pfAvatarRemoveBtn = document.getElementById("pf-avatar-remove");
+const pfReferenceAudio = document.getElementById("pf-reference-audio"); // <input type=file>
+const pfAudioStatus = document.getElementById("pf-audio-status");
+const pfAudioPlayBtn = document.getElementById("pf-audio-play");
+const pfAudioRemoveBtn = document.getElementById("pf-audio-remove");
 const pfReferenceAudioTx = document.getElementById("pf-reference-audio-transcript");
 const pfAllowToolCalls = document.getElementById("pf-allow-tool-calls");
 

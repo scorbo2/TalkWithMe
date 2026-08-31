@@ -940,6 +940,62 @@ html, body {
     color: var(--text-muted);
 }
 
+/* Persona editor — file fields (avatar image, reference audio) */
+.pf-file-row {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+}
+
+.pf-file-preview {
+    width: 48px;
+    height: 48px;
+    border-radius: 50%;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    background: var(--bg-input);
+    border: 1px solid var(--border-color);
+    overflow: hidden;
+    flex-shrink: 0;
+    color: var(--text-muted);
+    font-weight: 700;
+}
+
+.pf-file-preview img {
+    width: 100%;
+    height: 100%;
+    object-fit: cover;
+}
+
+.pf-file-controls {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    flex-wrap: wrap;
+    min-width: 0;
+}
+
+.pf-file-status {
+    font-size: 0.75rem;
+    color: var(--text-secondary);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    max-width: 240px;
+}
+
+.btn-small {
+    padding: 3px 10px;
+    font-size: 0.75rem;
+}
+
+.form-row input[type="file"] {
+    color: var(--text-secondary);
+    font-size: 0.78rem;
+    max-width: 100%;
+}
+
 .form-row input[type="text"],
 .form-row textarea {
     background: var(--bg-input);

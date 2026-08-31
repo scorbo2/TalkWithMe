@@ -10,7 +10,8 @@ from app.models import (
     ChatRoomCreateRequest,
     EchoChamberRequest,
     GeneralSettingsRequest,
-    PersonaCreateRequest,
+    PersonaDetailResponse,
+    PersonaResponse,
     SessionPersonasRequest,
     SettingsUpdateRequest,
     STTRequest,
@@ -46,43 +47,26 @@ class TestSessionPersonasRequest:
         assert req.active_personas == ["Alex", "Luna"]
 
 
-class TestPersonaCreateRequest:
-    def _valid(self) -> dict:
-        return {
-            "name": "Zed",
-            "system_prompt": "You are Zed.",
-            "router_hints": "testing",
-        }
+class TestPersonaResponseModels:
+    """Persona create/update have no request models (multipart Form/File
+    params on the router); the response models are the API contract."""
 
-    def test_persona_create_request_valid(self):
-        req = PersonaCreateRequest(**self._valid())
-        assert req.name == "Zed"
-        assert req.reference_audio_language == "en"
-        assert req.allow_tool_calls is False
+    def test_persona_response_avatar_image_is_a_presence_flag(self):
+        resp = PersonaResponse(
+            name="A", description="d", avatar_color="#fff",
+            avatar_image=True, tts_capable=False,
+        )
+        assert resp.avatar_image is True
 
-    def test_persona_create_request_name_over_25_chars_rejected(self):
-        fields = self._valid()
-        fields["name"] = "x" * 26
-        with pytest.raises(ValidationError):
-            PersonaCreateRequest(**fields)
-
-    def test_persona_create_request_blank_name_rejected(self):
-        fields = self._valid()
-        fields["name"] = ""
-        with pytest.raises(ValidationError):
-            PersonaCreateRequest(**fields)
-
-    def test_persona_create_request_missing_router_hints_rejected(self):
-        fields = self._valid()
-        del fields["router_hints"]
-        with pytest.raises(ValidationError):
-            PersonaCreateRequest(**fields)
-
-    def test_persona_create_request_bad_language_length_rejected(self):
-        fields = self._valid()
-        fields["reference_audio_language"] = "eng"
-        with pytest.raises(ValidationError):
-            PersonaCreateRequest(**fields)
+    def test_persona_detail_response_defaults_for_absent_files(self):
+        detail = PersonaDetailResponse(
+            name="A", description="", system_prompt="p", router_hints="h",
+            avatar_color="#fff", reference_audio_language="en",
+        )
+        assert detail.avatar_image is False
+        assert detail.reference_audio is False
+        assert detail.reference_audio_transcript is None
+        assert detail.tts_capable is False
 
 
 class TestTTSRequest:

@@ -33,23 +33,10 @@ class SessionPersonasRequest(BaseModel):
     )
 
 
-class PersonaCreateRequest(BaseModel):
-    """Create or update a persona definition."""
-    name: str = Field(..., min_length=1, max_length=25)
-    description: str = Field(default="", max_length=30)
-    system_prompt: str = Field(..., min_length=1, max_length=8192)
-    router_hints: str = Field(..., min_length=1, max_length=256)
-    avatar_color: str = Field(default="#FF0000")
-    avatar_image: Optional[str] = None
-    reference_audio: Optional[str] = None
-    reference_audio_transcript: Optional[str] = None
-    reference_audio_language: str = Field(default="en", min_length=2, max_length=2)
-    allow_tool_calls: bool = False
-
-
-class PersonaUpdateRequest(PersonaCreateRequest):
-    """Update an existing persona (same fields as create)."""
-    pass
+# Persona create/update requests have no pydantic models on purpose: they
+# are multipart/form-data (text fields + optional file uploads), so the
+# shape is declared with FastAPI Form/File parameters on the router
+# instead (see app/routers/personas.py).
 
 
 class TTSRequest(BaseModel):
@@ -76,19 +63,28 @@ class PersonaResponse(BaseModel):
     name: str
     description: str
     avatar_color: str
-    avatar_image: Optional[str] = None
+    # Presence flag, not a path: the browser can't open filesystem paths,
+    # and the file is owned by the persona directory (served via
+    # GET /api/personas/{name}/avatar).
+    avatar_image: bool = False
     tts_capable: bool = False
 
 
 class PersonaDetailResponse(BaseModel):
-    """Full persona detail including all editable fields."""
+    """Full persona detail including all editable fields.
+
+    File-backed fields are reported as presence/contents, not paths:
+    the avatar is a bool (file served via /avatar), the reference audio
+    is a bool (file served via /reference-audio), and the transcript is
+    the actual file contents (null if the file is absent).
+    """
     name: str
     description: str
     system_prompt: str
     router_hints: str
     avatar_color: str
-    avatar_image: Optional[str] = None
-    reference_audio: Optional[str] = None
+    avatar_image: bool = False
+    reference_audio: bool = False
     reference_audio_transcript: Optional[str] = None
     reference_audio_language: str
     allow_tool_calls: bool = False

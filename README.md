@@ -60,7 +60,7 @@ Most settings can be changed in the UI. Behind the scenes, configuration is stor
 
 - `settings.yaml` stores LLM, TTS, STT, and MCP server endpoints plus general chat parameters
 - `chatrooms.yaml` stores configured chat rooms (if any)
-- `personas.yaml` stores all personas
+- the `Personas/` directory stores all personas — one subdirectory per persona, each holding a `prompt.md` (frontmatter + system prompt), an optional `language.txt`, `ref.wav` + `ref.txt` (TTS voice reference), and an optional `image.<ext>` avatar. A legacy `personas.yaml`, if still present, is migrated to this layout automatically once on first startup (then renamed to `personas.yaml.bak` and ignored).
 
 ### Server settings
 
@@ -122,46 +122,55 @@ In this editor, you can:
 - **Clone** a persona (a numeric suffix is added to the name, e.g. `Mark_2`)
 - **Delete** a persona (with a confirmation prompt)
 
-Changes are persisted immediately to `personas.yaml` and the sidebar persona list is refreshed automatically. No server restart is needed.
+Changes are persisted immediately to the `Personas/` directory and the sidebar persona list is refreshed automatically. No server restart is needed.
 
-> **Note**: renaming or deleting a persona does not modify messages already visible in the chat panel — those retain the name they were created with.
+> **Note**: renaming or deleting a persona does not modify messages already visible in the chat panel — those retain the name they were created with. Renaming does not rename the on-disk directory (the name is recorded inside `prompt.md`), so a directory name may legitimately differ from the persona's displayed name.
 
-The `personas.yaml` file persists these settings:
+Each persona is one directory: `Personas/<Name>/`. Its settings are persisted across these files:
 
-```yaml
-personas:
-  - name: "Alex"
-    description: "A curious and friendly AI assistant"
-    system_prompt: "You are Alex, a curious and friendly AI."
-    router_hints: "general questions, science, math, history"
-    avatar_color: "#4A90D9"
-    avatar_image: null
-    reference_audio: null
-    reference_audio_transcript: null
-    reference_audio_language: "en"
-    allow_tool_calls: false
+```
+Personas/Alex/
+├── prompt.md        # YAML frontmatter + system prompt body
+├── language.txt     # reference-audio language code (optional)
+├── ref.wav          # TTS reference audio (optional, fixed name)
+├── ref.txt          # transcript of ref.wav (optional)
+└── image.png        # avatar (optional, png/jpg/jpeg/gif/webp)
 ```
 
-(Note that the `reference_audio_language` field does not control what language the persona speaks. It refers
+`prompt.md` holds the persona's properties as YAML frontmatter followed by the system prompt, e.g.:
+
+```markdown
+---
+description: A curious and friendly AI assistant
+router_hints: general questions, science, math, history
+avatar_color: "#4A90D9"
+allow_tool_calls: false
+---
+You are Alex, a curious and friendly AI.
+```
+
+A `name:` frontmatter line is written only when the persona's name differs from its directory name.
+
+(Note that the reference-audio language does not control what language the persona speaks. It refers
 specifically to the language of the supplied reference audio, if any, so that voice cloning
 can be more accurate)
 
 #### Persona fields
 
-| Field | Description |
-|-------|-------------|
-| `name` | Unique persona name |
-| `description` | Short description shown in the sidebar |
-| `system_prompt` | System prompt sent to the LLM for this persona |
-| `router_hints` | Keywords the router uses to pick this persona |
-| `avatar_color` | Hex color for the avatar circle fallback |
-| `avatar_image` | Path to a local image file (optional) |
-| `reference_audio` | Path to a WAV file for TTS voice cloning (optional) |
-| `reference_audio_transcript` | Path to a TXT file with the audio transcript (required with `reference_audio`) |
-| `reference_audio_language` | Two-letter language code describing the reference audio (defaults to `en`) |
-| `allow_tool_calls` | If `true`, this persona may call MCP tools while replying (if at least one MCP server is configured) |
+| Field | Where it lives | Description |
+|-------|----------------|-------------|
+| `name` | directory name / `prompt.md` | Unique persona name |
+| `description` | `prompt.md` frontmatter | Short description shown in the sidebar |
+| `system_prompt` | `prompt.md` body | System prompt sent to the LLM for this persona |
+| `router_hints` | `prompt.md` frontmatter | Keywords the router uses to pick this persona |
+| `avatar_color` | `prompt.md` frontmatter | Hex color for the avatar circle fallback |
+| avatar image | `image.<ext>` file | Uploaded image for the persona (optional) |
+| reference audio | `ref.wav` file | WAV for TTS voice cloning (optional) |
+| reference transcript | `ref.txt` file | Transcript of the reference audio (required for TTS) |
+| reference audio language | `language.txt` file | Two-letter code describing the reference audio |
+| `allow_tool_calls` | `prompt.md` frontmatter | If `true`, this persona may call MCP tools while replying (if at least one MCP server is configured) |
 
-**TTS support**: Both `reference_audio` and `reference_audio_transcript` must be set for a persona to have TTS capability.
+**TTS support**: Both `ref.wav` and a non-blank `ref.txt` must be present for a persona to have TTS capability.
 
 #### Who answers next?
 
@@ -396,6 +405,7 @@ details about setting up the server-side TTS script.
   - Code cleanup: add comprehensive pytest suite (#79)
 - **Work in progress; TODO add release date when ready** v6.0
   - Minor bug fix: persona ordering was inconsistent in UI (#82)
+  - Major changes to Persona persistence (#87)
 
 ## License
 
