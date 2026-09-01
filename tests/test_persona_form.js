@@ -11,7 +11,10 @@
  * "Remove" click. The original bug derived those flags from server-side
  * file presence (peAvatarOnServer / peAudioOnServer), which silently
  * deleted a persona's avatar and reference audio on every plain
- * text-field save.
+ * text-field save. The same explicit-click rule covers clear_memories:
+ * it is sent only after an explicit "Clear saved memories" click, and
+ * memory_size is ALWAYS sent (the update endpoint requires it — an
+ * omitted value must not silently reset the persona's memory budget).
  *
  * How it works: persona.js and its dependencies are browser scripts that
  * share globals (no ES modules), so each test evaluates them in a fresh
@@ -209,7 +212,7 @@ function createFormHarness() {
     ========================================================================== */
 
 /** Persona-detail fixture matching PersonaDetailResponse in app/models.py. */
-function detailFixture({ avatarOnServer = true, audioOnServer = true } = {}) {
+function detailFixture({ avatarOnServer = true, audioOnServer = true, memorySize = 8192 } = {}) {
     return {
         name: "Al",
         description: "A test persona",
@@ -222,6 +225,7 @@ function detailFixture({ avatarOnServer = true, audioOnServer = true } = {}) {
         reference_audio_language: "en",
         allow_tool_calls: false,
         tts_capable: audioOnServer,
+        memory_size: memorySize,
     };
 }
 
@@ -243,8 +247,8 @@ function assertNoFormError(h) {
  * Open the editor in edit mode for "Al" through the real openPersonaForm()
  * path (fetch detail -> fill fields -> set server-presence flags).
  */
-async function openEditForm(h, { avatarOnServer = true, audioOnServer = true } = {}) {
-    h.fetchStub.state.detail = detailFixture({ avatarOnServer, audioOnServer });
+async function openEditForm(h, { avatarOnServer = true, audioOnServer = true, memorySize = 8192 } = {}) {
+    h.fetchStub.state.detail = detailFixture({ avatarOnServer, audioOnServer, memorySize });
     await h.sandbox.openPersonaForm("Al");
     assertNoFormError(h);
 }
@@ -447,4 +451,146 @@ test("renderPersonaAvatarPreview_removeClicked_showsPostSaveState", async () => 
     assert.equal(h.elementById("pf-audio-status").textContent, "None");
     assert.ok(h.elementById("pf-audio-remove").classList.contains("hidden"));
     assert.ok(h.elementById("pf-audio-play").classList.contains("hidden"));
+});
+
+/* ==========================================================================
+    Memory-size / clear-memories field
+    ========================================================================== */
+
+test("openPersonaForm_newPersona_memorySizeDefaultsTo8192_clearButtonHidden", async () => {
+    // GIVEN the editor opened for a brand-new persona:
+    const h = createFormHarness();
+    await h.sandbox.openPersonaForm(null);
+
+    // THEN the budget field starts at the server-side default and the
+    // "Clear saved memories" button is hidden (nothing to clear yet):
+    assert.equal(h.elementById("pf-memory-size").value, 8192);
+    assert.ok(h.elementById("pf-memories-clear").classList.contains("hidden"));
+});
+
+test("openPersonaForm_editingPersona_prefillsMemorySizeFromDetail_clearButtonShown", async () => {
+    // GIVEN a persona whose server-side budget is 4096, editor in edit mode:
+    const h = createFormHarness();
+    await openEditForm(h, { memorySize: 4096 });
+
+    // THEN the field is prefilled with the existing budget and the clear
+    // button is available:
+    assert.equal(h.elementById("pf-memory-size").value, 4096);
+    assert.ok(!h.elementById("pf-memories-clear").classList.contains("hidden"));
+});
+
+test("openPersonaForm_editingLegacyPersonaWithoutMemorySizeKey_defaultsTo8192", async () => {
+    // GIVEN a legacy persona whose detail predates the field (no memory_size
+    // key at all — a JSON key absent, not null):
+    const h = createFormHarness();
+    const detail = detailFixture();
+    delete detail.memory_size;
+    h.fetchStub.state.detail = detail;
+    await h.sandbox.openPersonaForm("Al");
+    assertNoFormError(h);
+
+    // THEN the frontend falls back to the default budget:
+    assert.equal(h.elementById("pf-memory-size").value, 8192);
+});
+
+test("submitPersonaForm_editingPersona_alwaysSendsMemorySize_noClearClick_noClearFlag", async () => {
+    // GIVEN the editor open for a persona with budget 4096, untouched field:
+    const h = createFormHarness();
+    await openEditForm(h, { memorySize: 4096 });
+
+    // WHEN the user saves with a plain text edit (no Clear click):
+    await h.sandbox.submitPersonaForm({ preventDefault() {} });
+    assertNoFormError(h);
+
+    // THEN memory_size is ALWAYS sent (the update endpoint requires it),
+    // and clear_memories is NOT (no explicit click):
+    const form = mutationCall(h).body;
+    assert.equal(form.get("memory_size"), "4096");
+    assert.equal(form.has("clear_memories"), false);
+});
+
+test("submitPersonaForm_memorySizeFieldEdited_sendsEditedValue", async () => {
+    // GIVEN the editor open with the default budget prefilled:
+    const h = createFormHarness();
+    await openEditForm(h, { memorySize: 8192 });
+
+    // WHEN the user changes the budget field:
+    h.elementById("pf-memory-size").value = "2048";
+    await h.sandbox.submitPersonaForm({ preventDefault() {} });
+    assertNoFormError(h);
+
+    // THEN the edited value goes out:
+    const form = mutationCall(h).body;
+    assert.equal(form.get("memory_size"), "2048");
+});
+
+test("submitPersonaForm_newPersona_sendsDefaultMemorySize8192", async () => {
+    // GIVEN the editor open for a brand-new persona, required fields filled:
+    const h = createFormHarness();
+    await h.sandbox.openPersonaForm(null);
+    h.elementById("pf-name").value = "New Guy";
+    h.elementById("pf-system-prompt").value = "You are New Guy.";
+    h.elementById("pf-router-hints").value = "fresh test persona";
+    h.elementById("pf-reference-audio-language").value = "en";
+
+    // WHEN the user saves:
+    await h.sandbox.submitPersonaForm({ preventDefault() {} });
+    assertNoFormError(h);
+
+    // THEN the POST carries the default budget and no clear flag:
+    const form = mutationCall(h).body;
+    assert.equal(form.get("memory_size"), "8192");
+    assert.equal(form.has("clear_memories"), false);
+});
+
+test("submitPersonaForm_clearMemoriesClicked_sendsClearFlagWithMemorySize", async () => {
+    // GIVEN the editor open in edit mode:
+    const h = createFormHarness();
+    await openEditForm(h);
+
+    // WHEN the user explicitly clicks "Clear saved memories":
+    h.elementById("pf-memories-clear").dispatch("click", {});
+    assert.equal(h.get("peMemoriesClearRequested"), true);
+
+    // THEN the request carries clear_memories=true alongside memory_size:
+    await h.sandbox.submitPersonaForm({ preventDefault() {} });
+    assertNoFormError(h);
+    const form = mutationCall(h).body;
+    assert.equal(form.get("clear_memories"), "true");
+    assert.equal(form.get("memory_size"), "8192");
+});
+
+test("openPersonaForm_reopenedAfterClearClick_resetsClearRequest", async () => {
+    // GIVEN a pending (unsaved) Clear click:
+    const h = createFormHarness();
+    await openEditForm(h);
+    h.elementById("pf-memories-clear").dispatch("click", {});
+    assert.equal(h.get("peMemoriesClearRequested"), true);
+
+    // WHEN the user cancels and reopens the form:
+    await h.sandbox.openPersonaForm("Al");
+
+    // THEN the pending clear is discarded:
+    assert.equal(h.get("peMemoriesClearRequested"), false);
+});
+
+test("submitPersonaForm_invalidMemorySize_showsErrorAndSendsNoRequest", async () => {
+    // The budget must be a whole number in [0, 16384]. Each invalid value
+    // below must be rejected client-side BEFORE any request is issued —
+    // a bad budget saved server-side would corrupt or wipe the memories.
+    for (const bad of ["16385", "-1", "abc", ""]) {
+        const h = createFormHarness();
+        // GIVEN the editor open in edit mode:
+        await openEditForm(h);
+
+        // WHEN the user enters an invalid budget and saves:
+        h.elementById("pf-memory-size").value = bad;
+        await h.sandbox.submitPersonaForm({ preventDefault() {} });
+
+        // THEN a form error is shown and no PUT/POST went out:
+        const errEl = h.elementById("pe-form-error");
+        assert.ok(!errEl.classList.contains("hidden"), `no error shown for ${JSON.stringify(bad)}`);
+        assert.ok(errEl.textContent.includes("Memory size"), `unexpected error for ${JSON.stringify(bad)}: ${errEl.textContent}`);
+        assert.equal(mutationCall(h), undefined, `request sent for invalid budget ${JSON.stringify(bad)}`);
+    }
 });

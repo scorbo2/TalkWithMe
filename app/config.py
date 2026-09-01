@@ -17,6 +17,18 @@ from pydantic import BaseModel, Field, model_validator
 
 logger = logging.getLogger(__name__)
 
+# ---------------------------------------------------------------------------
+# Persona memory limits (docs/feature_persona_memory.md)
+# ---------------------------------------------------------------------------
+
+DEFAULT_MEMORY_SIZE = 8192
+"""Default per-persona memories.txt size budget, in UTF-8 bytes."""
+MAX_MEMORY_SIZE = 16384
+"""Hard cap for a persona's memory_size; larger values are invalid."""
+MAX_MEMORY_LINE_CHARS = 1024
+"""Max length of a single memory, in characters. Longer memories are
+rejected, never truncated — the LLM can reformulate a shorter one."""
+
 
 # ---------------------------------------------------------------------------
 # Settings
@@ -76,12 +88,39 @@ class GeneralConfig(BaseModel):
     max_persona_replies: int = Field(default=1, ge=1, le=4)
     max_turns_for_context: int = Field(default=6, ge=1, le=50, description="Max history turns sent to the LLM")
     show_tool_calls: bool = True
+    # Global kill-switch for the persona memory feature (docs/
+    # feature_persona_memory.md). False disables the add_memory tool AND
+    # stops injecting saved memories into system prompts — without touching
+    # any persona's memory_size or deleting any memories.txt.
+    enable_persona_memories: bool = True
     # Where persona subdirectories live. Absolute, or relative to the
     # project root; None/empty falls back to <project root>/Personas.
     # yaml-only for now (no UI) — like the mcp: section, changes need a
     # restart, because the directory is resolved at startup and by the
     # persona router from this cache.
     personas_directory: Optional[str] = None
+
+    @model_validator(mode="before")
+    @classmethod
+    def _strict_enable_persona_memories(cls, data):
+        """Reject (warn + default) a non-boolean enable_persona_memories.
+
+        The spec is strict: anything that is not a real boolean in
+        settings.yaml is invalid, logged, and replaced with the default
+        (True). We intercept before pydantic's lax coercion, which would
+        silently turn the string "false" into False — a far sneakier failure
+        than a loud warning at startup.
+        """
+        if isinstance(data, dict) and "enable_persona_memories" in data:
+            value = data["enable_persona_memories"]
+            if not isinstance(value, bool):
+                logger.warning(
+                    "settings.yaml: invalid general.enable_persona_memories %r; "
+                    "expected a boolean, assuming the default (true)",
+                    value,
+                )
+                data = {**data, "enable_persona_memories": True}
+        return data
 
 
 class MCPServerConfig(BaseModel):
@@ -135,6 +174,12 @@ class Persona(BaseModel):
     reference_audio_transcript: Optional[str] = None
     reference_audio_language: str = "en"
     allow_tool_calls: bool = False
+    # Size budget (UTF-8 bytes) for this persona's memories.txt. 0 disables
+    # memory saving. The ge/le constraints are a safety net: persona_store
+    # sanitizes frontmatter values before this model is constructed, and the
+    # router validates form input, so out-of-range values should never reach
+    # here (and a legacy prompt.md missing the key gets the default).
+    memory_size: int = Field(default=DEFAULT_MEMORY_SIZE, ge=0, le=MAX_MEMORY_SIZE)
     # Where this persona's files live on disk (set by the directory scan;
     # None for personas assembled outside of it, e.g. in tests).
     persona_dir: Optional[Path] = None

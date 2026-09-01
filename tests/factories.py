@@ -81,16 +81,18 @@ def make_personas() -> PersonasConfig:
 def make_personas_in_dir(root) -> PersonasConfig:
     """Materialize the stock Alex/Luna persona set as real directories.
 
-    Writes the files through app.services.persona_store (the same code the
-    router uses) and returns the scanned cache, so persona_dir /
-    avatar_image / reference_audio are all real on-disk paths.
-
+    SETUP factory: writes the stock files through app.services.persona_store
+    (the same code the router uses) and returns the scanned cache, so
+    persona_dir / avatar_image / reference_audio are all real on-disk paths.
     Luna gets a ref.wav + ref.txt (TTS-capable); Alex gets neither.
+
+    NOTE: it RE-WRITES the stock files on every call, so it must not be
+    used to refresh a cache on an already-populated directory — any
+    non-stock file written since setup (a custom prompt.md, an avatar, ...)
+    would be clobbered. For cache refreshes use rescan_personas().
     """
     from app.services import persona_store
 
-    # exist_ok everywhere: tests call this again on an already-populated
-    # directory to refresh the cache after writing files directly.
     root = Path(root)
     root.mkdir(parents=True, exist_ok=True)
 
@@ -123,7 +125,19 @@ def make_personas_in_dir(root) -> PersonasConfig:
         "The stars are just pinpricks in the dark.", encoding="utf-8",
     )
 
-    return PersonasConfig(personas=persona_store.scan_personas_directory(root))
+    return rescan_personas(root)
+
+
+def rescan_personas(root) -> PersonasConfig:
+    """Rebuild the personas cache from disk WITHOUT writing anything.
+
+    Use this to refresh the app's persona cache after a test (or the
+    router under test) has written persona files directly. Unlike
+    make_personas_in_dir() it never touches the stock files, so files
+    written since setup survive the refresh.
+    """
+    from app.services import persona_store
+    return PersonasConfig(personas=persona_store.scan_personas_directory(Path(root)))
 
 
 def make_chatrooms() -> ChatRoomsConfig:

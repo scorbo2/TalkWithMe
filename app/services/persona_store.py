@@ -4,14 +4,16 @@ Each persona lives in its own subdirectory of the configured Personas
 directory (``general.personas_directory`` in settings.yaml, default
 ``<project root>/Personas``)::
 
-    Personas/
-      Alex/
-        prompt.md       YAML frontmatter (name, description, router_hints,
-                        avatar_color, allow_tool_calls) + system prompt body
-        language.txt    2-letter code for the reference audio (optional)
-        ref.wav         Reference audio for TTS voice cloning (optional)
-        ref.txt         Transcript of ref.wav (optional)
-        image.png       Avatar image (optional; png/jpg/jpeg/gif/webp)
+     Personas/
+       Alex/
+         prompt.md       YAML frontmatter (name, description, router_hints,
+                         avatar_color, allow_tool_calls, memory_size) +
+                         system prompt body
+         language.txt    2-letter code for the reference audio (optional)
+         ref.wav         Reference audio for TTS voice cloning (optional)
+         ref.txt         Transcript of ref.wav (optional)
+         memories.txt    Saved persona memories, one per line (optional)
+         image.png       Avatar image (optional; png/jpg/jpeg/gif/webp)
 
 This module is framework-agnostic on purpose: it reads and writes files
 and knows nothing about FastAPI, the config cache, or the frontend. The
@@ -21,15 +23,22 @@ disk is the source of truth.
 """
 
 import logging
+import os
 import re
 import shutil
+import uuid
 from pathlib import Path
 from typing import List, Optional, Tuple
 
 import yaml
 from pydantic import ValidationError
 
-from app.config import Persona
+from app.config import (
+    DEFAULT_MEMORY_SIZE,
+    MAX_MEMORY_LINE_CHARS,
+    MAX_MEMORY_SIZE,
+    Persona,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -41,6 +50,7 @@ PROMPT_FILENAME = "prompt.md"
 LANGUAGE_FILENAME = "language.txt"
 REFERENCE_AUDIO_FILENAME = "ref.wav"
 TRANSCRIPT_FILENAME = "ref.txt"
+MEMORIES_FILENAME = "memories.txt"
 IMAGE_BASENAME = "image"
 DEFAULT_LANGUAGE = "en"
 
@@ -103,6 +113,7 @@ def build_prompt_md(
     avatar_color: str,
     allow_tool_calls: bool,
     system_prompt: str,
+    memory_size: Optional[int] = None,
 ) -> str:
     """Serialize a persona's frontmatter + system prompt for prompt.md.
 
@@ -111,6 +122,10 @@ def build_prompt_md(
     would be noise. (This is also how names with directory-hostile
     characters keep working: the dir is "OBrien", the frontmatter says
     "O'Brien".)
+
+    ``memory_size`` is written only when explicitly provided: the legacy
+    migration passes None so upgraded personas carry no new key (missing
+    means "default" at load time), while the editor always passes an int.
     """
     frontmatter: dict = {}
     if name != dir_name:
@@ -119,6 +134,8 @@ def build_prompt_md(
     frontmatter["router_hints"] = router_hints
     frontmatter["avatar_color"] = avatar_color
     frontmatter["allow_tool_calls"] = bool(allow_tool_calls)
+    if memory_size is not None:
+        frontmatter["memory_size"] = memory_size
     dumped = yaml.dump(
         frontmatter, default_flow_style=False, sort_keys=False, allow_unicode=True
     ).strip()
@@ -257,6 +274,7 @@ def load_persona_from_dir(persona_dir: Path) -> Persona:
         reference_audio_transcript=reference_transcript,
         reference_audio_language=read_language_file(persona_dir, name),
         allow_tool_calls=bool(frontmatter.get("allow_tool_calls") or False),
+        memory_size=parse_memory_size(frontmatter.get("memory_size"), name),
         persona_dir=persona_dir,
     )
 
@@ -295,6 +313,7 @@ def write_prompt_md(
     avatar_color: str,
     allow_tool_calls: bool,
     system_prompt: str,
+    memory_size: Optional[int] = None,
 ) -> None:
     (persona_dir / PROMPT_FILENAME).write_text(
         build_prompt_md(
@@ -305,6 +324,7 @@ def write_prompt_md(
             avatar_color=avatar_color,
             allow_tool_calls=allow_tool_calls,
             system_prompt=system_prompt,
+            memory_size=memory_size,
         ),
         encoding="utf-8",
     )
@@ -361,6 +381,199 @@ def remove_reference_audio_file(persona_dir: Path) -> bool:
         path.unlink()
         return True
     return False
+
+
+# ---------------------------------------------------------------------------
+# Persona memories (memories.txt) — docs/feature_persona_memory.md
+# ---------------------------------------------------------------------------
+
+def parse_memory_size(raw: object, persona_name: str) -> int:
+    """Sanitize a memory_size value read from prompt.md frontmatter.
+
+    Missing values get the default (legacy personas predate the field).
+    Invalid values — non-int (including bool, which *is* an int subclass),
+    negative, or above MAX_MEMORY_SIZE — get the default too, with a
+    warning. A bad value in one persona's frontmatter must never take the
+    whole app down at startup.
+    """
+    if raw is None:
+        return DEFAULT_MEMORY_SIZE
+    if isinstance(raw, bool) or not isinstance(raw, int):
+        logger.warning(
+            "Persona %s has an invalid memory_size %r in prompt.md frontmatter; "
+            "assuming the default (%d)", persona_name, raw, DEFAULT_MEMORY_SIZE,
+        )
+        return DEFAULT_MEMORY_SIZE
+    if raw < 0 or raw > MAX_MEMORY_SIZE:
+        logger.warning(
+            "Persona %s has an out-of-range memory_size %r (allowed 0..%d); "
+            "assuming the default (%d)",
+            persona_name, raw, MAX_MEMORY_SIZE, DEFAULT_MEMORY_SIZE,
+        )
+        return DEFAULT_MEMORY_SIZE
+    return raw
+
+
+def read_memories(persona_dir: Path) -> str:
+    """Read the persona's memories file, or "" when absent/unreadable.
+
+    Callers must treat the result as best-effort: memory injection simply
+    does not happen when there is nothing readable.
+    """
+    path = persona_dir / MEMORIES_FILENAME
+    if not path.is_file():
+        return ""
+    try:
+        return path.read_text(encoding="utf-8", errors="replace")
+    except OSError as exc:
+        logger.warning("Persona %s: unreadable %s (%s)", persona_dir.name, MEMORIES_FILENAME, exc)
+        return ""
+
+
+def remove_memories_file(persona_dir: Path) -> bool:
+    """Delete the persona's memories.txt if present. Returns True if removed."""
+    path = persona_dir / MEMORIES_FILENAME
+    if path.is_file():
+        path.unlink()
+        return True
+    return False
+
+
+def _memory_lines(content: str) -> List[str]:
+    """Split memories-file content into its non-blank lines, oldest first."""
+    return [line.strip() for line in content.splitlines() if line.strip()]
+
+
+def _memories_content(lines: List[str]) -> str:
+    """Serialize memory lines back to file content (one memory per line)."""
+    return "".join(line + "\n" for line in lines)
+
+
+def _memories_bytes(lines: List[str]) -> int:
+    """UTF-8 byte size of the file the given lines would produce."""
+    return len(_memories_content(lines).encode("utf-8"))
+
+
+def _write_memories_file(persona_dir: Path, lines: List[str]) -> None:
+    """Atomically rewrite memories.txt (temp file + os.replace).
+
+    The rename is atomic on POSIX, so a crash mid-write leaves either the
+    old file or the new one — never a half-written file.
+    """
+    target = persona_dir / MEMORIES_FILENAME
+    tmp = persona_dir / f"{MEMORIES_FILENAME}.tmp{uuid.uuid4().hex[:8]}"
+    try:
+        tmp.write_text(_memories_content(lines), encoding="utf-8")
+        os.replace(tmp, target)
+    except BaseException:
+        # Never leave a temp file behind; the error itself propagates.
+        try:
+            tmp.unlink(missing_ok=True)
+        except OSError:
+            pass
+        raise
+
+
+def append_memory(persona_dir: Path, memory: object, memory_size: int) -> str:
+    """Append one memory to the persona's memories.txt, enforcing all limits.
+
+    Returns the LLM-facing result string (see docs/feature_persona_memory.md
+    for the message catalog). Never raises: every failure mode is reported
+    to the LLM as an "Error:" message it can react to, because an exception
+    here would kill the persona's whole reply stream.
+
+    Check order: enabled -> has content -> per-memory char limit ->
+    configured byte limit -> append (with oldest-first purge as needed).
+    """
+    if memory_size <= 0:
+        # Memory is disabled: also delete a stale file so re-enabling the
+        # persona starts from a clean slate rather than resurrecting
+        # memories that outlived their limit.
+        remove_memories_file(persona_dir)
+        return "Error: Memory is not enabled for this persona."
+
+    if not isinstance(memory, str):
+        return "Error: The memory was not saved because it had no content."
+    # Normalize LLM garbage: strip the edges and remove embedded newlines
+    # (a memory must be a single line). Deletion, not replacement:
+    # "a\nb" -> "ab", not "a b".
+    cleaned = memory.strip()
+    for newline in ("\r\n", "\n", "\r"):
+        cleaned = cleaned.replace(newline, "")
+    cleaned = cleaned.strip()
+    if not cleaned:
+        return "Error: The memory was not saved because it had no content."
+    # Reject, never truncate: the LLM is instructed to keep memories short
+    # and can reformulate on an error.
+    if len(cleaned) > MAX_MEMORY_LINE_CHARS:
+        return (
+            f"Error: The memory was too large to save. "
+            f"Max per-memory length is {MAX_MEMORY_LINE_CHARS} characters."
+        )
+    if len(cleaned.encode("utf-8")) > memory_size:
+        return (
+            "Error: The memory was too large to save. "
+            f"Configured memory limit: {memory_size} bytes"
+        )
+
+    lines = _memory_lines(read_memories(persona_dir))
+    lines.append(cleaned)
+    # Purge oldest-first until the file is under the limit, but never drop
+    # the memory just added (the newest line). A memory that alone exceeds
+    # the limit was rejected above, so this always terminates with the new
+    # memory surviving.
+    while len(lines) > 1 and _memories_bytes(lines) >= memory_size:
+        lines.pop(0)
+    try:
+        _write_memories_file(persona_dir, lines)
+    except OSError as exc:
+        logger.warning("Persona %s: failed to write %s: %s", persona_dir.name, MEMORIES_FILENAME, exc)
+        return "Error: The memory could not be saved."
+    return "The memory was saved successfully."
+
+
+def purge_memories_to_limit(persona_dir: Path, memory_size: int) -> None:
+    """Shrink (or delete) memories.txt to the given limit.
+
+    Called from the persona update route when memory_size drops, and from
+    the chat read path before memory injection (an external process may
+    have left the file over the limit). 0 deletes the file outright. A
+    file that already fits is left untouched (no needless rewrite) — a
+    cheap no-op, which is what makes the per-read call affordable. If
+    even the newest memory exceeds the limit the whole file is deleted —
+    keeping an over-limit single memory would just be purged by the next
+    add_memory anyway.
+
+    Never raises: a disk error here must not fail the persona save (the
+    frontmatter was already written; the memories file simply survives
+    until the next attempt) nor the chat request (the memories just go
+    un-injected for that reply).
+    """
+    if memory_size <= 0:
+        if remove_memories_file(persona_dir):
+            logger.info("Deleted %s for %s (memory disabled)", MEMORIES_FILENAME, persona_dir.name)
+        return
+    lines = _memory_lines(read_memories(persona_dir))
+    if not lines:
+        return  # no file, or blank file: nothing to purge
+    if _memories_bytes(lines) <= memory_size:
+        return  # already within the new limit
+    while len(lines) > 1 and _memories_bytes(lines) >= memory_size:
+        lines.pop(0)
+    if len(lines) == 1 and _memories_bytes(lines) > memory_size:
+        remove_memories_file(persona_dir)
+        logger.info(
+            "Deleted %s for %s: newest memory exceeds the new limit (%d bytes)",
+            MEMORIES_FILENAME, persona_dir.name, memory_size,
+        )
+        return
+    try:
+        _write_memories_file(persona_dir, lines)
+    except OSError as exc:
+        logger.warning(
+            "Persona %s: failed to purge %s to %d bytes: %s",
+            persona_dir.name, MEMORIES_FILENAME, memory_size, exc,
+        )
 
 
 # ---------------------------------------------------------------------------

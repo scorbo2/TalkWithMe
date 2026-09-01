@@ -5,8 +5,9 @@ We stream tokens via SSE for the main chat flow, and do a quick non-streaming
 call for the persona router.
 
 Tool calling: stream_chat_with_tools() runs a fully agentic loop — when the
-LLM answers with tool_calls, we invoke each tool on its owning MCP server
-(see app/services/tool_registry.py), feed the results back, and repeat until
+LLM answers with tool_calls, we invoke each tool (built-in tools from
+app/services/builtin.py first, everything else on its owning MCP server
+via app/services/tool_registry.py), feed the results back, and repeat until
 the LLM produces a plain text answer.
 """
 
@@ -17,8 +18,8 @@ from typing import AsyncGenerator, Dict, List, Optional
 
 import httpx
 
-from app.config import get_settings
-from app.services import mcp_client
+from app.config import Persona, get_settings
+from app.services import builtin, mcp_client
 from app.services.tool_registry import get_server_for_tool
 
 logger = logging.getLogger(__name__)
@@ -174,13 +175,18 @@ def _try_parse_arguments(raw: str) -> Optional[dict]:
 async def stream_chat_with_tools(
     messages: List[dict],
     tools: List[dict],
+    persona: Persona,
 ) -> AsyncGenerator[dict, None]:
-    """Stream a persona reply, running an agentic MCP tool-call loop.
+    """Stream a persona reply, running an agentic tool-call loop.
 
     Yields event dicts (not SSE strings; the chat router formats them):
       {"type": "token", "token": str}
       {"type": "tool_call", "tool_name": str, "arguments": dict,
        "result": str, "failed": bool}
+
+    ``persona`` is required (not defaulted): built-in tools execute
+    against it (e.g. add_memory writes to the persona's directory), so a
+    caller that omits it is a bug, not a "no built-ins" case.
 
     The loop continues while the LLM answers with tool_calls, up to
     mcp.max_tool_iterations tool rounds. The FINAL round is sent without
@@ -270,13 +276,19 @@ async def stream_chat_with_tools(
                 )
                 arguments = {}
             else:
-                server = get_server_for_tool(tool_name)
-                if server is None:
-                    available = [t["function"]["name"] for t in tool_list]
-                    result = (f"Error: unknown tool '{tool_name}'. "
-                              f"Available tools: {available}")
+                if builtin.is_builtin_tool(tool_name):
+                    # Built-ins win name collisions (tool_registry never
+                    # registers an MCP tool under a built-in name), and
+                    # they run locally — no server lookup, no network.
+                    result = builtin.call_builtin_tool(persona, tool_name, arguments)
                 else:
-                    result = await mcp_client.call_tool(server, tool_name, arguments)
+                    server = get_server_for_tool(tool_name)
+                    if server is None:
+                        available = [t["function"]["name"] for t in tool_list]
+                        result = (f"Error: unknown tool '{tool_name}'. "
+                                  f"Available tools: {available}")
+                    else:
+                        result = await mcp_client.call_tool(server, tool_name, arguments)
             conversation.append({
                 "role": "tool",
                 "tool_call_id": tc["id"],

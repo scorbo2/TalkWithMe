@@ -12,6 +12,9 @@ Follow the development of this app on my YouTube channel:
 - Persona-to-persona chat: https://www.youtube.com/watch?v=4J3Ao2RitKs
 - Cleaning audio samples for better voice cloning: https://www.youtube.com/watch?v=s33vyuiKDfs
 - MCP integrations: https://www.youtube.com/watch?v=XhD9soU3hFM
+- Externalizing persona persistence: (TODO video link here)
+- Adding persistent memories: (TODO video link here)
+- Adding emotion to cloned AI voices: (TODO video link here)
 
 ## Features
 
@@ -96,6 +99,7 @@ general:
   max_persona_replies: 1
   max_turns_for_context: 6
   show_tool_calls: true
+  personas_directory: Personas/
 
 mcp:
   servers: []
@@ -122,7 +126,7 @@ In this editor, you can:
 - **Clone** a persona (a numeric suffix is added to the name, e.g. `Mark_2`)
 - **Delete** a persona (with a confirmation prompt)
 
-Changes are persisted immediately to the `Personas/` directory and the sidebar persona list is refreshed automatically. No server restart is needed.
+Changes are persisted immediately to the `Personas/` directory (configured in `settings.general.personas_directory`) and the sidebar persona list is refreshed automatically. No server restart is needed.
 
 > **Note**: renaming or deleting a persona does not modify messages already visible in the chat panel — those retain the name they were created with. Renaming does not rename the on-disk directory (the name is recorded inside `prompt.md`), so a directory name may legitimately differ from the persona's displayed name.
 
@@ -168,6 +172,7 @@ can be more accurate)
 | reference audio | `ref.wav` file | WAV for TTS voice cloning (optional) |
 | reference transcript | `ref.txt` file | Transcript of the reference audio (required for TTS) |
 | reference audio language | `language.txt` file | Two-letter code describing the reference audio |
+| `memory_size` | `prompt.md` frontmatter | If 0, memories are disabled for this persona. Otherwise, maximum byte size of the memories file. |
 | `allow_tool_calls` | `prompt.md` frontmatter | If `true`, this persona may call MCP tools while replying (if at least one MCP server is configured) |
 
 **TTS support**: Both `ref.wav` and a non-blank `ref.txt` must be present for a persona to have TTS capability.
@@ -261,6 +266,22 @@ By default, only one AI persona in the current chat room will answer your prompt
 ## MCP tools (optional)
 
 If you want your personas to be able to *do* things — fetch a web page, query a database, check the weather — you can connect one or more [MCP (Model Context Protocol)](https://modelcontextprotocol.io) servers. When a persona with tools enabled replies, TalkWithMe runs an agentic loop: the LLM may request tool calls, TalkWithMe executes them against the configured MCP servers, feeds the results back to the LLM, and repeats until the LLM produces a final text answer.
+
+## Persona memories
+
+Every time you select "New Chat" in a given chat room, the chat history of that room is wiped. But, your personas have access to a new feature (added in V6) to allow them to persist certain memories across chat sessions, and across chat rooms. To enable this for a persona, the following conditions must be met:
+
+- `settings.general.enable_persona_memories` must be enabled.
+- `memory_size` must be greater than 0 for the persona in question.
+- `allow_tool_calls` must be enabled for the persona in question (so they can save new memories - this is not needed for recalling existing memories).
+
+If the above conditions are met, the persona may save memories related to things that you've told it. If `settings.general.show_tool_calls` is enabled, you will see the `add_memory` tool being used. Hovering over the tool chip with the mouse cursor will show you the exact memory that was saved. Memories are persisted to `memories.txt` inside the persona's directory. You can view and even edit this file directly if you wish.
+
+You can clear persisted memories in the Persona Editor by selecting "Clear". This deletes the `memories.txt` file for the persona in question, once the dialog is confirmed.
+
+Each persona has a `memory_size` property, which is a limit (in bytes) to the size of the `memories.txt` file. If a new memory is saved when the file is already at or over the limit, older memories will be purged automatically to make room for the new memory. Setting `memory_size` to 0 effectively disables memory storage for that persona. The maximum value for `memory_size` is 16384.
+
+Because the limit is also checked every time a persona's memories are loaded into the LLM's context, if you (or any other process) edit `memories.txt` directly while the app is running, the change is picked up on the persona's next reply. If the file is over the limit at that point, the oldest memories are purged first — both before they are shown to the LLM and on disk — so an over-limit file is never handed to the LLM verbatim.
 
 ### 1. Configure your MCP server(s)
 

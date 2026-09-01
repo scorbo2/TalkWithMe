@@ -29,6 +29,11 @@ let peAudioOnServer = false;
 let peAvatarRemoveRequested = false;
 let peAudioRemoveRequested = false;
 
+// Same rule for the memories: clear_memories is sent ONLY after an explicit
+// "Clear saved memories" click. Deriving it from anything else (e.g. the
+// size field being lowered) would silently wipe memories on ordinary saves.
+let peMemoriesClearRequested = false;
+
 // Object URLs + Audio element for the in-form previews. Reused across
 // plays; revoked and stopped when the form closes.
 let peAvatarObjectUrl = null;
@@ -153,6 +158,9 @@ pfAvatarRemoveBtn.addEventListener("click", () => resetPersonaAvatarField());
 pfReferenceAudio.addEventListener("change", onPersonaAudioFileSelected);
 pfAudioRemoveBtn.addEventListener("click", () => resetPersonaAudioField());
 pfAudioPlayBtn.addEventListener("click", playPersonaReferenceAudio);
+pfMemoriesClearBtn.addEventListener("click", () => {
+    peMemoriesClearRequested = true;
+});
 document.getElementById("pe-confirm-cancel").addEventListener("click", () => {
     peConfirmOverlay.classList.add("hidden");
 });
@@ -269,6 +277,7 @@ async function openPersonaForm(name) {
     peAudioOnServer = false;
     peAvatarRemoveRequested = false;
     peAudioRemoveRequested = false;
+    peMemoriesClearRequested = false;
 
     if (name) {
         peFormTitle.textContent = `Edit Persona: ${name}`;
@@ -287,6 +296,7 @@ async function openPersonaForm(name) {
             pfReferenceAudioLanguage.value = p.reference_audio_language || "en";
             pfReferenceAudioTx.value  = p.reference_audio_transcript || "";
             pfAllowToolCalls.checked  = p.allow_tool_calls ?? false;
+            pfMemorySize.value        = p.memory_size ?? 8192;
             // avatar_image / reference_audio are now presence flags; the
             // actual files are previewed via their dedicated endpoints.
             peAvatarOnServer = !!p.avatar_image;
@@ -305,7 +315,12 @@ async function openPersonaForm(name) {
         pfReferenceAudioLanguage.value = "en";
         pfReferenceAudioTx.value  = "";
         pfAllowToolCalls.checked  = false;
+        pfMemorySize.value        = 8192;
     }
+
+    // "Clear saved memories" only makes sense when editing an existing
+    // persona — a new one has nothing to clear.
+    pfMemoriesClearBtn.classList.toggle("hidden", !name);
 
     renderPersonaAvatarPreview();
     updatePersonaAudioControls();
@@ -495,6 +510,10 @@ async function submitPersonaForm(e) {
     if (!systemPrompt) return showPersonaFormError("System prompt is required.");
     if (!routerHints) return showPersonaFormError("Router hints are required.");
     if (referenceAudioLanguage.length !== 2) return showPersonaFormError("Reference audio language must be a 2-letter code.");
+    const memorySize = parseInt(pfMemorySize.value, 10);
+    if (isNaN(memorySize) || memorySize < 0 || memorySize > 16384) {
+        return showPersonaFormError("Memory size must be a whole number between 0 and 16384 bytes.");
+    }
 
     // Multipart: text fields + the chosen files in one request. The remove_*
     // flags are sent ONLY for an explicit "Remove" click (see the
@@ -510,6 +529,14 @@ async function submitPersonaForm(e) {
     form.append("reference_audio_language", referenceAudioLanguage);
     form.append("allow_tool_calls", String(pfAllowToolCalls.checked));
     form.append("reference_audio_transcript", pfReferenceAudioTx.value.trim());
+    // memory_size is ALWAYS sent (the update endpoint requires it — an
+    // omitted value must not silently reset the persona's budget).
+    form.append("memory_size", String(memorySize));
+    // clear_memories only after an explicit "Clear saved memories" click,
+    // for the same reason the remove_* flags require explicit clicks.
+    if (peMemoriesClearRequested) {
+        form.append("clear_memories", "true");
+    }
 
     const avatarFile = pfAvatarImage.files[0];
     if (avatarFile) {

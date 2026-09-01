@@ -10,7 +10,7 @@ import pytest
 
 import app.config as app_config
 from app.services import persona_store
-from tests.factories import make_personas_in_dir
+from tests.factories import make_personas_in_dir, rescan_personas
 
 
 @pytest.fixture
@@ -192,6 +192,30 @@ class TestCreatePersona:
         )
         assert resp.status_code == 422
 
+    def test_create_memory_size_defaults_to_8192(self, client, personas_root):
+        resp = client.post("/api/personas", data=self._data())
+        assert resp.status_code == 201
+        assert resp.json()["memory_size"] == 8192
+        fields, _ = persona_store.parse_frontmatter(
+            (personas_root / "Data" / "prompt.md").read_text()
+        )
+        assert fields["memory_size"] == 8192
+
+    def test_create_memory_size_custom_value_persisted(self, client, personas_root):
+        resp = client.post("/api/personas", data=self._data(memory_size="4096"))
+        assert resp.status_code == 201
+        assert resp.json()["memory_size"] == 4096
+        fields, _ = persona_store.parse_frontmatter(
+            (personas_root / "Data" / "prompt.md").read_text()
+        )
+        assert fields["memory_size"] == 4096
+
+    @pytest.mark.parametrize("value", ["-1", "16385", "not-a-number"])
+    def test_create_memory_size_out_of_range_rejected(self, client, personas_root, value):
+        resp = client.post("/api/personas", data=self._data(memory_size=value))
+        assert resp.status_code == 422
+        assert not (personas_root / "Data").exists()
+
 
 # ---------------------------------------------------------------------------
 # GET /api/personas/{name}/detail
@@ -213,6 +237,27 @@ class TestGetPersonaDetail:
         assert body["reference_audio_language"] == "en"
         assert body["allow_tool_calls"] is False
         assert body["tts_capable"] is True
+        # Stock personas predate the field: no key in frontmatter -> default.
+        assert body["memory_size"] == 8192
+
+    def test_detail_reports_custom_memory_size(self, client, personas_root):
+        # Rewrite Luna's prompt.md with a custom budget, then refresh the
+        # cache by re-scanning (rescan writes nothing — the custom file
+        # must survive).
+        persona_store.write_prompt_md(
+            personas_root / "Luna",
+            name="Luna",
+            description="A philosophical poet",
+            router_hints="philosophy, feelings",
+            avatar_color="#888888",
+            allow_tool_calls=False,
+            system_prompt="You are Luna, a philosophical poet.",
+            memory_size=2048,
+        )
+        app_config.set_personas_cache(rescan_personas(personas_root))
+
+        body = client.get("/api/personas/Luna/detail").json()
+        assert body["memory_size"] == 2048
 
     def test_detail_without_files_reports_absent(self, client, personas_root):
         body = client.get("/api/personas/Alex/detail").json()
@@ -241,6 +286,9 @@ class TestUpdatePersona:
             "reference_audio_language": "en",
             "allow_tool_calls": "false",
             "reference_audio_transcript": "",
+            # REQUIRED on update (no server-side default): an omitted value
+            # must 422 rather than silently reset the memory budget.
+            "memory_size": "8192",
             "remove_avatar_image": "false",
             "remove_reference_audio": "false",
         }
@@ -291,7 +339,7 @@ class TestUpdatePersona:
     def test_update_with_new_image_replaces_existing(self, client, personas_root):
         # Give Alex a png avatar, then update with a webp: the png must go.
         persona_store.write_avatar_file(personas_root / "Alex", b"OLDPNG", ".png")
-        app_config.set_personas_cache(make_personas_in_dir(personas_root))
+        app_config.set_personas_cache(rescan_personas(personas_root))
 
         resp = client.put(
             "/api/personas/Alex", data=self._data(),
@@ -313,7 +361,7 @@ class TestUpdatePersona:
 
     def test_update_remove_image_flag_removes_file(self, client, personas_root):
         persona_store.write_avatar_file(personas_root / "Alex", b"PNGDATA", ".png")
-        app_config.set_personas_cache(make_personas_in_dir(personas_root))
+        app_config.set_personas_cache(rescan_personas(personas_root))
 
         resp = client.put("/api/personas/Alex", data=self._data(remove_avatar_image="true"))
         assert resp.status_code == 200
@@ -357,6 +405,61 @@ class TestUpdatePersona:
         assert resp.status_code == 422
         # The existing files are untouched by a failed update.
         assert not (personas_root / "Alex" / "image.bmp").exists()
+
+    def test_update_requires_memory_size(self, client, personas_root):
+        data = self._data()
+        del data["memory_size"]
+        resp = client.put("/api/personas/Alex", data=data)
+        assert resp.status_code == 422
+
+    def test_update_memory_size_persisted_to_frontmatter(self, client, personas_root):
+        resp = client.put("/api/personas/Alex", data=self._data(memory_size="4096"))
+        assert resp.status_code == 200
+        assert resp.json()["memory_size"] == 4096
+        fields, _ = persona_store.parse_frontmatter(
+            (personas_root / "Alex" / "prompt.md").read_text()
+        )
+        assert fields["memory_size"] == 4096
+
+    def test_update_out_of_range_memory_size_rejected(self, client, personas_root):
+        resp = client.put("/api/personas/Alex", data=self._data(memory_size="16385"))
+        assert resp.status_code == 422
+
+    def test_update_preserves_memories_within_new_limit(self, client, personas_root):
+        memories = personas_root / "Alex" / "memories.txt"
+        memories.write_text("abc\n")  # 4 bytes, well within 8192
+        resp = client.put("/api/personas/Alex", data=self._data(memory_size="8192"))
+        assert resp.status_code == 200
+        assert memories.read_text() == "abc\n"
+
+    def test_update_lowered_memory_size_purges_oldest_first(self, client, personas_root):
+        memories = personas_root / "Alex" / "memories.txt"
+        memories.write_text("a1\na2\na3\na4\n")  # 12 bytes
+        resp = client.put("/api/personas/Alex", data=self._data(memory_size="6"))
+        assert resp.status_code == 200
+        assert resp.json()["memory_size"] == 6
+        # Oldest lines dropped until under the new budget; newest survives.
+        assert memories.read_text() == "a4\n"
+
+    def test_update_memory_size_zero_deletes_memories(self, client, personas_root):
+        memories = personas_root / "Alex" / "memories.txt"
+        memories.write_text("stale\n")
+        resp = client.put("/api/personas/Alex", data=self._data(memory_size="0"))
+        assert resp.status_code == 200
+        assert resp.json()["memory_size"] == 0
+        assert not memories.exists()
+
+    def test_update_clear_memories_flag_deletes_file(self, client, personas_root):
+        memories = personas_root / "Alex" / "memories.txt"
+        memories.write_text("the user likes tea\n")
+        resp = client.put(
+            "/api/personas/Alex",
+            data=self._data(memory_size="8192", clear_memories="true"),
+        )
+        assert resp.status_code == 200
+        assert not memories.exists()
+        # The persona itself is still fine — only the memories went.
+        assert resp.json()["name"] == "Alex"
 
 
 # ---------------------------------------------------------------------------
@@ -430,6 +533,34 @@ class TestClonePersona:
         )
         assert fields["name"] == "O'Brien_2"
 
+    def test_clone_carries_over_memory_size(self, client, personas_root):
+        create_data = {
+            "name": "Data",
+            "description": "A logic-driven captain",
+            "system_prompt": "You are Data.",
+            "router_hints": "logic, science",
+            "avatar_color": "#4A90D9",
+            "reference_audio_language": "en",
+            "allow_tool_calls": "false",
+            "reference_audio_transcript": "",
+            "memory_size": "4096",
+            "remove_avatar_image": "false",
+            "remove_reference_audio": "false",
+        }
+        assert client.post("/api/personas", data=create_data).status_code == 201
+
+        resp = client.post("/api/personas/Data/clone")
+        assert resp.status_code == 201
+        clone = resp.json()
+        assert clone["name"] == "Data_2"
+        assert clone["memory_size"] == 4096
+        # ...and it is on disk in the clone's own frontmatter, not just in
+        # the response (a lost key would fall back to the default on reload).
+        fields, _ = persona_store.parse_frontmatter(
+            (personas_root / "Data_2" / "prompt.md").read_text()
+        )
+        assert fields["memory_size"] == 4096
+
     def test_clone_skips_taken_suffixes(self, client, personas_root):
         client.post("/api/personas/Alex/clone")  # creates Alex_2
         resp = client.post("/api/personas/Alex/clone")
@@ -452,7 +583,7 @@ class TestGetAvatar:
 
     def test_avatar_file_missing_on_disk_404(self, client, personas_root):
         persona_store.write_avatar_file(personas_root / "Alex", b"PNGDATA", ".png")
-        app_config.set_personas_cache(make_personas_in_dir(personas_root))
+        app_config.set_personas_cache(rescan_personas(personas_root))
         (personas_root / "Alex" / "image.png").unlink()  # cache still points at it
 
         resp = client.get("/api/personas/Alex/avatar")
@@ -460,7 +591,7 @@ class TestGetAvatar:
 
     def test_serves_avatar_bytes(self, client, personas_root):
         persona_store.write_avatar_file(personas_root / "Alex", b"\x89PNG fake bytes", ".png")
-        app_config.set_personas_cache(make_personas_in_dir(personas_root))
+        app_config.set_personas_cache(rescan_personas(personas_root))
 
         resp = client.get("/api/personas/Alex/avatar")
         assert resp.status_code == 200

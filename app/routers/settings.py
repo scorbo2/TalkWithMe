@@ -47,6 +47,7 @@ def _to_response(cfg: AppSettings) -> SettingsResponse:
             max_persona_replies=cfg.general.max_persona_replies,
             max_turns_for_context=cfg.general.max_turns_for_context,
             show_tool_calls=cfg.general.show_tool_calls,
+            enable_persona_memories=cfg.general.enable_persona_memories,
         ),
     )
 

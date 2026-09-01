@@ -18,6 +18,8 @@ from fastapi import APIRouter, File, Form, HTTPException, UploadFile
 from fastapi.responses import FileResponse, Response
 
 from app.config import (
+    DEFAULT_MEMORY_SIZE,
+    MAX_MEMORY_SIZE,
     ChatRoom,
     ChatRoomsConfig,
     Persona,
@@ -137,6 +139,7 @@ def _apply_persona_fields(
     audio: Optional[bytes],
     remove_image: bool,
     remove_audio: bool,
+    memory_size: int,
 ) -> None:
     """Write one create/update payload into a persona directory.
 
@@ -153,6 +156,7 @@ def _apply_persona_fields(
         avatar_color=avatar_color,
         allow_tool_calls=allow_tool_calls,
         system_prompt=system_prompt,
+        memory_size=memory_size,
     )
     persona_store.write_language_file(persona_dir, reference_audio_language)
     persona_store.write_transcript_file(persona_dir, reference_audio_transcript)
@@ -216,6 +220,7 @@ def _to_detail(p: Persona) -> PersonaDetailResponse:
         reference_audio_transcript=transcript,
         reference_audio_language=p.reference_audio_language,
         allow_tool_calls=p.allow_tool_calls,
+        memory_size=p.memory_size,
         tts_capable=p.tts_capable,
     )
 
@@ -240,15 +245,18 @@ def create_persona(
     reference_audio_language: str = Form("en", min_length=2, max_length=2),
     allow_tool_calls: bool = Form(False),
     reference_audio_transcript: str = Form("", max_length=16384),
+    memory_size: int = Form(DEFAULT_MEMORY_SIZE, ge=0, le=MAX_MEMORY_SIZE),
     avatar_image: Optional[UploadFile] = File(None),
     remove_avatar_image: bool = Form(False),
     reference_audio: Optional[UploadFile] = File(None),
     remove_reference_audio: bool = Form(False),
+    clear_memories: bool = Form(False),
 ):
     """Create a new persona in the Personas directory (multipart/form-data).
 
-    The remove_* flags are accepted for API symmetry with update but are
-    ignored here: a brand-new directory has nothing to remove.
+    The remove_* / clear_memories flags are accepted for API symmetry with
+    update but are ignored here: a brand-new directory has nothing to
+    remove.
     """
     name = _validate_name(name)
     if any(p.name.lower() == name.lower() for p in get_personas().personas):
@@ -282,6 +290,7 @@ def create_persona(
             audio=audio,
             remove_image=False,
             remove_audio=False,
+            memory_size=memory_size,
         )
         persona = persona_store.load_persona_from_dir(persona_dir)
     except OSError as exc:
@@ -314,10 +323,14 @@ def update_persona(
     reference_audio_language: str = Form("en", min_length=2, max_length=2),
     allow_tool_calls: bool = Form(False),
     reference_audio_transcript: str = Form("", max_length=16384),
+    # REQUIRED on update (no default): an omitted value must 422, not
+    # silently reset the persona's memory budget to the default.
+    memory_size: int = Form(..., ge=0, le=MAX_MEMORY_SIZE),
     avatar_image: Optional[UploadFile] = File(None),
     remove_avatar_image: bool = Form(False),
     reference_audio: Optional[UploadFile] = File(None),
     remove_reference_audio: bool = Form(False),
+    clear_memories: bool = Form(False),
 ):
     """Update an existing persona in its directory (multipart/form-data).
 
@@ -325,6 +338,12 @@ def update_persona(
     rooms; the persona DIRECTORY is never renamed — the directory name
     is only a filesystem concern and renaming it would break any external
     reference to the old path.
+
+    Memory handling: clear_memories=True deletes memories.txt outright
+    (an explicit user action — a failure here DOES fail the save, so the
+    user knows the clear did not happen). Otherwise, dropping memory_size
+    below the current file size triggers an oldest-first purge; that
+    path is best-effort and never fails the save.
     """
     config = get_personas()
     existing = next((p for p in config.personas if p.name == name), None)
@@ -360,7 +379,16 @@ def update_persona(
             audio=audio,
             remove_image=remove_avatar_image,
             remove_audio=remove_reference_audio,
+            memory_size=memory_size,
         )
+        if clear_memories:
+            # Explicit user action: propagate I/O failures as 500 (the
+            # persona fields ARE saved; a silent no-op clear is worse).
+            persona_store.remove_memories_file(persona_dir)
+        else:
+            # Best-effort: shrink an over-limit memories file to the new
+            # budget. Never raises (see purge_memories_to_limit).
+            persona_store.purge_memories_to_limit(persona_dir, memory_size)
         updated = persona_store.load_persona_from_dir(persona_dir)
     except OSError as exc:
         logger.error("Failed to update persona '%s' in %s: %s", name, persona_dir, exc)
@@ -435,6 +463,10 @@ def clone_persona(name: str):
             avatar_color=source.avatar_color,
             allow_tool_calls=source.allow_tool_calls,
             system_prompt=source.system_prompt,
+            # Must be carried over explicitly: build_prompt_md omits the
+            # key when memory_size is None, and a clone that lost its
+            # budget would quietly fall back to the default on reload.
+            memory_size=source.memory_size,
         )
         clone = persona_store.load_persona_from_dir(new_dir)
     except OSError as exc:

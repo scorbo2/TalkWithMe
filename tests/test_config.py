@@ -81,6 +81,33 @@ class TestGeneralConfigBounds:
             GeneralConfig(max_turns_for_context=value)
 
 
+class TestGeneralConfigEnablePersonaMemories:
+    """general.enable_persona_memories is a STRICT boolean (docs/
+    feature_persona_memory.md): pydantic's lax coercion would silently turn
+    the hand-edited string "false" into False, so the validator intercepts
+    non-booleans first — warning and falling back to the default (true)."""
+
+    def test_enable_persona_memories_defaults_to_true(self):
+        assert GeneralConfig().enable_persona_memories is True
+
+    @pytest.mark.parametrize("value", [True, False])
+    def test_enable_persona_memories_valid_booleans_preserved(self, value):
+        assert GeneralConfig(enable_persona_memories=value).enable_persona_memories is value
+
+    @pytest.mark.parametrize("value", ["false", "true", "0", "1", 0, 1, None, "yes", []])
+    def test_enable_persona_memories_non_bool_warns_and_falls_back_to_true(self, value, caplog):
+        with caplog.at_level(logging.WARNING):
+            cfg = GeneralConfig(enable_persona_memories=value)
+        assert cfg.enable_persona_memories is True
+        assert "invalid general.enable_persona_memories" in caplog.text
+
+    def test_enable_persona_memories_key_absent_keeps_default_without_warning(self, caplog):
+        with caplog.at_level(logging.WARNING):
+            cfg = GeneralConfig(show_tool_calls=False)
+        assert cfg.enable_persona_memories is True
+        assert "enable_persona_memories" not in caplog.text
+
+
 # ---------------------------------------------------------------------------
 # MCP server config validation
 # ---------------------------------------------------------------------------
@@ -116,6 +143,25 @@ class TestPersona:
             .tts_capable
             is True
         )
+
+
+class TestPersonaMemorySize:
+    """Persona.memory_size bounds: 0 is a legal "memory disabled" value,
+    16384 is the hard cap (docs/feature_persona_memory.md). The ge/le
+    constraints are a safety net — persona_store sanitizes frontmatter and
+    the router validates form input before this model is constructed."""
+
+    def test_persona_memory_size_defaults_to_8192(self):
+        assert Persona(name="A", system_prompt="p").memory_size == 8192
+
+    @pytest.mark.parametrize("value", [0, 1, 4096, 8192, 16384])
+    def test_persona_memory_size_in_range_accepted(self, value):
+        assert Persona(name="A", system_prompt="p", memory_size=value).memory_size == value
+
+    @pytest.mark.parametrize("value", [-1, 16385])
+    def test_persona_memory_size_out_of_range_rejected(self, value):
+        with pytest.raises(ValidationError):
+            Persona(name="A", system_prompt="p", memory_size=value)
 
 
 # ---------------------------------------------------------------------------

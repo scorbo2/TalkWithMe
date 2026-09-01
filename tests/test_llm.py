@@ -11,12 +11,28 @@ import pytest
 
 import app.config as app_config
 import app.services.llm as llm
+from app.config import Persona
+from app.services import builtin
 from tests.factories import (
     FakeLLMClient,
     FakeStreamResponse,
     json_response,
     make_settings,
 )
+
+
+def _tool_persona(tmp_path=None) -> Persona:
+    """Persona passed to stream_chat_with_tools().
+
+    MCP tool tests never touch its directory (built-in dispatch is a no-op
+    for them); the built-in dispatch test passes tmp_path to give
+    add_memory a real memories.txt to write.
+    """
+    if tmp_path is None:
+        return Persona(name="Mindy", system_prompt="p")
+    persona_dir = tmp_path / "Mindy"
+    persona_dir.mkdir(parents=True)
+    return Persona(name="Mindy", system_prompt="p", persona_dir=persona_dir)
 
 
 def sse_line(chunk: dict) -> str:
@@ -282,6 +298,7 @@ class TestStreamChatWithTools:
             llm.stream_chat_with_tools(
                 [{"role": "user", "content": "what time is it?"}],
                 [{"type": "function", "function": {"name": "get_time"}}],
+                _tool_persona(),
             )
         )
 
@@ -330,7 +347,9 @@ class TestStreamChatWithTools:
 
         patch_llm_client(monkeypatch, RoundClient([]))
 
-        events = _collect(llm.stream_chat_with_tools([{"role": "user", "content": "time?"}], []))
+        events = _collect(
+            llm.stream_chat_with_tools([{"role": "user", "content": "time?"}], [], _tool_persona())
+        )
 
         tool_event = next(e for e in events if e["type"] == "tool_call")
         assert tool_event["failed"] is True
@@ -365,7 +384,9 @@ class TestStreamChatWithTools:
 
         patch_llm_client(monkeypatch, RoundClient([]))
 
-        events = _collect(llm.stream_chat_with_tools([{"role": "user", "content": "time?"}], []))
+        events = _collect(
+            llm.stream_chat_with_tools([{"role": "user", "content": "time?"}], [], _tool_persona())
+        )
 
         tool_event = next(e for e in events if e["type"] == "tool_call")
         assert tool_event["failed"] is True
@@ -399,7 +420,9 @@ class TestStreamChatWithTools:
 
         patch_llm_client(monkeypatch, RoundClient([]))
 
-        events = _collect(llm.stream_chat_with_tools([{"role": "user", "content": "boom?"}], []))
+        events = _collect(
+            llm.stream_chat_with_tools([{"role": "user", "content": "boom?"}], [], _tool_persona())
+        )
 
         tool_event = next(e for e in events if e["type"] == "tool_call")
         assert tool_event["failed"] is True
@@ -442,7 +465,11 @@ class TestStreamChatWithTools:
         patch_llm_client(monkeypatch, client)
         tool_list = [{"type": "function", "function": {"name": "loop"}}]
 
-        events = _collect(llm.stream_chat_with_tools([{"role": "user", "content": "loop"}], tool_list))
+        events = _collect(
+            llm.stream_chat_with_tools(
+                [{"role": "user", "content": "loop"}], tool_list, _tool_persona(),
+            )
+        )
 
         # Two LLM rounds total: the allowed tool round + the forced final one.
         assert len(client.payloads) == 2
@@ -453,3 +480,58 @@ class TestStreamChatWithTools:
         assert len(tool_events) == 1
         assert events[-1]["type"] == "tool_call"
         assert tool_events[0]["failed"] is False
+
+    def test_builtin_tool_runs_locally_against_persona_never_mcp(self, monkeypatch, tmp_path):
+        """add_memory is a built-in: it executes against the persona's own
+        directory, the MCP registry is never consulted, and the result
+        (the saved-memory confirmation) is fed back into the loop."""
+        from app.services import mcp_client
+
+        mcp_calls = []
+
+        async def fake_call_tool(server_cfg, tool_name, arguments):
+            mcp_calls.append(tool_name)
+
+        monkeypatch.setattr(mcp_client, "call_tool", fake_call_tool)
+
+        class RoundClient(FakeLLMClient):
+            def stream(self, method, url, json=None):
+                self.payloads.append(json)
+                if len(self.payloads) == 1:
+                    lines = [
+                        tool_call_delta_line(
+                            0, id="c1", type="function",
+                            function={"name": builtin.ADD_MEMORY_NAME,
+                                      "arguments": '{"memory": "The user likes tea."}'},
+                        ),
+                        finish_line("tool_calls"),
+                    ]
+                else:
+                    lines = [token_line("Noted."), finish_line("stop")]
+                return FakeStreamResponse(lines)
+
+        client = RoundClient([])
+        patch_llm_client(monkeypatch, client)
+        persona = _tool_persona(tmp_path)
+
+        events = _collect(
+            llm.stream_chat_with_tools(
+                [{"role": "user", "content": "remember that I like tea"}],
+                [builtin.ADD_MEMORY_SPEC],
+                persona,
+            )
+        )
+
+        tool_event = next(e for e in events if e["type"] == "tool_call")
+        assert tool_event["tool_name"] == builtin.ADD_MEMORY_NAME
+        assert tool_event["arguments"] == {"memory": "The user likes tea."}
+        assert tool_event["failed"] is False
+        assert tool_event["result"] == "The memory was saved successfully."
+        assert mcp_calls == []  # no MCP server was ever contacted
+        # The memory landed in the persona's own directory...
+        assert (persona.persona_dir / "memories.txt").read_text() == "The user likes tea.\n"
+        # ...and the confirmation went back to the LLM as the tool result.
+        tool_result_msg = next(
+            m for m in client.payloads[1]["messages"] if m.get("role") == "tool"
+        )
+        assert tool_result_msg["content"] == "The memory was saved successfully."

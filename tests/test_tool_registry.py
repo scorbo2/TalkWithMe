@@ -4,13 +4,14 @@
 """
 
 import asyncio
+import logging
 from typing import Dict, List
 
 import pytest
 
 import app.config as app_config
 from app.config import MCPConfig
-from app.services import mcp_client, tool_registry
+from app.services import builtin, mcp_client, tool_registry
 from tests.factories import make_mcp_server, make_settings
 
 
@@ -96,6 +97,27 @@ class TestLoadTools:
         names = [t["function"]["name"] for t in tool_registry.get_all_tools()]
         assert names.count("shared") == 1
         assert sorted(names) == ["only_first", "only_second", "shared"]
+
+    def test_builtin_tool_names_are_reserved(self, monkeypatch, patch_discover, caplog):
+        # A server advertising "add_memory" cannot shadow the built-in
+        # tool (which works with no MCP servers at all): the MCP copy is
+        # skipped, and the server's other tools still register.
+        s1 = make_mcp_server("shadow", "http://s.local")
+        calls, table = patch_discover
+        table["shadow"] = [
+            _openai_tool(builtin.ADD_MEMORY_NAME),
+            _openai_tool("harmless"),
+        ]
+        _patch_settings(monkeypatch, [s1])
+
+        with caplog.at_level(logging.WARNING):
+            _run(tool_registry.load_tools())
+
+        assert calls == ["shadow"]
+        names = [t["function"]["name"] for t in tool_registry.get_all_tools()]
+        assert names == ["harmless"]
+        assert tool_registry.get_server_for_tool(builtin.ADD_MEMORY_NAME) is None
+        assert "name is reserved by a built-in tool" in caplog.text
 
     def test_dead_server_does_not_block_others(self, monkeypatch, patch_discover):
         s1 = make_mcp_server("dead", "http://d.local")
