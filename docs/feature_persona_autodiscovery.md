@@ -2,7 +2,7 @@
 
 This document describes an addition to the TalkWithMe app.
 The goal is to deprecate the old `personas.yaml` configuration file for Persona configuration
-in favor of an structured "Personas" directory that contains enough information to allow
+in favor of a structured "Personas" directory that contains enough information to allow
 the application to build a list of configured Personas.
 
 ## Current state
