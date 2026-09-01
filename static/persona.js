@@ -176,11 +176,13 @@ function openPersonaEditor() {
 
 function closePersonaEditor() {
     stopPersonaPreviewAudio();
+    stopPersonaAvatarPreview();
     personaEditorOverlay.classList.add("hidden");
 }
 
 function showPersonaList() {
     stopPersonaPreviewAudio();
+    stopPersonaAvatarPreview();
     peListView.classList.remove("hidden");
     peFormView.classList.add("hidden");
     renderPersonaEditorList();
@@ -256,9 +258,11 @@ async function openPersonaForm(name) {
     peFormError.classList.add("hidden");
     peFormError.textContent = "";
 
-    // Always start from a clean slate: stop any preview playback and clear
-    // the file inputs (setting value="" is the only way to reset them).
+    // Always start from a clean slate: stop any preview playback, release
+    // any leftover preview object URLs, and clear the file inputs (setting
+    // value="" is the only way to reset them).
     stopPersonaPreviewAudio();
+    stopPersonaAvatarPreview();
     pfAvatarImage.value = "";
     pfReferenceAudio.value = "";
     peAvatarOnServer = false;
@@ -321,10 +325,7 @@ async function openPersonaForm(name) {
  * fallback.
  */
 function renderPersonaAvatarPreview() {
-    if (peAvatarObjectUrl) {
-        URL.revokeObjectURL(peAvatarObjectUrl);
-        peAvatarObjectUrl = null;
-    }
+    stopPersonaAvatarPreview();
     const file = pfAvatarImage.files[0];
     if (file) {
         peAvatarObjectUrl = URL.createObjectURL(file);
@@ -355,6 +356,20 @@ function renderPersonaAvatarPreview() {
         "hidden",
         !file && !(peAvatarOnServer && !peAvatarRemoveRequested)
     );
+}
+
+/**
+ * Revoke the object URL backing the avatar preview. Called whenever the
+ * form closes or resets: the preview <img> dies with the form, so the URL
+ * (and the in-memory File it pins) must go with it. Deliberately NOT part
+ * of stopPersonaPreviewAudio() — that also runs on an audio-field-only
+ * reset, where the avatar preview is still on screen.
+ */
+function stopPersonaAvatarPreview() {
+    if (peAvatarObjectUrl) {
+        URL.revokeObjectURL(peAvatarObjectUrl);
+        peAvatarObjectUrl = null;
+    }
 }
 
 function onPersonaAvatarFileSelected() {
