@@ -51,7 +51,7 @@ Per-persona files:
 | File | Content | Notes |
 |------|---------|-------|
 | `prompt.md` | YAML frontmatter (`description`, `router_hints`, `avatar_color`, `allow_tool_calls`) + system prompt body | `name` is stored only when it differs from the directory name; parsed/serialized by `parse_frontmatter()` / `build_prompt_md()`. Malformed frontmatter degrades the whole file to the prompt body with a warning — never a crash |
-| `language.txt` | Single line: reference-audio language code | Absent → `None` |
+| `language.txt` | Single line: reference-audio language code | Absent → `en` (with warning) |
 | `ref.wav` | TTS reference audio | Fixed filename — never user-chosen |
 | `ref.txt` | Transcript of `ref.wav` | A persona is TTS-capable only when **both** are present (and non-blank) |
 | `image.<ext>` | Avatar (png/jpg/jpeg/gif/webp) | One per persona; the editor's "replace image" uploads a new file and deletes the old one |
