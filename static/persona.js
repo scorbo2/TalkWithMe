@@ -15,10 +15,19 @@
     ========================================================================== */
 
 // Whether the persona being edited has an avatar / reference audio on the
-// server when the form opens. Drives the Remove buttons and the remove_*
-// flags on submit (see submitPersonaForm).
+// server when the form opens. Drives the previews and Remove-button
+// visibility (see renderPersonaAvatarPreview / updatePersonaAudioControls).
 let peAvatarOnServer = false;
 let peAudioOnServer = false;
+
+// Whether the user has explicitly clicked "Remove" for the avatar /
+// reference audio since the form opened (or since the last file selection).
+// This is the ONLY thing that may set the remove_* flags on submit. They
+// must never be derived from peAvatarOnServer / peAudioOnServer: that would
+// silently delete a persona's avatar / reference audio on every plain text
+// save (the original bug behind the remove-requested split).
+let peAvatarRemoveRequested = false;
+let peAudioRemoveRequested = false;
 
 // Object URLs + Audio element for the in-form previews. Reused across
 // plays; revoked and stopped when the form closes.
@@ -254,6 +263,8 @@ async function openPersonaForm(name) {
     pfReferenceAudio.value = "";
     peAvatarOnServer = false;
     peAudioOnServer = false;
+    peAvatarRemoveRequested = false;
+    peAudioRemoveRequested = false;
 
     if (name) {
         peFormTitle.textContent = `Edit Persona: ${name}`;
@@ -322,7 +333,7 @@ function renderPersonaAvatarPreview() {
         img.src = peAvatarObjectUrl;
         img.alt = "Avatar preview";
         pfAvatarPreview.appendChild(img);
-    } else if (peAvatarOnServer) {
+    } else if (peAvatarOnServer && !peAvatarRemoveRequested) {
         const img = document.createElement("img");
         img.src = `/api/personas/${encodeURIComponent(peEditingName)}/avatar`;
         img.alt = "Current avatar";
@@ -336,17 +347,25 @@ function renderPersonaAvatarPreview() {
         pfAvatarPreview.innerHTML = "";
         pfAvatarPreview.textContent = (peEditingName || "?").charAt(0).toUpperCase();
     }
-    // Remove makes sense when there is anything to remove: a selected file
-    // or a file already on the server.
-    pfAvatarRemoveBtn.classList.toggle("hidden", !file && !peAvatarOnServer);
+    // Remove makes sense when there is anything left to remove: a selected
+    // file, or a server file that has not been marked for removal. (Once a
+    // removal is pending there is nothing left to remove — the preview
+    // already shows the post-save state.)
+    pfAvatarRemoveBtn.classList.toggle(
+        "hidden",
+        !file && !(peAvatarOnServer && !peAvatarRemoveRequested)
+    );
 }
 
 function onPersonaAvatarFileSelected() {
+    // Picking a file supersedes any pending removal request.
+    peAvatarRemoveRequested = false;
     renderPersonaAvatarPreview();
 }
 
 function resetPersonaAvatarField() {
     pfAvatarImage.value = "";
+    peAvatarRemoveRequested = true;
     renderPersonaAvatarPreview();
 }
 
@@ -356,23 +375,31 @@ function resetPersonaAvatarField() {
  */
 function updatePersonaAudioControls() {
     const file = pfReferenceAudio.files[0];
+    // A file marked for removal is no longer "current" — show the post-save
+    // state so the UI never lies about what will happen on submit.
+    const audioOnServerKept = peAudioOnServer && !peAudioRemoveRequested;
     if (file) {
         pfAudioStatus.textContent = `New file: ${file.name}`;
-    } else if (peAudioOnServer) {
+    } else if (audioOnServerKept) {
         pfAudioStatus.textContent = "Current file on server";
     } else {
         pfAudioStatus.textContent = "None";
     }
-    pfAudioPlayBtn.classList.toggle("hidden", !file && !peAudioOnServer);
-    pfAudioRemoveBtn.classList.toggle("hidden", !file && !peAudioOnServer);
+    // Same rule as the avatar Remove button: only show controls when there
+    // is something left to play / remove.
+    pfAudioPlayBtn.classList.toggle("hidden", !file && !audioOnServerKept);
+    pfAudioRemoveBtn.classList.toggle("hidden", !file && !audioOnServerKept);
 }
 
 function onPersonaAudioFileSelected() {
+    // Picking a file supersedes any pending removal request.
+    peAudioRemoveRequested = false;
     updatePersonaAudioControls();
 }
 
 function resetPersonaAudioField() {
     pfReferenceAudio.value = "";
+    peAudioRemoveRequested = true;
     stopPersonaPreviewAudio();
     updatePersonaAudioControls();
 }
@@ -454,9 +481,11 @@ async function submitPersonaForm(e) {
     if (!routerHints) return showPersonaFormError("Router hints are required.");
     if (referenceAudioLanguage.length !== 2) return showPersonaFormError("Reference audio language must be a 2-letter code.");
 
-    // Multipart: text fields + the chosen files in one request. When no
-    // file is selected but one exists on the server, send the remove flag
-    // so a deliberate "Remove" sticks after save.
+    // Multipart: text fields + the chosen files in one request. The remove_*
+    // flags are sent ONLY for an explicit "Remove" click (see the
+    // peAvatarRemoveRequested / peAudioRemoveRequested flags) — never just
+    // because a file exists on the server. That is what made every plain
+    // text save silently delete the persona's avatar and reference audio.
     const form = new FormData();
     form.append("name", name);
     form.append("description", description);
@@ -468,12 +497,18 @@ async function submitPersonaForm(e) {
     form.append("reference_audio_transcript", pfReferenceAudioTx.value.trim());
 
     const avatarFile = pfAvatarImage.files[0];
-    if (avatarFile) form.append("avatar_image", avatarFile);
-    else form.append("remove_avatar_image", String(peAvatarOnServer));
+    if (avatarFile) {
+        form.append("avatar_image", avatarFile);
+    } else if (peAvatarRemoveRequested) {
+        form.append("remove_avatar_image", "true");
+    }
 
     const audioFile = pfReferenceAudio.files[0];
-    if (audioFile) form.append("reference_audio", audioFile);
-    else form.append("remove_reference_audio", String(peAudioOnServer));
+    if (audioFile) {
+        form.append("reference_audio", audioFile);
+    } else if (peAudioRemoveRequested) {
+        form.append("remove_reference_audio", "true");
+    }
 
     try {
         let resp;
