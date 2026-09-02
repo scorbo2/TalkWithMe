@@ -108,8 +108,7 @@ Possible tool response messages:
 - Empty/null/blank memory provided: "Error: The memory was not saved because it had no content."
 - Other errors (I/O problems or such): "Error: The memory could not be saved."
 
-Note: the "Error:" prefix in error messages is required. The current tool chip logic
-detects failures by looking for that exact prefix.
+Note: the "Error:" prefix in error messages is required so the server can mark tool-call SSE events as failures (event.failed=true), allowing the UI to style them consistently.
 
 ### New tool type: built-in tools
 
