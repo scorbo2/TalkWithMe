@@ -431,12 +431,37 @@ def read_memories(persona_dir: Path) -> str:
 
 
 def remove_memories_file(persona_dir: Path) -> bool:
-    """Delete the persona's memories.txt if present. Returns True if removed."""
+    """Delete the persona's memories.txt if present. Returns True if removed.
+
+    Can raise OSError when the file exists but cannot be deleted (e.g. a
+    read-only directory). Callers on a never-raises path (append_memory,
+    purge_memories_to_limit) must use _remove_memories_file_best_effort.
+    """
     path = persona_dir / MEMORIES_FILENAME
     if path.is_file():
         path.unlink()
         return True
     return False
+
+
+def _remove_memories_file_best_effort(persona_dir: Path) -> bool:
+    """remove_memories_file() that never raises (best-effort cleanup).
+
+    For the never-raises paths (append_memory's disabled-memory cleanup,
+    purge_memories_to_limit), where a disk error must not break a tool
+    call stream or a chat request. The personas router's explicit-clear
+    path deliberately uses the raising variant instead: there a failed
+    clear should surface as a 500, not a silent no-op.
+    Returns False when the file could not be deleted.
+    """
+    try:
+        return remove_memories_file(persona_dir)
+    except OSError as exc:
+        logger.warning(
+            "Persona %s: could not delete %s: %s",
+            persona_dir.name, MEMORIES_FILENAME, exc,
+        )
+        return False
 
 
 def _memory_lines(content: str) -> List[str]:
@@ -488,8 +513,10 @@ def append_memory(persona_dir: Path, memory: object, memory_size: int) -> str:
     if memory_size <= 0:
         # Memory is disabled: also delete a stale file so re-enabling the
         # persona starts from a clean slate rather than resurrecting
-        # memories that outlived their limit.
-        remove_memories_file(persona_dir)
+        # memories that outlived their limit. Best-effort: a failed
+        # cleanup must not break the tool-call stream — the LLM-facing
+        # answer is still "not enabled", the disk problem is only logged.
+        _remove_memories_file_best_effort(persona_dir)
         return "Error: Memory is not enabled for this persona."
 
     if not isinstance(memory, str):
@@ -550,7 +577,7 @@ def purge_memories_to_limit(persona_dir: Path, memory_size: int) -> None:
     un-injected for that reply).
     """
     if memory_size <= 0:
-        if remove_memories_file(persona_dir):
+        if _remove_memories_file_best_effort(persona_dir):
             logger.info("Deleted %s for %s (memory disabled)", MEMORIES_FILENAME, persona_dir.name)
         return
     lines = _memory_lines(read_memories(persona_dir))
@@ -561,11 +588,14 @@ def purge_memories_to_limit(persona_dir: Path, memory_size: int) -> None:
     while len(lines) > 1 and _memories_bytes(lines) >= memory_size:
         lines.pop(0)
     if len(lines) == 1 and _memories_bytes(lines) > memory_size:
-        remove_memories_file(persona_dir)
-        logger.info(
-            "Deleted %s for %s: newest memory exceeds the new limit (%d bytes)",
-            MEMORIES_FILENAME, persona_dir.name, memory_size,
-        )
+        # Best-effort: the file simply survives until the next attempt when
+        # the delete fails (logged inside the helper), matching the
+        # never-raises contract above.
+        if _remove_memories_file_best_effort(persona_dir):
+            logger.info(
+                "Deleted %s for %s: newest memory exceeds the new limit (%d bytes)",
+                MEMORIES_FILENAME, persona_dir.name, memory_size,
+            )
         return
     try:
         _write_memories_file(persona_dir, lines)

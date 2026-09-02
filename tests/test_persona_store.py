@@ -675,6 +675,22 @@ class TestAppendMemory:
         assert not list(d.glob("memories.txt.tmp*"))
         assert "failed to write memories.txt" in caplog.text
 
+    def test_disabled_budget_stale_file_delete_failure_does_not_raise(self, tmp_path, monkeypatch, caplog):
+        # A failed stale-file cleanup (e.g. read-only directory) must not
+        # escape append_memory and kill the tool-call stream: the LLM gets
+        # the intended "not enabled" message, the disk problem is logged.
+        d = _dir(tmp_path)
+        (d / "memories.txt").write_text("stale\n")
+
+        def boom(persona_dir):
+            raise OSError("read-only directory")
+
+        monkeypatch.setattr(persona_store, "remove_memories_file", boom)
+        result = append_memory(d, "The user likes tea.", 0)
+        assert result == "Error: Memory is not enabled for this persona."
+        assert (d / "memories.txt").read_text() == "stale\n"  # survives
+        assert "could not delete memories.txt" in caplog.text
+
 
 class TestPurgeMemoriesToLimit:
     """purge_memories_to_limit(): the editor-side cleanup run when a
@@ -734,6 +750,30 @@ class TestPurgeMemoriesToLimit:
         purge_memories_to_limit(d, 10)  # must not raise
         assert read_memories(d) == "a1\na2\na3\na4\n"  # survives until next attempt
         assert "failed to purge memories.txt" in caplog.text
+
+    def test_zero_budget_delete_failure_does_not_raise(self, tmp_path, monkeypatch, caplog):
+        d = _dir(tmp_path)
+        (d / "memories.txt").write_text("stale\n")
+
+        def boom(persona_dir):
+            raise OSError("read-only directory")
+
+        monkeypatch.setattr(persona_store, "remove_memories_file", boom)
+        purge_memories_to_limit(d, 0)  # must not raise
+        assert (d / "memories.txt").read_text() == "stale\n"  # survives
+        assert "could not delete memories.txt" in caplog.text
+
+    def test_single_memory_over_limit_delete_failure_does_not_raise(self, tmp_path, monkeypatch, caplog):
+        d = _dir(tmp_path)
+        (d / "memories.txt").write_text("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\n")
+
+        def boom(persona_dir):
+            raise OSError("read-only directory")
+
+        monkeypatch.setattr(persona_store, "remove_memories_file", boom)
+        purge_memories_to_limit(d, 10)  # must not raise
+        assert read_memories(d).startswith("aaa")  # survives
+        assert "could not delete memories.txt" in caplog.text
 
 
 class TestLoadPersonaMemorySize:
