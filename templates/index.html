@@ -3,14 +3,14 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>TalkWithMe v5.0</title>
+    <title>TalkWithMe v6.0</title>
     <link rel="stylesheet" href="/static/style.css">
 </head>
 <body>
     <div id="app">
         <!-- Top bar -->
         <header id="topbar">
-            <h1>TalkWithMe v5.0</h1>
+            <h1>TalkWithMe v6.0</h1>
             <div class="topbar-actions">
                 <label for="theme-select" class="theme-label">Theme</label>
                 <select id="theme-select" title="Choose color theme">
@@ -140,25 +140,50 @@
                         <span class="field-hint">This persona may invoke tools from MCP servers configured in settings.yaml</span>
                     </div>
                     <div class="form-row">
+                        <label for="pf-memory-size">Memory Size (bytes)</label>
+                        <input id="pf-memory-size" type="number" min="0" max="16384" step="1" value="8192">
+                        <span class="field-hint">Max size of this persona's saved memories, in bytes. 0 disables memory saving for this persona.</span>
+                    </div>
+                    <div class="form-row">
+                        <button type="button" id="pf-memories-clear" class="btn-secondary hidden">Clear saved memories</button>
+                        <span class="field-hint">Deletes all saved memories for this persona on save (does not change the size limit)</span>
+                    </div>
+                    <div class="form-row">
                         <label for="pf-avatar-color">Avatar Color</label>
                         <input id="pf-avatar-color" type="color" value="#FF0000">
                     </div>
                     <div class="form-row">
-                        <label for="pf-avatar-image">Avatar Image Path</label>
-                        <input id="pf-avatar-image" type="text" placeholder="Path to local image file (optional)">
+                        <label for="pf-avatar-image">Avatar Image</label>
+                        <div class="pf-file-row">
+                            <div id="pf-avatar-preview" class="pf-file-preview" aria-hidden="true"></div>
+                            <div class="pf-file-controls">
+                                <input id="pf-avatar-image" type="file" accept="image/png,image/jpeg,image/gif,image/webp">
+                                <button type="button" id="pf-avatar-remove" class="btn-secondary btn-small hidden" title="Remove the avatar image">Remove</button>
+                            </div>
+                        </div>
+                        <span class="field-hint">png, jpg, gif or webp, max 5MB. Replace by choosing a new file, or remove entirely.</span>
                     </div>
                     <div class="form-row">
-                        <label for="pf-reference-audio">Reference Audio Path</label>
-                        <input id="pf-reference-audio" type="text" placeholder="Path to WAV file for TTS cloning (optional)">
+                        <label for="pf-reference-audio">Reference Audio</label>
+                        <div class="pf-file-row">
+                            <span id="pf-audio-status" class="pf-file-status"></span>
+                            <div class="pf-file-controls">
+                                <input id="pf-reference-audio" type="file" accept="audio/wav,.wav">
+                                <button type="button" id="pf-audio-play" class="btn-secondary btn-small hidden" title="Play the reference audio">&#9654; Play</button>
+                                <button type="button" id="pf-audio-remove" class="btn-secondary btn-small hidden" title="Remove the reference audio">Remove</button>
+                            </div>
+                        </div>
+                        <span class="field-hint">WAV only, max 20MB. Required (with a transcript) for TTS voice cloning.</span>
                     </div>
                     <div class="form-row">
-                        <label for="pf-reference-audio-transcript">Reference Audio Transcript Path</label>
-                        <input id="pf-reference-audio-transcript" type="text" placeholder="Path to transcript TXT file (optional)">
+                        <label for="pf-reference-audio-transcript">Reference Audio Transcript</label>
+                        <textarea id="pf-reference-audio-transcript" maxlength="16384" rows="4" placeholder="Transcript of the reference audio (optional)"></textarea>
+                        <span class="field-hint">The words spoken in the reference audio, so voice cloning is accurate. 16KB max.</span>
                     </div>
                     <div class="form-row">
                         <label for="pf-reference-audio-language">Reference Audio Language</label>
                         <input id="pf-reference-audio-language" type="text" maxlength="2" minlength="2" placeholder="en" style="width:60px">
-                        <span class="field-hint">2-letter code</span>
+                        <span class="field-hint">2-letter code for the language of the reference audio</span>
                     </div>
                     <div class="form-actions">
                         <button type="button" id="pe-form-btn-cancel2" class="btn-secondary">Cancel</button>
@@ -384,6 +409,13 @@
                                 <span>Show tool calls in chat</span>
                             </label>
                             <span class="field-hint">Display a chip when a persona invokes an MCP tool</span>
+                        </div>
+                        <div class="form-row">
+                            <label class="settings-checkbox-label">
+                                <input id="gsf-enable-persona-memories" type="checkbox">
+                                <span>Enable persona memories</span>
+                            </label>
+                            <span class="field-hint">Personas may save memories and see previously saved ones. Disabling pauses the feature globally without deleting any memories.</span>
                         </div>
                         <div class="form-row">
                             <label for="gsf-max-turns-for-context">Max Turns for Context <span class="field-hint">(1–50)</span></label>

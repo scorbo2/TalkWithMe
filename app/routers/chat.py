@@ -17,6 +17,7 @@ from fastapi.responses import StreamingResponse
 from app.config import get_chatrooms, get_personas, get_settings
 from app.models import ChatRequest
 from app.session import session
+from app.services import builtin, persona_store
 from app.services.llm import chat_completion, stream_chat, stream_chat_with_tools
 from app.services.tool_registry import get_all_tools
 
@@ -133,6 +134,53 @@ async def _pick_persona(who_answers: str, user_message: str, chat_room: str) -> 
 
 
 # ---------------------------------------------------------------------------
+# Memory injection (docs/feature_persona_memory.md)
+# ---------------------------------------------------------------------------
+
+def _system_prompt_with_memories(persona, settings) -> str:
+    """The persona's system prompt, with saved memories appended if eligible.
+
+    Qualifying conditions: the global enable_persona_memories flag, a
+    non-zero memory_size, and a memories.txt that exists and is not
+    blank. Note that allow_tool_calls is deliberately NOT part of this
+    gate: a persona that may not call tools can still benefit from
+    memories it saved earlier (injection and adding are independent).
+
+    The memory budget is enforced on the read path as well as the write
+    path: the file may have been edited by an external process (the
+    README explicitly encourages it), so an over-limit file is purged
+    oldest-first to the persona's memory_size before injection, rather
+    than being handed to the LLM verbatim.
+    """
+    if not (settings.general.enable_persona_memories and persona.memory_size > 0):
+        logger.debug(
+            "Persona memory: NOT injecting saved memories for '%s' "
+            "(enable_persona_memories=%s, memory_size=%d)",
+            persona.name, settings.general.enable_persona_memories, persona.memory_size,
+        )
+        return persona.system_prompt
+    if persona.persona_dir is None:
+        return persona.system_prompt
+    # Cheap no-op when the file is already within budget; repairs the
+    # on-disk file as a side effect when it isn't (e.g. an external
+    # writer ignored the persona's budget).
+    persona_store.purge_memories_to_limit(persona.persona_dir, persona.memory_size)
+    memories = persona_store.read_memories(persona.persona_dir)
+    if not memories.strip():
+        return persona.system_prompt
+    memory_lines = [line for line in memories.splitlines() if line.strip()]
+    logger.debug(
+        "Persona memory: injecting %d saved memory line(s) into the system prompt of '%s'",
+        len(memory_lines), persona.name,
+    )
+    return (
+        persona.system_prompt
+        + "\n\nYou have the following memories related to the user:\n"
+        + memories
+    )
+
+
+# ---------------------------------------------------------------------------
 # SSE streaming
 # ---------------------------------------------------------------------------
 
@@ -174,6 +222,11 @@ async def _chat_stream(req: ChatRequest) -> AsyncIterator[str]:
     # Multiple identical echoes from different personas would be pointless noise.
     if echo_enabled:
         max_replies = 1
+        logger.debug(
+            "Persona memory: room '%s' has the echo chamber enabled — the LLM is "
+            "bypassed entirely, so NO tool calls (add_memory included) can happen",
+            req.chat_room,
+        )
 
     replied_personas: list[str] = []
 
@@ -192,6 +245,15 @@ async def _chat_stream(req: ChatRequest) -> AsyncIterator[str]:
             return
 
         replied_personas.append(persona_name)
+
+        # Diagnostic trail (DEBUG): the three inputs the add_memory feature
+        # gates on, exactly as the runtime sees them (post-cache, post-parse).
+        logger.debug(
+            "Persona memory: persona '%s' decision inputs: allow_tool_calls=%s, "
+            "memory_size=%d, enable_persona_memories=%s, persona_dir=%s",
+            persona_name, persona.allow_tool_calls, persona.memory_size,
+            settings.general.enable_persona_memories, persona.persona_dir,
+        )
 
         # Generate the assistant message ID BEFORE emitting "start". The
         # frontend stamps it onto every TTS item enqueued during this
@@ -212,23 +274,35 @@ async def _chat_stream(req: ChatRequest) -> AsyncIterator[str]:
         else:
             # Normal path: stream LLM response (history already includes prior personas' replies)
             messages = session.build_llm_messages(
-                system_prompt=persona.system_prompt,
+                system_prompt=_system_prompt_with_memories(persona, settings),
                 responding_persona=persona_name,
                 max_turns_for_context=settings.general.max_turns_for_context,
             )
             full_text = ""
             try:
                 if persona.allow_tool_calls:
-                    # Agentic path: the LLM may invoke MCP tools mid-reply.
-                    # The loop runs regardless of show_tool_calls; that flag
-                    # only controls whether tool_call SSE events are emitted.
-                    async for event in stream_chat_with_tools(messages, get_all_tools()):
+                    # Agentic path: the LLM may invoke MCP tools AND the
+                    # built-in tools (add_memory) mid-reply. The loop runs
+                    # regardless of show_tool_calls; that flag only controls
+                    # whether tool_call SSE events are emitted.
+                    tools = get_all_tools() + builtin.get_builtin_tools_for(persona, settings)
+                    logger.debug(
+                        "Persona memory: persona '%s' — agentic path, %d tool(s) supplied to LLM: %s",
+                        persona_name, len(tools),
+                        [t["function"]["name"] for t in tools],
+                    )
+                    async for event in stream_chat_with_tools(messages, tools, persona):
                         if event["type"] == "token":
                             full_text += event["token"]
                             yield f'data: {json.dumps({"type": "token", "persona": persona_name, "token": event["token"]})}\n\n'
                         elif event["type"] == "tool_call" and settings.general.show_tool_calls:
                             yield f'data: {json.dumps({"type": "tool_call", "persona": persona_name, "tool_name": event["tool_name"], "arguments": event["arguments"], "result": event["result"], "failed": event["failed"]})}\n\n'
                 else:
+                    logger.debug(
+                        "Persona memory: persona '%s' — allow_tool_calls is False, "
+                        "plain streaming path taken; NO tools of any kind supplied to LLM",
+                        persona_name,
+                    )
                     async for token in stream_chat(messages):
                         full_text += token
                         yield f'data: {json.dumps({"type": "token", "persona": persona_name, "token": token})}\n\n'

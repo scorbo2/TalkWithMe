@@ -36,6 +36,18 @@ function extractApiErrorMessage(errBody, status) {
     return `Error ${status}`;
 }
 
+/**
+ * Case-insensitive alphabetical comparator for personas (anything with a
+ * `name` property). Pair with Array.prototype.sort, e.g.
+ * `[...personas].sort(comparePersonasByName)`.
+ *
+ * `sensitivity: "base"` makes the comparison case-insensitive ("alice"
+ * before "Bob"), matching how chat room names are sorted in chatrooms.js.
+ */
+function comparePersonasByName(a, b) {
+    return a.name.localeCompare(b.name, undefined, { sensitivity: "base" });
+}
+
 /** Escape HTML special characters to prevent XSS in dynamically rendered text. */
 function escapeHtml(str) {
     if (typeof str !== 'string') return str;

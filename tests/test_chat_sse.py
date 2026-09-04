@@ -6,10 +6,12 @@ are exercised for real.
 """
 
 import uuid
+from pathlib import Path
 
 import app.config as app_config
 import app.routers.chat as chat_router
 from app.config import ChatRoom, ChatRoomsConfig, GeneralConfig, Persona, PersonasConfig
+from app.services import builtin
 from tests.factories import (
     make_chatrooms,
     make_personas,
@@ -45,11 +47,42 @@ def _stub_stream_error_after(monkeypatch, tokens_before_error):
 def _stub_tools(monkeypatch, events):
     """Replace the agentic path with canned tool-loop events."""
 
-    async def fake_tools(messages, tools):
+    async def fake_tools(messages, tools, persona):
         for event in events:
             yield event
 
     monkeypatch.setattr(chat_router, "stream_chat_with_tools", fake_tools)
+
+
+def _capturing_tools(monkeypatch, seen: dict, events=None):
+    """Stub the agentic path and record what the router passed to it.
+
+    `seen` ends up holding {"messages", "tools", "persona"} from the call,
+    for assertions on tool lists and system-prompt injection.
+    """
+    canned = list(events or [])
+
+    async def fake_tools(messages, tools, persona):
+        seen.update(messages=list(messages), tools=list(tools), persona=persona)
+        for event in canned:
+            yield event
+
+    monkeypatch.setattr(chat_router, "stream_chat_with_tools", fake_tools)
+
+
+def _tool_persona_dir(tmp_path: Path, *, name="ToolUser", memory_size=8192) -> Persona:
+    """A tool-capable persona backed by a real directory (so built-in tool
+    availability can be tested end-to-end)."""
+    persona_dir = tmp_path / name
+    persona_dir.mkdir(parents=True)
+    return Persona(
+        name=name,
+        system_prompt="You use tools.",
+        router_hints="tools",
+        allow_tool_calls=True,
+        memory_size=memory_size,
+        persona_dir=persona_dir,
+    )
 
 
 def _stub_completion(monkeypatch, result: str):
@@ -382,6 +415,256 @@ class TestToolCalls:
         assert sse_events_by_type(events, "tool_call") == []
         # The reply itself still streams and completes.
         assert sse_events_by_type(events, "done")[0]["text"] == "noon"
+
+
+# ---------------------------------------------------------------------------
+# Persona memories (docs/feature_persona_memory.md)
+# ---------------------------------------------------------------------------
+
+class TestPersonaMemory:
+    """The memory feature at the chat boundary: saved memories are
+    injected into the system prompt, and tool-capable personas get the
+    built-in add_memory tool offered."""
+
+    # -- _system_prompt_with_memories (unit) ---------------------------------
+
+    @staticmethod
+    def _persona_with_memories(tmp_path, **persona_kwargs) -> Persona:
+        persona_dir = tmp_path / "Alex"
+        persona_dir.mkdir(parents=True)
+        (persona_dir / "memories.txt").write_text("The user likes tea.\n")
+        return Persona(name="Alex", system_prompt="You are Alex.",
+                       persona_dir=persona_dir, **persona_kwargs)
+
+    def test_memories_appended_to_system_prompt(self, tmp_path):
+        result = chat_router._system_prompt_with_memories(
+            self._persona_with_memories(tmp_path), make_settings(),
+        )
+        assert result == (
+            "You are Alex.\n\nYou have the following memories related to the user:\n"
+            "The user likes tea.\n"
+        )
+
+    def test_no_injection_when_global_flag_off(self, tmp_path):
+        settings = make_settings(general=GeneralConfig(enable_persona_memories=False))
+        result = chat_router._system_prompt_with_memories(
+            self._persona_with_memories(tmp_path), settings,
+        )
+        assert result == "You are Alex."
+
+    def test_no_injection_when_memory_size_zero(self, tmp_path):
+        result = chat_router._system_prompt_with_memories(
+            self._persona_with_memories(tmp_path, memory_size=0), make_settings(),
+        )
+        assert result == "You are Alex."
+
+    def test_no_injection_when_persona_has_no_directory(self, tmp_path):
+        result = chat_router._system_prompt_with_memories(
+            Persona(name="Alex", system_prompt="You are Alex."), make_settings(),
+        )
+        assert result == "You are Alex."
+
+    def test_no_injection_when_memories_file_absent(self, tmp_path):
+        persona_dir = tmp_path / "Alex"
+        persona_dir.mkdir(parents=True)
+        result = chat_router._system_prompt_with_memories(
+            Persona(name="Alex", system_prompt="You are Alex.",
+                    persona_dir=persona_dir), make_settings(),
+        )
+        assert result == "You are Alex."
+
+    def test_no_injection_when_memories_file_blank(self, tmp_path):
+        persona_dir = tmp_path / "Alex"
+        persona_dir.mkdir(parents=True)
+        (persona_dir / "memories.txt").write_text("  \n")
+        result = chat_router._system_prompt_with_memories(
+            Persona(name="Alex", system_prompt="You are Alex.",
+                    persona_dir=persona_dir), make_settings(),
+        )
+        assert result == "You are Alex."
+
+    # -- budget enforcement on the read path ----------------------------------
+
+    @staticmethod
+    def _persona_with_budget(tmp_path, memory_size: int) -> Persona:
+        """A persona with a real directory and a (small) memory budget,
+        no memories file yet — the tests write that themselves."""
+        persona_dir = tmp_path / "Alex"
+        persona_dir.mkdir(parents=True)
+        return Persona(name="Alex", system_prompt="You are Alex.",
+                       persona_dir=persona_dir, memory_size=memory_size)
+
+    def test_over_limit_memories_purged_oldest_first_on_read(self, tmp_path):
+        persona = self._persona_with_budget(tmp_path, memory_size=10)
+        memories_file = persona.persona_dir / "memories.txt"
+        # 15 bytes against a 10-byte budget: the oldest-first purge leaves
+        # only the newest memory — both in the injected prompt and on disk.
+        memories_file.write_text("aaaa\nbbbb\ncccc\n")
+
+        result = chat_router._system_prompt_with_memories(persona, make_settings())
+
+        assert result == (
+            "You are Alex.\n\nYou have the following memories related to the user:\n"
+            "cccc\n"
+        )
+        assert memories_file.read_text() == "cccc\n"
+
+    def test_within_budget_memories_left_untouched_on_read(self, tmp_path):
+        persona = self._persona_with_budget(tmp_path, memory_size=10)
+        memories_file = persona.persona_dir / "memories.txt"
+        # Exactly at the limit: the read path must not rewrite the file.
+        memories_file.write_text("aaaa\nbbbb\n")
+
+        result = chat_router._system_prompt_with_memories(persona, make_settings())
+
+        assert result == (
+            "You are Alex.\n\nYou have the following memories related to the user:\n"
+            "aaaa\nbbbb\n"
+        )
+        assert memories_file.read_text() == "aaaa\nbbbb\n"
+
+    def test_single_memory_exceeding_budget_deletes_file_on_read(self, tmp_path):
+        persona = self._persona_with_budget(tmp_path, memory_size=10)
+        memories_file = persona.persona_dir / "memories.txt"
+        # One 11-byte memory against a 10-byte budget: nothing can survive,
+        # so the file is deleted — same semantics as the write path.
+        memories_file.write_text("aaaaaaaaaa\n")
+
+        result = chat_router._system_prompt_with_memories(persona, make_settings())
+
+        assert result == "You are Alex."
+        assert not memories_file.exists()
+
+    # -- integration: injection reaches the LLM -------------------------------
+
+    def test_injected_memories_reach_the_llm_payload(self, client, monkeypatch, tmp_path):
+        alex_dir = tmp_path / "Alex"
+        alex_dir.mkdir(parents=True)
+        (alex_dir / "memories.txt").write_text("The user likes tea.\n")
+        config = make_personas()
+        config.personas[0] = Persona(
+            name="Alex",
+            description="A friendly assistant",
+            system_prompt="You are Alex, a friendly assistant.",
+            router_hints="general questions",
+            persona_dir=alex_dir,
+        )
+        _patch_personas(monkeypatch, config)
+
+        seen = []
+
+        async def capturing_stream(messages):
+            seen.append(list(messages))
+            yield "hi"
+
+        monkeypatch.setattr(chat_router, "stream_chat", capturing_stream)
+
+        _chat(client, who_answers="Alex")
+
+        assert len(seen) == 1
+        system_message = seen[0][0]
+        assert system_message["role"] == "system"
+        assert system_message["content"].endswith(
+            "You have the following memories related to the user:\n"
+            "The user likes tea.\n"
+        )
+
+    def test_external_over_limit_memories_purged_before_llm_payload(self, client, monkeypatch, tmp_path):
+        # The scenario the read-path enforcement exists for: an external
+        # process inflates memories.txt past the persona's budget while the
+        # app runs; the next chat must purge it, not inject it verbatim.
+        alex_dir = tmp_path / "Alex"
+        alex_dir.mkdir(parents=True)
+        memories_file = alex_dir / "memories.txt"
+        memories_file.write_text("aaaa\nbbbb\ncccc\n")  # 15 bytes, budget is 10
+        config = make_personas()
+        config.personas[0] = Persona(
+            name="Alex",
+            description="A friendly assistant",
+            system_prompt="You are Alex, a friendly assistant.",
+            router_hints="general questions",
+            persona_dir=alex_dir,
+            memory_size=10,
+        )
+        _patch_personas(monkeypatch, config)
+
+        seen = []
+
+        async def capturing_stream(messages):
+            seen.append(list(messages))
+            yield "hi"
+
+        monkeypatch.setattr(chat_router, "stream_chat", capturing_stream)
+
+        _chat(client, who_answers="Alex")
+
+        assert len(seen) == 1
+        system_message = seen[0][0]
+        assert system_message["role"] == "system"
+        assert system_message["content"].endswith(
+            "You have the following memories related to the user:\ncccc\n"
+        )
+        # The on-disk file is repaired too, so subsequent reads stay clean.
+        assert memories_file.read_text() == "cccc\n"
+
+    # -- integration: add_memory is offered to the LLM ------------------------
+
+    def _chat_with_captured_tools(self, client, monkeypatch, tmp_path, **general):
+        config = make_personas()
+        config.personas.append(_tool_persona_dir(tmp_path))
+        _patch_personas(monkeypatch, config)
+        if general:
+            _patch_general(monkeypatch, **general)
+        seen = {}
+        _capturing_tools(monkeypatch, seen, events=[{"type": "token", "token": "hi"}])
+        _chat(client, who_answers="ToolUser")
+        return seen
+
+    def test_add_memory_offered_to_tool_persona_by_default(self, client, monkeypatch, tmp_path):
+        seen = self._chat_with_captured_tools(client, monkeypatch, tmp_path)
+        tool_names = [t["function"]["name"] for t in seen["tools"]]
+        assert builtin.ADD_MEMORY_NAME in tool_names
+        # The persona is forwarded so built-ins can run against its directory.
+        assert seen["persona"].name == "ToolUser"
+
+    def test_add_memory_not_offered_when_global_flag_off(self, client, monkeypatch, tmp_path):
+        seen = self._chat_with_captured_tools(
+            client, monkeypatch, tmp_path, enable_persona_memories=False,
+        )
+        tool_names = [t["function"]["name"] for t in seen["tools"]]
+        assert builtin.ADD_MEMORY_NAME not in tool_names
+
+    def test_add_memory_not_offered_when_memory_size_zero(self, client, monkeypatch, tmp_path):
+        config = make_personas()
+        config.personas.append(_tool_persona_dir(tmp_path, memory_size=0))
+        _patch_personas(monkeypatch, config)
+        seen = {}
+        _capturing_tools(monkeypatch, seen, events=[{"type": "token", "token": "hi"}])
+        _chat(client, who_answers="ToolUser")
+        tool_names = [t["function"]["name"] for t in seen["tools"]]
+        assert builtin.ADD_MEMORY_NAME not in tool_names
+
+    def test_non_tool_persona_gets_no_builtins(self, client, monkeypatch, tmp_path):
+        # A non-tool persona never reaches stream_chat_with_tools, so the
+        # plain stream path must not be offered anything tool-shaped.
+        seen = []
+
+        async def capturing_stream(messages):
+            seen.append(list(messages))
+            yield "hi"
+
+        monkeypatch.setattr(chat_router, "stream_chat", capturing_stream)
+
+        def fail(*a, **kw):
+            raise AssertionError("a non-tool persona must not use the agentic path")
+
+        monkeypatch.setattr(chat_router, "stream_chat_with_tools", fail)
+
+        _chat(client, who_answers="Alex")
+
+        # Exactly one stream call, via the plain (non-agentic) path.
+        assert len(seen) == 1
+        assert seen[0][0]["role"] == "system"
 
 
 # ---------------------------------------------------------------------------

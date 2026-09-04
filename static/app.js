@@ -56,7 +56,11 @@ async function loadPersonas() {
     try {
         const resp = await fetch("/api/personas");
         if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
-        personas = await resp.json();
+        // Keep the shared global sorted: consumers like applyChatRoomFilter()
+        // auto-select `filtered[0]`, which should match the first rendered
+        // (alphabetical) card in the sidebar.
+        const list = await resp.json();
+        personas = list.sort(comparePersonasByName);
         await loadChatRooms();
     } catch (err) {
         console.error("Failed to load personas:", err);

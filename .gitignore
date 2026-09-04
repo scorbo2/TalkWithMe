@@ -4,8 +4,10 @@ app/routers/__pycache__/
 tests/__pycache__/
 personas.yaml.*
 future*.md
+Personas/
 chatrooms/
 chatrooms.yaml.*
 settings.yaml.*
 testsetup.sh
 restore.sh
+.venv/

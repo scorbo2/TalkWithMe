@@ -250,10 +250,12 @@ async function removePersonaFromRoom(personaName) {
                 p => p !== personaName
             );
         }
-        // If the removed persona was selected, clear selection
+        // If the removed persona was selected, clear the selection so
+        // applyChatRoomFilter() re-picks the first (alphabetical) persona
+        // from the rendered list — picking from roomNames[0] here would
+        // follow room-assignment order and could highlight a middle card.
         if (selectedPersona === personaName) {
-            const roomNames = roomPersonas[currentChatRoom] || [];
-            selectedPersona = roomNames.length > 0 ? roomNames[0] : null;
+            selectedPersona = null;
         }
         applyChatRoomFilter();
     } catch (err) {
@@ -440,7 +442,9 @@ function renderPersonaPickerList() {
         return;
     }
 
-    for (const p of personas) {
+    // Render alphabetically (case-insensitive), not in creation order.
+    const sorted = [...personas].sort(comparePersonasByName);
+    for (const p of sorted) {
         const item = document.createElement("div");
         item.className = "pp-list-item";
         item.dataset.name = p.name;

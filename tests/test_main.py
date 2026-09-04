@@ -1,5 +1,9 @@
-"""Tests for app/main.py — the index route and the startup lifespan."""
+"""Tests for app/main.py — the index route, the startup lifespan, and the
+TALKWITHME_LOG_LEVEL environment override."""
 
+import logging
+
+import pytest
 from fastapi.testclient import TestClient
 
 import app.config as app_config
@@ -8,12 +12,71 @@ from app.session import session
 from tests.factories import make_chatrooms, make_personas, make_settings
 
 
+class TestResolveRootLogLevel:
+    """The TALKWITHME_LOG_LEVEL override (app/main.py::_resolve_root_log_level)."""
+
+    @pytest.mark.parametrize(
+        "raw,expected",
+        [
+            ("debug", logging.DEBUG),
+            ("INFO", logging.INFO),
+            ("warning", logging.WARNING),
+            ("ERROR", logging.ERROR),
+            ("CRITICAL", logging.CRITICAL),
+        ],
+    )
+    def test_resolve_root_log_level_validName_returnsLevel(self, monkeypatch, raw, expected):
+        # GIVEN a valid level name in TALKWITHME_LOG_LEVEL (any casing):
+        monkeypatch.setenv("TALKWITHME_LOG_LEVEL", raw)
+
+        # WHEN the level is resolved,
+        # THEN it maps to the matching numeric level:
+        assert main_module._resolve_root_log_level() == expected
+
+    def test_resolve_root_log_level_envUnset_returnsInfo(self, monkeypatch):
+        # GIVEN no TALKWITHME_LOG_LEVEL in the environment:
+        monkeypatch.delenv("TALKWITHME_LOG_LEVEL", raising=False)
+
+        # WHEN the level is resolved,
+        # THEN the default INFO applies:
+        assert main_module._resolve_root_log_level() == logging.INFO
+
+    def test_resolve_root_log_level_blankEnv_returnsInfo(self, monkeypatch):
+        # GIVEN a whitespace-only TALKWITHME_LOG_LEVEL:
+        monkeypatch.setenv("TALKWITHME_LOG_LEVEL", "   ")
+
+        # WHEN the level is resolved,
+        # THEN it is treated as unset and the default INFO applies:
+        assert main_module._resolve_root_log_level() == logging.INFO
+
+    def test_resolve_root_log_level_whitespacePaddedName_stillResolves(self, monkeypatch):
+        # GIVEN a valid name padded with whitespace:
+        monkeypatch.setenv("TALKWITHME_LOG_LEVEL", "  debug  ")
+
+        # WHEN the level is resolved,
+        # THEN the padding is stripped and DEBUG applies:
+        assert main_module._resolve_root_log_level() == logging.DEBUG
+
+    def test_resolve_root_log_level_invalidName_warnsAndReturnsInfo(self, monkeypatch, caplog):
+        # GIVEN a nonsense level name:
+        monkeypatch.setenv("TALKWITHME_LOG_LEVEL", "LOUD")
+
+        # WHEN the level is resolved,
+        # THEN a warning naming the offending value is logged
+        # AND the safe default INFO is returned:
+        with caplog.at_level(logging.WARNING):
+            level = main_module._resolve_root_log_level()
+        assert level == logging.INFO
+        assert "TALKWITHME_LOG_LEVEL" in caplog.text
+        assert "LOUD" in caplog.text
+
+
 class TestIndex:
     def test_serves_chat_ui(self, client):
         resp = client.get("/")
         assert resp.status_code == 200
         assert "text/html" in resp.headers["content-type"]
-        assert "TalkWithMe v5.0" in resp.text
+        assert "TalkWithMe v6.0" in resp.text
 
     def test_static_files_mounted(self, client):
         # state.js is the shared-globals module every other frontend file depends on.

@@ -5,6 +5,7 @@ Loads configuration at startup and seeds the session with all configured persona
 """
 
 import logging
+import os
 from contextlib import asynccontextmanager
 from pathlib import Path
 
@@ -24,8 +25,43 @@ from app.services.tool_registry import get_all_tools, load_tools
 # discovery lines at startup. basicConfig() is a no-op if a host process
 # already attached handlers to the root logger, so this stays out of the
 # way under gunicorn or test harnesses that configure logging themselves.
+#
+# The level defaults to INFO; TALKWITHME_LOG_LEVEL (e.g. "debug")
+# overrides it for the run — see the "Logging" section of the README.
+_VALID_LOG_LEVELS = {
+    "DEBUG": logging.DEBUG,
+    "INFO": logging.INFO,
+    "WARNING": logging.WARNING,
+    "ERROR": logging.ERROR,
+    "CRITICAL": logging.CRITICAL,
+}
+
+
+def _resolve_root_log_level() -> int:
+    """Numeric level for the app's root logger (INFO unless overridden).
+
+    TALKWITHME_LOG_LEVEL takes a standard level name, case-insensitively.
+    An invalid value warns and falls back to INFO instead of refusing to
+    start over an environment typo. (The warning is emitted before
+    basicConfig() runs, so it reaches the console via the last-resort
+    handler — still visible.)
+    """
+    raw = os.environ.get("TALKWITHME_LOG_LEVEL", "").strip()
+    if not raw:
+        return logging.INFO
+    level = _VALID_LOG_LEVELS.get(raw.upper())
+    if level is None:
+        logging.getLogger(__name__).warning(
+            "TALKWITHME_LOG_LEVEL=%r is not a valid level name (expected one of %s); "
+            "falling back to INFO",
+            raw, ", ".join(_VALID_LOG_LEVELS),
+        )
+        return logging.INFO
+    return level
+
+
 logging.basicConfig(
-    level=logging.INFO,
+    level=_resolve_root_log_level(),
     format="%(asctime)s %(levelname)-8s %(name)s: %(message)s",
 )
 # httpx logs every request it makes at INFO. Fine when debugging a client,
@@ -95,4 +131,7 @@ templates = Jinja2Templates(directory=str(Path(__file__).resolve().parent.parent
 @app.get("/", response_class=HTMLResponse)
 async def index(request: Request):
     """Serve the main chat UI."""
-    return templates.TemplateResponse("index.html", {"request": request})
+    # New-style signature (request first): the legacy TemplateResponse(name,
+    # {"request": ...}) form was removed from Starlette, and the new form
+    # injects `request` into the template context for us.
+    return templates.TemplateResponse(request, "index.html")

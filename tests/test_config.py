@@ -1,9 +1,13 @@
 """Tests for app/config.py — model validation and YAML load/save behaviour."""
 
+import logging
+
 import yaml
 
 import pytest
 from pydantic import ValidationError
+
+from app.services import persona_store
 
 from app import config as app_config
 from app.config import (
@@ -77,6 +81,33 @@ class TestGeneralConfigBounds:
             GeneralConfig(max_turns_for_context=value)
 
 
+class TestGeneralConfigEnablePersonaMemories:
+    """general.enable_persona_memories is a STRICT boolean (docs/
+    feature_persona_memory.md): pydantic's lax coercion would silently turn
+    the hand-edited string "false" into False, so the validator intercepts
+    non-booleans first — warning and falling back to the default (true)."""
+
+    def test_enable_persona_memories_defaults_to_true(self):
+        assert GeneralConfig().enable_persona_memories is True
+
+    @pytest.mark.parametrize("value", [True, False])
+    def test_enable_persona_memories_valid_booleans_preserved(self, value):
+        assert GeneralConfig(enable_persona_memories=value).enable_persona_memories is value
+
+    @pytest.mark.parametrize("value", ["false", "true", "0", "1", 0, 1, None, "yes", []])
+    def test_enable_persona_memories_non_bool_warns_and_falls_back_to_true(self, value, caplog):
+        with caplog.at_level(logging.WARNING):
+            cfg = GeneralConfig(enable_persona_memories=value)
+        assert cfg.enable_persona_memories is True
+        assert "invalid general.enable_persona_memories" in caplog.text
+
+    def test_enable_persona_memories_key_absent_keeps_default_without_warning(self, caplog):
+        with caplog.at_level(logging.WARNING):
+            cfg = GeneralConfig(show_tool_calls=False)
+        assert cfg.enable_persona_memories is True
+        assert "enable_persona_memories" not in caplog.text
+
+
 # ---------------------------------------------------------------------------
 # MCP server config validation
 # ---------------------------------------------------------------------------
@@ -114,6 +145,95 @@ class TestPersona:
         )
 
 
+class TestPersonaMemorySize:
+    """Persona.memory_size bounds: 0 is a legal "memory disabled" value,
+    16384 is the hard cap (docs/feature_persona_memory.md). The ge/le
+    constraints are a safety net — persona_store sanitizes frontmatter and
+    the router validates form input before this model is constructed."""
+
+    def test_persona_memory_size_defaults_to_8192(self):
+        assert Persona(name="A", system_prompt="p").memory_size == 8192
+
+    @pytest.mark.parametrize("value", [0, 1, 4096, 8192, 16384])
+    def test_persona_memory_size_in_range_accepted(self, value):
+        assert Persona(name="A", system_prompt="p", memory_size=value).memory_size == value
+
+    @pytest.mark.parametrize("value", [-1, 16385])
+    def test_persona_memory_size_out_of_range_rejected(self, value):
+        with pytest.raises(ValidationError):
+            Persona(name="A", system_prompt="p", memory_size=value)
+
+
+# ---------------------------------------------------------------------------
+# Personas directory resolution
+# ---------------------------------------------------------------------------
+
+class TestGetPersonasDirectory:
+    def test_defaults_to_project_root_personas(self, tmp_project_root):
+        # The autouse settings cache has no personas_directory configured.
+        assert app_config.get_personas_directory() == tmp_project_root / "Personas"
+
+    def test_relative_path_resolves_against_project_root(self, tmp_project_root, monkeypatch):
+        monkeypatch.setattr(
+            app_config, "_settings_cache",
+            make_settings(general=GeneralConfig(personas_directory="custom/personas")),
+        )
+        assert app_config.get_personas_directory() == tmp_project_root / "custom/personas"
+
+    def test_absolute_path_used_verbatim(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(
+            app_config, "_settings_cache",
+            make_settings(general=GeneralConfig(personas_directory=str(tmp_path / "elsewhere"))),
+        )
+        assert app_config.get_personas_directory() == tmp_path / "elsewhere"
+
+
+# ---------------------------------------------------------------------------
+# load_personas() startup decision matrix
+# ---------------------------------------------------------------------------
+
+class TestLoadPersonasDecisionMatrix:
+    """personas.yaml vs the Personas directory: which one wins, when?"""
+
+    def test_legacy_yaml_only_is_migrated_once(self, tmp_project_root):
+        (tmp_project_root / "personas.yaml").write_text(
+            "personas:\n  - name: Fresh\n    system_prompt: p\n"
+        )
+        cfg = app_config.load_personas()
+        assert [p.name for p in cfg.personas] == ["Fresh"]
+        # The YAML is renamed (never deleted) so the migration runs once.
+        assert not (tmp_project_root / "personas.yaml").exists()
+        assert (tmp_project_root / "personas.yaml.bak").exists()
+        assert (tmp_project_root / "Personas" / "Fresh" / "prompt.md").exists()
+
+    def test_directory_and_yaml_prefers_directory_and_warns(self, tmp_project_root, caplog):
+        (tmp_project_root / "personas.yaml").write_text(
+            "personas:\n  - name: Stale\n    system_prompt: p\n"
+        )
+        persona_dir = tmp_project_root / "Personas" / "Fresh"
+        persona_dir.mkdir(parents=True)
+        persona_dir.joinpath("prompt.md").write_text(
+            "---\ndescription: fresh\nrouter_hints: h\navatar_color: '#888888'\n"
+            "allow_tool_calls: false\n---\n\nYou are Fresh.\n"
+        )
+        with caplog.at_level(logging.WARNING):
+            cfg = app_config.load_personas()
+        assert [p.name for p in cfg.personas] == ["Fresh"]
+        # The YAML is IGNORED, not renamed or deleted.
+        assert (tmp_project_root / "personas.yaml").exists()
+        assert not (tmp_project_root / "personas.yaml.bak").exists()
+        assert "IGNORED" in caplog.text
+
+    def test_malformed_legacy_yaml_aborts_startup(self, tmp_project_root):
+        (tmp_project_root / "personas.yaml").write_text("personas: [\n")
+        with pytest.raises(persona_store.PersonaMigrationError):
+            app_config.load_personas()
+        # The YAML survives for the next attempt.
+        assert (tmp_project_root / "personas.yaml").exists()
+        # And no partial directory is left behind.
+        assert not (tmp_project_root / "Personas").exists()
+
+
 # ---------------------------------------------------------------------------
 # Loading: missing files fall back to defaults
 # ---------------------------------------------------------------------------
@@ -124,9 +244,12 @@ class TestLoadingFallbacks:
         assert settings.llm.base_url == "http://localhost:8080"
         assert settings.mcp.servers == []
 
-    def test_load_personas_missing_file_returns_empty(self, tmp_path):
-        cfg = app_config.load_personas(tmp_path / "nope.yaml")
+    def test_load_personas_no_yaml_no_directory_creates_empty_dir(self, tmp_project_root):
+        # Neither personas.yaml nor a Personas directory exists: the app must
+        # not crash — it logs an error, creates the directory, and starts empty.
+        cfg = app_config.load_personas()
         assert cfg.personas == []
+        assert (tmp_project_root / "Personas").is_dir()
 
     def test_load_chatrooms_missing_file_returns_empty(self, tmp_path):
         cfg = app_config.load_chatrooms(tmp_path / "nope.yaml")
@@ -167,34 +290,6 @@ mcp:
         assert settings.general.show_tool_calls is False
         assert settings.mcp.servers[0].name == "my-server"
 
-    def test_load_personas_migrates_legacy_language_key(self, tmp_path):
-        path = tmp_path / "personas.yaml"
-        path.write_text(
-            """
-personas:
-  - name: Alex
-    system_prompt: You are Alex.
-    language: de
-"""
-        )
-        cfg = app_config.load_personas(path)
-        assert cfg.personas[0].reference_audio_language == "de"
-
-    def test_load_personas_keeps_explicit_reference_audio_language(self, tmp_path):
-        # If both keys exist, the new key wins and the legacy one is ignored.
-        path = tmp_path / "personas.yaml"
-        path.write_text(
-            """
-personas:
-  - name: Alex
-    system_prompt: You are Alex.
-    language: de
-    reference_audio_language: es
-"""
-        )
-        cfg = app_config.load_personas(path)
-        assert cfg.personas[0].reference_audio_language == "es"
-
     def test_load_chatrooms_parses_rooms(self, tmp_path):
         path = tmp_path / "chatrooms.yaml"
         path.write_text(
@@ -224,14 +319,6 @@ class TestSaveLoadRoundTrip:
         reloaded = yaml.safe_load(path.read_text())
         assert reloaded["general"]["max_persona_replies"] == 3
         assert reloaded["general"]["show_tool_calls"] is False
-
-    def test_save_personas_round_trip(self, tmp_path):
-        path = tmp_path / "personas.yaml"
-        cfg = make_personas()
-        app_config.save_personas(cfg, path)
-        reloaded = app_config.load_personas(path)
-        assert [p.name for p in reloaded.personas] == ["Alex", "Luna"]
-        assert reloaded.personas[1].reference_audio == "reference/luna.wav"
 
     def test_save_chatrooms_round_trip(self, tmp_path):
         path = tmp_path / "chatrooms.yaml"

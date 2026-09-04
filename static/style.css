@@ -82,6 +82,17 @@ html, body {
     overflow: hidden;
 }
 
+/*
+ * Generic show/hide utility. JS toggles the "hidden" class on modal
+ * overlays, error banners, and the list/form views inside the persona and
+ * chat room editors. The !important is load-bearing, not decoration:
+ * #pe-list-view and #pe-form-view set their layout via ID selectors, and
+ * an ID rule would out-specify a plain .hidden rule and defeat it.
+ */
+.hidden {
+    display: none !important;
+}
+
 /* --------------------------------------------------------------------------
    Top bar
    -------------------------------------------------------------------------- */
@@ -226,10 +237,6 @@ html, body {
     border-color: var(--accent);
     border-style: solid;
     color: #fff;
-}
-
-.btn-add-persona.hidden {
-    display: none;
 }
 
 /* Remove persona "x" button on persona cards */
@@ -701,10 +708,6 @@ html, body {
     padding: 20px;
 }
 
-.modal-overlay.hidden {
-    display: none;
-}
-
 .modal-box {
     background: var(--bg-secondary);
     border: 1px solid var(--border-color);
@@ -940,6 +943,62 @@ html, body {
     color: var(--text-muted);
 }
 
+/* Persona editor — file fields (avatar image, reference audio) */
+.pf-file-row {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+}
+
+.pf-file-preview {
+    width: 48px;
+    height: 48px;
+    border-radius: 50%;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    background: var(--bg-input);
+    border: 1px solid var(--border-color);
+    overflow: hidden;
+    flex-shrink: 0;
+    color: var(--text-muted);
+    font-weight: 700;
+}
+
+.pf-file-preview img {
+    width: 100%;
+    height: 100%;
+    object-fit: cover;
+}
+
+.pf-file-controls {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    flex-wrap: wrap;
+    min-width: 0;
+}
+
+.pf-file-status {
+    font-size: 0.75rem;
+    color: var(--text-secondary);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    max-width: 240px;
+}
+
+.btn-small {
+    padding: 3px 10px;
+    font-size: 0.75rem;
+}
+
+.form-row input[type="file"] {
+    color: var(--text-secondary);
+    font-size: 0.78rem;
+    max-width: 100%;
+}
+
 .form-row input[type="text"],
 .form-row textarea {
     background: var(--bg-input);
@@ -1009,10 +1068,6 @@ html, body {
     padding: 8px 14px;
     font-size: 0.85rem;
     margin: 0 20px 0 20px;
-}
-
-.pe-form-error.hidden {
-    display: none;
 }
 
 .pe-confirm-msg {

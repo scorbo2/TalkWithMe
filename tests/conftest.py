@@ -29,7 +29,8 @@ from tests.factories import make_chatrooms, make_personas, make_settings
 @pytest.fixture(autouse=True)
 def isolated_app_state(tmp_path, monkeypatch):
     """Point every global at throwaway state; restore everything after."""
-    # All YAML writes (save_personas/save_settings/save_chatrooms) land here.
+    # All YAML writes (save_settings/save_chatrooms) land here; persona
+    # writes go to the Personas directory resolved from this root.
     monkeypatch.setattr(app_config, "_PROJECT_ROOT", tmp_path)
     # All chatroom history/audio files land here.
     monkeypatch.setattr(persistence, "_PERSISTENCE_ROOT", tmp_path / "chatrooms")

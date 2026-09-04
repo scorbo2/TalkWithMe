@@ -7,7 +7,8 @@ modules stay focused on behaviour, not plumbing.
 
 import json
 import json as _json  # alias: FakeMCPClient.post has a `json` *parameter* that
-                     # shadows the module, so its SSE handlers use _json.dumps
+                      # shadows the module, so its SSE handlers use _json.dumps
+from pathlib import Path
 from typing import Any, Callable, List, Optional
 
 import httpx
@@ -50,7 +51,12 @@ def make_settings(
 
 
 def make_personas() -> PersonasConfig:
-    """Two stock personas: Alex (TTS-incapable) and Luna (TTS-capable)."""
+    """Two stock personas: Alex (TTS-incapable) and Luna (TTS-capable).
+
+    Purely in-memory (persona_dir=None) — use for tests that never touch
+    the disk. Use make_personas_in_dir() when the test exercises the
+    persona directory on disk (persona CRUD router, migration, ...).
+    """
     return PersonasConfig(
         personas=[
             Persona(
@@ -70,6 +76,68 @@ def make_personas() -> PersonasConfig:
             ),
         ]
     )
+
+
+def make_personas_in_dir(root) -> PersonasConfig:
+    """Materialize the stock Alex/Luna persona set as real directories.
+
+    SETUP factory: writes the stock files through app.services.persona_store
+    (the same code the router uses) and returns the scanned cache, so
+    persona_dir / avatar_image / reference_audio are all real on-disk paths.
+    Luna gets a ref.wav + ref.txt (TTS-capable); Alex gets neither.
+
+    NOTE: it RE-WRITES the stock files on every call, so it must not be
+    used to refresh a cache on an already-populated directory — any
+    non-stock file written since setup (a custom prompt.md, an avatar, ...)
+    would be clobbered. For cache refreshes use rescan_personas().
+    """
+    from app.services import persona_store
+
+    root = Path(root)
+    root.mkdir(parents=True, exist_ok=True)
+
+    alex = root / "Alex"
+    alex.mkdir(exist_ok=True)
+    persona_store.write_prompt_md(
+        alex,
+        name="Alex",
+        description="A friendly assistant",
+        router_hints="general questions",
+        avatar_color="#888888",
+        allow_tool_calls=False,
+        system_prompt="You are Alex, a friendly assistant.",
+    )
+
+    luna = root / "Luna"
+    luna.mkdir(exist_ok=True)
+    persona_store.write_prompt_md(
+        luna,
+        name="Luna",
+        description="A philosophical poet",
+        router_hints="philosophy, feelings",
+        avatar_color="#888888",
+        allow_tool_calls=False,
+        system_prompt="You are Luna, a philosophical poet.",
+    )
+    persona_store.write_language_file(luna, "en")
+    (luna / persona_store.REFERENCE_AUDIO_FILENAME).write_bytes(b"RIFF-fake-wav")
+    (luna / persona_store.TRANSCRIPT_FILENAME).write_text(
+        "The stars are just pinpricks in the dark.", encoding="utf-8",
+    )
+
+    return rescan_personas(root)
+
+
+def rescan_personas(root) -> PersonasConfig:
+    """Rebuild the personas cache from disk WITHOUT writing anything.
+
+    Use this to refresh the app's persona cache after a test (or the
+    router under test) has written persona files directly. Unlike
+    make_personas_in_dir() it never touches the stock files, so files
+    written since setup survive the refresh.
+    """
+    from app.services import persona_store
+    return PersonasConfig(personas=persona_store.scan_personas_directory(Path(root)))
 
 
 def make_chatrooms() -> ChatRoomsConfig:

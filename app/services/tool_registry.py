@@ -14,7 +14,7 @@ import logging
 from typing import Dict, List, Optional
 
 from app.config import MCPServerConfig, get_settings
-from app.services import mcp_client
+from app.services import builtin, mcp_client
 
 logger = logging.getLogger(__name__)
 
@@ -42,6 +42,15 @@ async def load_tools() -> None:
         accepted = []
         for tool in tools:
             tool_name = tool["function"]["name"]
+            if builtin.is_builtin_tool(tool_name):
+                # Built-in names are reserved: the application owns that
+                # tool (it works with no MCP servers at all), so a server
+                # advertising the same name is skipped rather than shadowed.
+                logger.warning(
+                    "MCP tool '%s' from server '%s' ignored: name is reserved by a built-in tool",
+                    tool_name, server.name,
+                )
+                continue
             if tool_name in _server_map:
                 # First server wins: with a flat tool list the LLM could
                 # not disambiguate a duplicated name anyway.

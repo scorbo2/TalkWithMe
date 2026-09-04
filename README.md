@@ -12,6 +12,9 @@ Follow the development of this app on my YouTube channel:
 - Persona-to-persona chat: https://www.youtube.com/watch?v=4J3Ao2RitKs
 - Cleaning audio samples for better voice cloning: https://www.youtube.com/watch?v=s33vyuiKDfs
 - MCP integrations: https://www.youtube.com/watch?v=XhD9soU3hFM
+- Externalizing persona persistence: (TODO video link here)
+- Adding persistent memories: (TODO video link here)
+- Adding emotion to cloned AI voices: (TODO video link here)
 
 ## Features
 
@@ -60,7 +63,7 @@ Most settings can be changed in the UI. Behind the scenes, configuration is stor
 
 - `settings.yaml` stores LLM, TTS, STT, and MCP server endpoints plus general chat parameters
 - `chatrooms.yaml` stores configured chat rooms (if any)
-- `personas.yaml` stores all personas
+- the `Personas/` directory stores all personas — one subdirectory per persona, each holding a `prompt.md` (frontmatter + system prompt), an optional `language.txt`, `ref.wav` + `ref.txt` (TTS voice reference), and an optional `image.<ext>` avatar. A legacy `personas.yaml`, if still present, is migrated to this layout automatically once on first startup (then renamed to `personas.yaml.bak` and ignored).
 
 ### Server settings
 
@@ -96,6 +99,7 @@ general:
   max_persona_replies: 1
   max_turns_for_context: 6
   show_tool_calls: true
+  personas_directory: Personas/
 
 mcp:
   servers: []
@@ -122,46 +126,56 @@ In this editor, you can:
 - **Clone** a persona (a numeric suffix is added to the name, e.g. `Mark_2`)
 - **Delete** a persona (with a confirmation prompt)
 
-Changes are persisted immediately to `personas.yaml` and the sidebar persona list is refreshed automatically. No server restart is needed.
+Changes are persisted immediately to the `Personas/` directory (configured in `settings.general.personas_directory`) and the sidebar persona list is refreshed automatically. No server restart is needed.
 
-> **Note**: renaming or deleting a persona does not modify messages already visible in the chat panel — those retain the name they were created with.
+> **Note**: renaming or deleting a persona does not modify messages already visible in the chat panel — those retain the name they were created with. Renaming does not rename the on-disk directory (the name is recorded inside `prompt.md`), so a directory name may legitimately differ from the persona's displayed name.
 
-The `personas.yaml` file persists these settings:
+Each persona is one directory: `Personas/<Name>/`. Its settings are persisted across these files:
 
-```yaml
-personas:
-  - name: "Alex"
-    description: "A curious and friendly AI assistant"
-    system_prompt: "You are Alex, a curious and friendly AI."
-    router_hints: "general questions, science, math, history"
-    avatar_color: "#4A90D9"
-    avatar_image: null
-    reference_audio: null
-    reference_audio_transcript: null
-    reference_audio_language: "en"
-    allow_tool_calls: false
+```
+Personas/Alex/
+├── prompt.md        # YAML frontmatter + system prompt body
+├── language.txt     # reference-audio language code (optional)
+├── ref.wav          # TTS reference audio (optional, fixed name)
+├── ref.txt          # transcript of ref.wav (optional)
+└── image.png        # avatar (optional, png/jpg/jpeg/gif/webp)
 ```
 
-(Note that the `reference_audio_language` field does not control what language the persona speaks. It refers
+`prompt.md` holds the persona's properties as YAML frontmatter followed by the system prompt, e.g.:
+
+```markdown
+---
+description: A curious and friendly AI assistant
+router_hints: general questions, science, math, history
+avatar_color: "#4A90D9"
+allow_tool_calls: false
+---
+You are Alex, a curious and friendly AI.
+```
+
+A `name:` frontmatter line is written only when the persona's name differs from its directory name.
+
+(Note that the reference-audio language does not control what language the persona speaks. It refers
 specifically to the language of the supplied reference audio, if any, so that voice cloning
 can be more accurate)
 
 #### Persona fields
 
-| Field | Description |
-|-------|-------------|
-| `name` | Unique persona name |
-| `description` | Short description shown in the sidebar |
-| `system_prompt` | System prompt sent to the LLM for this persona |
-| `router_hints` | Keywords the router uses to pick this persona |
-| `avatar_color` | Hex color for the avatar circle fallback |
-| `avatar_image` | Path to a local image file (optional) |
-| `reference_audio` | Path to a WAV file for TTS voice cloning (optional) |
-| `reference_audio_transcript` | Path to a TXT file with the audio transcript (required with `reference_audio`) |
-| `reference_audio_language` | Two-letter language code describing the reference audio (defaults to `en`) |
-| `allow_tool_calls` | If `true`, this persona may call MCP tools while replying (if at least one MCP server is configured) |
+| Field | Where it lives | Description |
+|-------|----------------|-------------|
+| `name` | directory name / `prompt.md` | Unique persona name |
+| `description` | `prompt.md` frontmatter | Short description shown in the sidebar |
+| `system_prompt` | `prompt.md` body | System prompt sent to the LLM for this persona |
+| `router_hints` | `prompt.md` frontmatter | Keywords the router uses to pick this persona |
+| `avatar_color` | `prompt.md` frontmatter | Hex color for the avatar circle fallback |
+| avatar image | `image.<ext>` file | Uploaded image for the persona (optional) |
+| reference audio | `ref.wav` file | WAV for TTS voice cloning (optional) |
+| reference transcript | `ref.txt` file | Transcript of the reference audio (required for TTS) |
+| reference audio language | `language.txt` file | Two-letter code describing the reference audio |
+| `memory_size` | `prompt.md` frontmatter | If 0, memories are disabled for this persona. Otherwise, maximum byte size of the memories file. |
+| `allow_tool_calls` | `prompt.md` frontmatter | If `true`, this persona may call MCP tools while replying (if at least one MCP server is configured) |
 
-**TTS support**: Both `reference_audio` and `reference_audio_transcript` must be set for a persona to have TTS capability.
+**TTS support**: Both `ref.wav` and a non-blank `ref.txt` must be present for a persona to have TTS capability.
 
 #### Who answers next?
 
@@ -253,6 +267,25 @@ By default, only one AI persona in the current chat room will answer your prompt
 
 If you want your personas to be able to *do* things — fetch a web page, query a database, check the weather — you can connect one or more [MCP (Model Context Protocol)](https://modelcontextprotocol.io) servers. When a persona with tools enabled replies, TalkWithMe runs an agentic loop: the LLM may request tool calls, TalkWithMe executes them against the configured MCP servers, feeds the results back to the LLM, and repeats until the LLM produces a final text answer.
 
+## Persona memories
+
+Every time you select "New Chat" in a given chat room, the chat history of that room is wiped. But, your personas have access to a new feature (added in V6) to allow them to persist certain memories across chat sessions, and across chat rooms. To enable this for a persona, the following conditions must be met:
+
+- `settings.general.enable_persona_memories` must be enabled.
+- `memory_size` must be greater than 0 for the persona in question.
+- `allow_tool_calls` must be enabled for the persona in question (so they can save new memories - this is not needed for recalling existing memories).
+
+If the above conditions are met, the persona may save memories related to things that you've told it. If `settings.general.show_tool_calls` is enabled, you will see the `add_memory` tool being used. Hovering over the tool chip with the mouse cursor will show you the exact memory that was saved. Memories are persisted to `memories.txt` inside the persona's directory. You can view and even edit this file directly if you wish.
+
+You can clear persisted memories in the Persona Editor by selecting "Clear". This deletes the `memories.txt` file for the persona in question, once the dialog is confirmed.
+
+Each persona has a `memory_size` property, which is a limit (in bytes) to the size of the `memories.txt` file. If a new memory is saved when the file is already at or over the limit, older memories will be purged automatically to make room for the new memory. Setting `memory_size` to 0 effectively disables memory storage for that persona. The maximum value for `memory_size` is 16384.
+
+Because the limit is also checked every time a persona's memories are loaded into the LLM's context, if you (or any other process) edit `memories.txt` directly while the app is running, the change is picked up on the persona's next reply. If the file is over the limit at that point, the oldest memories are purged first — both before they are shown to the LLM and on disk — so an over-limit file is never handed to the LLM verbatim.
+
+If a persona never saves memories even though the conditions above are met, see the [Logging](#logging) section: a short debug-logging run will show whether the `add_memory` tool is being offered to the LLM at all. The most likely cause is your choice of LLMs: in testing, it was noted that Gemma 4 will often ignore the tool unless you specifically prompt it. For example, "My favorite color is blue" does not cause Gemma 4 to call the `add_memory` tool, but specifically saying "Use the `add_memory` tool to store a memory that my favorite color is blue" will work. This is highly annoying. Qwen models in general seem better about this, but your mileage may vary. You can adjust the system prompt of your persona to be more forceful about this. For example, consider adding this to your system prompt: "Use the `add_memory` tool to store a memory whenever the user tells you about something that they like or dislike."
+
+
 ### 1. Configure your MCP server(s)
 
 Edit the `mcp` section of `settings.yaml` directly (there is no UI for this yet):
@@ -314,6 +347,38 @@ will play the respective sentence:
 Enabling the "echo chamber" option in a chat room will cause the responding persona to simply echo back
 whatever you type or speak, verbatim. This is useful with TTS servers, if you want to hear a persona
 speak a specific line of dialogue. This option is disabled by default.
+
+## Logging
+
+TalkWithMe logs to the console — the terminal where uvicorn is running. By default it runs at
+**INFO** level, which shows startup information (personas loaded, MCP tools discovered), warnings,
+and errors. Most people will never need to change this.
+
+If you are troubleshooting something — for example, a persona that never calls a tool even though
+tool calls and persona memories are both enabled — you can turn on **DEBUG** logging for the run
+with the `TALKWITHME_LOG_LEVEL` environment variable:
+
+```bash
+# Level names are case-insensitive: debug, info, warning, error, critical
+TALKWITHME_LOG_LEVEL=debug uvicorn app.main:app --host 0.0.0.0 --port 8000
+```
+
+At DEBUG level, each reply logs the tool decision trail: the persona's `allow_tool_calls`,
+`memory_size`, and `enable_persona_memories` values as the app sees them, the exact tool list
+offered to the LLM on every round, and the result of each built-in tool invocation (such as
+`add_memory`). The lines are prefixed `Persona memory:`, so you can filter them out of the rest
+of the console with `grep "Persona memory"`. That trail tells you quickly whether the tool was
+never offered to the LLM at all, or was offered but the model chose not to call it (which is
+often a model/prompt issue rather than an app issue).
+
+### Notes and gotchas
+
+- `uvicorn --log-level debug` does **not** enable the app's debug logging. That flag only changes
+  uvicorn's own loggers; the app's lines would stay at INFO. `TALKWITHME_LOG_LEVEL` is the
+  supported way to change the app's level.
+- Invalid values (e.g. `TALKWITHME_LOG_LEVEL=verbose`) log a warning at startup and fall back to
+  INFO — a typo never prevents the app from starting.
+- The variable is unset or blank means INFO.
 
 ## Detailed setup guide
 
@@ -394,6 +459,11 @@ details about setting up the server-side TTS script.
   - Bug fix: validation errors now properly displayed (#72)
   - Bug fix: broken INFO logging (#74)
   - Code cleanup: add comprehensive pytest suite (#79)
+- **2026-09-03** v6.0
+  - Minor bug fix: persona ordering was inconsistent in UI (#82)
+  - Major changes to Persona persistence (#87)
+  - Fix longstanding display issues in Persona/Chat Room modals (#94)
+  - Bump dependency versions to something less ancient (#81)
 
 ## License
 
