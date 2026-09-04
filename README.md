@@ -461,6 +461,7 @@ details about setting up the server-side TTS script.
 - **Work in progress; TODO add release date when ready** v6.0
   - Minor bug fix: persona ordering was inconsistent in UI (#82)
   - Major changes to Persona persistence (#87)
+  - Fix longstanding display issues in Persona/Chat Room modals (#94)
 
 ## License
 
