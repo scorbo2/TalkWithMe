@@ -12,9 +12,9 @@ Follow the development of this app on my YouTube channel:
 - Persona-to-persona chat: https://www.youtube.com/watch?v=4J3Ao2RitKs
 - Cleaning audio samples for better voice cloning: https://www.youtube.com/watch?v=s33vyuiKDfs
 - MCP integrations: https://www.youtube.com/watch?v=XhD9soU3hFM
-- Externalizing persona persistence: (TODO video link here)
-- Adding persistent memories: (TODO video link here)
-- Adding emotion to cloned AI voices: (TODO video link here)
+- Externalizing persona persistence: https://www.youtube.com/watch?v=Vj9rUy06Dcw
+- Adding persistent memories: https://www.youtube.com/watch?v=YD6cInSuQZs
+- Adding emotion to cloned AI voices: (TODO video link here when ready)
 
 ## Features
 
