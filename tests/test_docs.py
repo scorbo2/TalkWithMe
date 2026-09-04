@@ -11,8 +11,6 @@ import re
 from collections import Counter
 from pathlib import Path
 
-from fastapi.routing import APIRoute
-
 from app.main import app
 
 AGENTS_MD = Path(__file__).resolve().parent.parent / "AGENTS.md"
@@ -23,17 +21,24 @@ _IGNORED_METHODS = {"HEAD", "OPTIONS"}
 
 
 def _actual_api_routes() -> set[tuple[str, str]]:
-    """(METHOD, path) pairs registered on the app, scoped to /api/ routes.
+    """(METHOD, path) pairs exposed by the app, scoped to /api/ routes.
 
+    Derived from the OpenAPI schema rather than app.routes: modern
+    Starlette keeps included routers as lazy wrapper nodes in app.routes,
+    so a flat scan no longer enumerates them, and the schema is the public
+    surface the table actually documents. (It is also what HEAD/OPTIONS
+    filtering falls out of for free — the schema lists neither.)
     Scoped to /api/ on purpose: the table documents the API, not the UI
-    (GET /) or the /static mount (a Mount, not an APIRoute).
+    (GET /) or the /static mount.
     """
     routes = set()
-    for route in app.routes:
-        if not isinstance(route, APIRoute) or not route.path.startswith("/api/"):
+    for path, operations in app.openapi()["paths"].items():
+        if not path.startswith("/api/"):
             continue
-        for method in route.methods - _IGNORED_METHODS:
-            routes.add((method, route.path))
+        for method in operations:
+            if method.upper() in _IGNORED_METHODS:
+                continue
+            routes.add((method.upper(), path))
     return routes
 
 

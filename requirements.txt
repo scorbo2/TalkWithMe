@@ -1,18 +1,24 @@
 # Pinned to the known-working environment: the app's behavior (and the
-# test suite) is verified against exactly these versions. In particular,
-# fastapi==0.101.0 pins starlette 0.27, whose legacy
-# Jinja2Templates.TemplateResponse(name, context) signature the index
-# route relies on, and httpx==0.24.1 is the version the test fakes were
-# written against (see the httpx note in AGENTS.md). Bump a pin
+# test suite) is verified against exactly these versions. Bump a pin
 # deliberately, then re-run the full test suite before keeping it.
-fastapi==0.101.0
-uvicorn[standard]==0.23.2
-httpx==0.24.1
-jinja2==3.1.2
-pydantic==2.1.1
-# >= rather than ==: 5.4.1 (the installed dev version) predates Python 3.10
-# and has no cp310 wheel, so a fresh install must take 6.x. The suite
-# passes on both.
+#
+# These are recent versions on purpose. The old pins (fastapi 0.101 /
+# starlette 0.27, httpx 0.24) existed only for the legacy
+# Jinja2Templates.TemplateResponse(name, context) signature; the index
+# route now uses the request-first signature, so the modern starlette
+# that current FastAPI ships works out of the box. The test fakes in
+# tests/factories.py still attach an httpx.Request to every fake
+# response: this httpx raises RuntimeError from response.url /
+# raise_for_status() when none is attached (see the httpx note in
+# AGENTS.md).
+fastapi==0.141.1
+uvicorn[standard]==0.52.4
+httpx==0.28.1
+jinja2==3.1.6
+pydantic==2.13.5
+# >= rather than ==: PyYAML 5.4.1 predates Python 3.10 and has no cp310
+# wheel, so on the supported interpreters (3.10+) a fresh install takes
+# 6.x anyway. The suite passes on both.
 pyyaml>=5.4.1
-python-multipart==0.0.6
+python-multipart==0.0.32
 aiofiles==25.1.0
