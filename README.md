@@ -283,7 +283,8 @@ Each persona has a `memory_size` property, which is a limit (in bytes) to the si
 
 Because the limit is also checked every time a persona's memories are loaded into the LLM's context, if you (or any other process) edit `memories.txt` directly while the app is running, the change is picked up on the persona's next reply. If the file is over the limit at that point, the oldest memories are purged first — both before they are shown to the LLM and on disk — so an over-limit file is never handed to the LLM verbatim.
 
-If a persona never saves memories even though the conditions above are met, see the [Logging](#logging) section: a short debug-logging run will show whether the `add_memory` tool is being offered to the LLM at all.
+If a persona never saves memories even though the conditions above are met, see the [Logging](#logging) section: a short debug-logging run will show whether the `add_memory` tool is being offered to the LLM at all. The most likely cause is your choice of LLMs: in testing, it was noted that Gemma 4 will often ignore the tool unless you specifically prompt it. For example, "My favorite color is blue" does not cause Gemma 4 to call the `add_memory` tool, but specifically saying "Use the `add_memory` tool to store a memory that my favorite color is blue" will work. This is highly annoying. Qwen models in general seem better about this, but your mileage may vary. You can adjust the system prompt of your persona to be more forceful about this. For example, consider adding this to your system prompt: "Use the `add_memory` tool to store a memory whenever the user tells you about something that they like or dislike."
+
 
 ### 1. Configure your MCP server(s)
 
@@ -458,7 +459,7 @@ details about setting up the server-side TTS script.
   - Bug fix: validation errors now properly displayed (#72)
   - Bug fix: broken INFO logging (#74)
   - Code cleanup: add comprehensive pytest suite (#79)
-- **Work in progress; TODO add release date when ready** v6.0
+- **2026-09-03** v6.0
   - Minor bug fix: persona ordering was inconsistent in UI (#82)
   - Major changes to Persona persistence (#87)
   - Fix longstanding display issues in Persona/Chat Room modals (#94)
