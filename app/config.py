@@ -127,10 +127,10 @@ class MCPServerConfig(BaseModel):
     """A single MCP server endpoint (SSE/HTTP transport only — no stdio)."""
     name: str
     url: str
-    # gt=0: with this httpx version a 0.0 timeout does NOT mean "no
-    # timeout" — it fails every request instantly, so the typo would
-    # silently kill the server. le=300: a hung tool call should not be
-    # allowed to stall the SSE stream for unreasonably long.
+    # gt=0: in httpx a 0.0 timeout does NOT mean "no timeout" — Timeout(0)
+    # keeps a real zero and fails every request instantly, so the typo
+    # would silently kill the server. le=300: a hung tool call should not
+    # be allowed to stall the SSE stream for unreasonably long.
     timeout: float = Field(default=10.0, gt=0, le=300)
 
     @model_validator(mode="after")

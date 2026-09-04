@@ -10,3 +10,4 @@ chatrooms.yaml.*
 settings.yaml.*
 testsetup.sh
 restore.sh
+.venv/
