@@ -19,6 +19,7 @@ from tests.factories import (
     json_response,
     make_capabilities_doc,
     make_settings,
+    make_unexpected_field_422,
 )
 from app.config import STTConfig, TTSConfig
 
@@ -109,8 +110,16 @@ class TestCheckTTSHealth:
 
 
 # ---------------------------------------------------------------------------
-# TTS synthesis
+# TTS synthesis (plan T4: doc-driven payload, T6: language fit,
+# plan T3: 422 self-heal)
 # ---------------------------------------------------------------------------
+
+def _cache_capabilities(monkeypatch, doc, base_url="http://tts.local:5500"):
+    """Pre-seed the capabilities cache slot: the next get_capabilities()
+    serves `doc` without touching the network."""
+    monkeypatch.setattr(tts_client, "_capabilities_base_url", base_url)
+    monkeypatch.setattr(tts_client, "_capabilities_cache", doc)
+
 
 class TestSynthesize:
     def test_inactive_tts_returns_none_without_network(self, monkeypatch):
@@ -118,15 +127,16 @@ class TestSynthesize:
             raise AssertionError("network must not be touched when TTS is inactive")
 
         _patch_http(monkeypatch, fail)
-        result = _run(tts_client.synthesize("hi", "prompt", "QUJD"))
+        result = _run(tts_client.synthesize("hi", "p", "QUJD"))
         assert result is None
 
-    def test_synthesize_posts_configured_payload_and_returns_body(self, monkeypatch):
-        # Engine parameters are configured generically now (TTS
-        # generification): whatever sits in tts.parameters is folded into
-        # the /synthesize payload as-is (filtering against the
-        # capabilities doc lands in the next milestone, plan T4).
+    def test_synthesize_posts_doc_driven_payload_and_returns_body(self, monkeypatch):
+        # The payload is built from the capabilities doc (plan T4): the
+        # dots.tts snapshot advertises text, audio_base64, reference_text,
+        # language, seed, and the engine knobs configured below — all of
+        # them, and nothing else, reaches the wire.
         _active_tts(monkeypatch, parameters={"num_steps": 7, "guidance_scale": 2.5, "seed": 42})
+        _cache_capabilities(monkeypatch, make_capabilities_doc(engine="dots.tts"))
         seen = {}
 
         def responder(method, url, **kw):
@@ -141,7 +151,7 @@ class TestSynthesize:
         assert seen["url"] == "http://tts.local:5500/synthesize"
         assert seen["payload"] == {
             "text": "hello",
-            "prompt_text": "prompt text",
+            "reference_text": "prompt text",
             "audio_base64": "QUJD",
             "language": "de",
             "num_steps": 7,
@@ -149,11 +159,12 @@ class TestSynthesize:
             "seed": 42,
         }
 
-    def test_synthesize_without_parameters_sends_core_fields_only(self, monkeypatch):
-        # "Engine decides" must be the zero-config behaviour: with no
-        # parameters configured, the payload is exactly the four core
-        # fields and nothing else.
+    def test_synthesize_chatterbox_never_receives_reference_text(self, monkeypatch):
+        # The chatterbox snapshot advertises no reference_text parameter,
+        # so the persona's transcript must not be sent: it would 422 the
+        # whole synthesis under extra="forbid".
         _active_tts(monkeypatch)
+        _cache_capabilities(monkeypatch, make_capabilities_doc(engine="chatterbox"))
         seen = {}
 
         def responder(method, url, **kw):
@@ -161,30 +172,300 @@ class TestSynthesize:
             return json_response(200, {"audio_base64": "QUJD", "sample_rate": 24000})
 
         _patch_http(monkeypatch, responder)
-        # language defaults to "en" at the function signature.
-        _run(tts_client.synthesize("hi", "p", "QUJD"))
+        _run(tts_client.synthesize("hi", "the transcript", "QUJD", language="en"))
 
         assert seen["payload"] == {
             "text": "hi",
-            "prompt_text": "p",
             "audio_base64": "QUJD",
             "language": "en",
         }
 
-    def test_synthesize_http_error_returns_none(self, monkeypatch):
+    def test_synthesize_non_cloning_engine_returns_none_without_posting(self, monkeypatch, caplog):
+        # A doc with reference_audio: null describes a non-cloning engine:
+        # a text-only payload would be ACCEPTED, in the engine's default
+        # voice — the wrong voice for the persona. Fail loudly before
+        # spending a /synthesize request, and log the reason. (This is the
+        # backstop for the first call after a cache invalidation, when the
+        # router's warm-cache 503 cannot fire yet.)
         _active_tts(monkeypatch)
-        _patch_http(monkeypatch, lambda method, url, **kw: json_response(500, {}))
+        _cache_capabilities(monkeypatch, make_capabilities_doc(engine="omnivoice", reference_audio=None))
+        calls = []
 
+        def responder(method, url, **kw):
+            calls.append((method, url))
+            return json_response(200, {"audio_base64": "QUJD", "sample_rate": 24000})
+
+        _patch_http(monkeypatch, responder)
+        with caplog.at_level(logging.WARNING, logger="app.services.tts_client"):
+            assert _run(tts_client.synthesize("hi", "p", "QUJD")) is None
+
+        assert calls == []
+        assert "cloning" in caplog.text
+
+    def test_synthesize_language_in_enum_is_sent_verbatim(self, monkeypatch):
+        # qwen3-tts's language parameter carries an enum that includes
+        # "zh": a persona code in the enum goes through unchanged (the
+        # server does any mapping — the app never does, plan T6).
+        _active_tts(monkeypatch)
+        _cache_capabilities(monkeypatch, make_capabilities_doc(engine="qwen3-tts"))
+        seen = {}
+
+        def responder(method, url, **kw):
+            seen["payload"] = kw.get("json")
+            return json_response(200, {"audio_base64": "QUJD"})
+
+        _patch_http(monkeypatch, responder)
+        _run(tts_client.synthesize("hi", "p", "QUJD", language="zh"))
+
+        assert seen["payload"]["language"] == "zh"
+
+    def test_synthesize_language_not_in_enum_is_omitted_and_warned(self, monkeypatch, caplog):
+        # chatterbox's language enum has no "xx": the code is dropped
+        # rather than sent (it would 422) or mapped (forbidden by the
+        # code-only contract), and the omission is logged.
+        _active_tts(monkeypatch)
+        _cache_capabilities(monkeypatch, make_capabilities_doc(engine="chatterbox"))
+        seen = {}
+
+        def responder(method, url, **kw):
+            seen["payload"] = kw.get("json")
+            return json_response(200, {"audio_base64": "QUJD"})
+
+        _patch_http(monkeypatch, responder)
+        with caplog.at_level(logging.WARNING, logger="app.services.tts_client"):
+            _run(tts_client.synthesize("hi", "p", "QUJD", language="xx"))
+
+        assert "language" not in seen["payload"]
+        assert "xx" in caplog.text
+
+    def test_synthesize_unadvertised_parameter_is_dropped(self, monkeypatch):
+        # 'exaggeration' is a chatterbox knob; the omnivoice engine does
+        # not advertise it, so it must not be sent (extra="forbid" would
+        # 422 it). 'num_steps' is advertised and goes through.
+        _active_tts(monkeypatch, parameters={"exaggeration": 0.9, "num_steps": 16})
+        _cache_capabilities(monkeypatch, make_capabilities_doc(engine="omnivoice"))
+        seen = {}
+
+        def responder(method, url, **kw):
+            seen["payload"] = kw.get("json")
+            return json_response(200, {"audio_base64": "QUJD"})
+
+        _patch_http(monkeypatch, responder)
+        _run(tts_client.synthesize("hi", "p", "QUJD"))
+
+        assert seen["payload"] == {
+            "text": "hi",
+            "reference_text": "p",
+            "audio_base64": "QUJD",
+            "language": "en",
+            "num_steps": 16,
+        }
+
+    def test_synthesize_none_and_empty_parameter_values_are_omitted(self, monkeypatch):
+        # "Not set" is an absent key or an empty string (the UI sends "");
+        # neither reaches the wire — the engine applies its own default.
+        _active_tts(monkeypatch, parameters={"seed": None, "ode_method": ""})
+        _cache_capabilities(monkeypatch, make_capabilities_doc(engine="dots.tts"))
+        seen = {}
+
+        def responder(method, url, **kw):
+            seen["payload"] = kw.get("json")
+            return json_response(200, {"audio_base64": "QUJD"})
+
+        _patch_http(monkeypatch, responder)
+        _run(tts_client.synthesize("hi", "p", "QUJD"))
+
+        assert "seed" not in seen["payload"]
+        assert "ode_method" not in seen["payload"]
+
+    def test_synthesize_app_managed_names_never_sourced_from_parameters(self, monkeypatch):
+        # A stale hand-edited tts.parameters must not be able to override
+        # the persona's text, voice, transcript, or language (plan T4):
+        # those four fields come from the request and the persona only.
+        _active_tts(monkeypatch, parameters={
+            "text": "hijacked",
+            "audio_base64": "AAAA",
+            "reference_text": "fake transcript",
+            "language": "zz",
+            "num_steps": 7,
+        })
+        _cache_capabilities(monkeypatch, make_capabilities_doc(engine="dots.tts"))
+        seen = {}
+
+        def responder(method, url, **kw):
+            seen["payload"] = kw.get("json")
+            return json_response(200, {"audio_base64": "QUJD"})
+
+        _patch_http(monkeypatch, responder)
+        _run(tts_client.synthesize("hello", "real transcript", "QUJD", language="de"))
+
+        assert seen["payload"] == {
+            "text": "hello",
+            "reference_text": "real transcript",
+            "audio_base64": "QUJD",
+            "language": "de",
+            "num_steps": 7,
+        }
+
+    def test_synthesize_no_doc_fallback_sends_unfiltered_with_one_warning(self, monkeypatch, caplog):
+        # No capabilities doc (server without /capabilities): the core
+        # vocabulary plus ALL configured parameters are sent unfiltered,
+        # and the fallback is warned ONCE per base_url — streaming TTS
+        # issues one /synthesize per sentence and must not spam the log.
+        _active_tts(monkeypatch, parameters={"num_steps": 7, "guidance_scale": 2.5})
+        seen = {}
+        calls = []
+
+        def responder(method, url, **kw):
+            calls.append((method, url))
+            if url.endswith("/capabilities"):
+                return json_response(404, {"detail": "no such endpoint"})
+            seen["payload"] = kw.get("json")
+            return json_response(200, {"audio_base64": "QUJD", "sample_rate": 24000})
+
+        _patch_http(monkeypatch, responder)
+        with caplog.at_level(logging.WARNING, logger="app.services.tts_client"):
+            assert _run(tts_client.synthesize("hi", "p", "QUJD")) is not None
+            assert _run(tts_client.synthesize("hi", "p", "QUJD")) is not None
+
+        assert seen["payload"] == {
+            "text": "hi",
+            "reference_text": "p",
+            "audio_base64": "QUJD",
+            "language": "en",
+            "num_steps": 7,
+            "guidance_scale": 2.5,
+        }
+        # One capabilities GET (the 404 is negatively cached) and exactly
+        # one fallback warning across two syntheses:
+        assert calls == [
+            ("GET", "http://tts.local:5500/capabilities"),
+            ("POST", "http://tts.local:5500/synthesize"),
+            ("POST", "http://tts.local:5500/synthesize"),
+        ]
+        assert caplog.text.count("TTS /capabilities unavailable") == 1
+
+    def test_synthesize_no_doc_fallback_still_protects_app_managed_names(self, monkeypatch):
+        # Even without a doc the four app-managed fields are never sourced
+        # from tts.parameters: the "all configured parameters" fallback
+        # covers engine knobs only.
+        _active_tts(monkeypatch, parameters={"language": "zz", "reference_text": "fake"})
+        seen = {}
+
+        def responder(method, url, **kw):
+            if url.endswith("/capabilities"):
+                return json_response(404, {"detail": "no such endpoint"})
+            seen["payload"] = kw.get("json")
+            return json_response(200, {"audio_base64": "QUJD"})
+
+        _patch_http(monkeypatch, responder)
+        _run(tts_client.synthesize("hi", "real", "QUJD", language="de"))
+
+        assert seen["payload"] == {
+            "text": "hi",
+            "reference_text": "real",
+            "audio_base64": "QUJD",
+            "language": "de",
+        }
+
+    def test_synthesize_422_self_heal_refetches_and_retries_once(self, monkeypatch, caplog):
+        # Stale doc: the cache still holds the dots.tts doc, but the
+        # server behind base_url is now OmniVoice (which does not
+        # advertise speaker_scale). The first payload — built from the
+        # stale doc — 422s naming the field; the self-heal invalidates,
+        # refetches, rebuilds, and retries exactly once, and the retry
+        # succeeds. The 422 detail is logged (it names the field).
+        _active_tts(monkeypatch, parameters={"speaker_scale": 1.5})
+        _cache_capabilities(monkeypatch, make_capabilities_doc(engine="dots.tts"))
+        posts = []
+
+        def responder(method, url, **kw):
+            if url.endswith("/capabilities"):
+                return json_response(200, make_capabilities_doc(engine="omnivoice"))
+            posts.append(kw.get("json"))
+            if len(posts) == 1:
+                return json_response(422, make_unexpected_field_422("speaker_scale", 1.5))
+            return json_response(200, {"audio_base64": "QUJD", "sample_rate": 24000})
+
+        _patch_http(monkeypatch, responder)
+        with caplog.at_level(logging.WARNING, logger="app.services.tts_client"):
+            result = _run(tts_client.synthesize("hi", "p", "QUJD"))
+
+        assert result == {"audio_base64": "QUJD", "sample_rate": 24000}
+        assert len(posts) == 2
+        assert posts[0]["speaker_scale"] == 1.5  # built from the stale doc
+        assert "speaker_scale" not in posts[1]  # rebuilt from the fresh doc
+        assert "speaker_scale" in caplog.text   # 422 detail was logged
+
+    def test_synthesize_422_retries_exactly_once_then_gives_up(self, monkeypatch, caplog):
+        # A 422 that survives the refetch+retry (genuinely bad input)
+        # must not loop: one retry, then None — and both 422 details
+        # are logged.
+        _active_tts(monkeypatch, parameters={"num_steps": 999})
+        _cache_capabilities(monkeypatch, make_capabilities_doc(engine="omnivoice"))
+        posts = []
+
+        def responder(method, url, **kw):
+            if url.endswith("/capabilities"):
+                return json_response(200, make_capabilities_doc(engine="omnivoice"))
+            posts.append(kw.get("json"))
+            return json_response(422, make_unexpected_field_422("num_steps", 999))
+
+        _patch_http(monkeypatch, responder)
+        with caplog.at_level(logging.WARNING, logger="app.services.tts_client"):
+            assert _run(tts_client.synthesize("hi", "p", "QUJD")) is None
+
+        assert len(posts) == 2
+        assert caplog.text.count("rejected the payload (422)") == 2
+
+    def test_synthesize_non_422_error_does_not_self_heal(self, monkeypatch):
+        # Non-422 errors say nothing about a stale document: one POST, no
+        # refetch, no retry.
+        _active_tts(monkeypatch)
+        _cache_capabilities(monkeypatch, make_capabilities_doc(engine="omnivoice"))
+        calls = []
+
+        def responder(method, url, **kw):
+            calls.append((method, url))
+            return json_response(500, {"detail": "boom"})
+
+        _patch_http(monkeypatch, responder)
         assert _run(tts_client.synthesize("hi", "p", "QUJD")) is None
+        assert calls == [("POST", "http://tts.local:5500/synthesize")]
 
     def test_synthesize_connection_error_returns_none(self, monkeypatch):
         _active_tts(monkeypatch)
+        _cache_capabilities(monkeypatch, make_capabilities_doc(engine="omnivoice"))
 
         def refuse(*a, **kw):
             raise httpx.ConnectError("refused")
 
         _patch_http(monkeypatch, refuse)
         assert _run(tts_client.synthesize("hi", "p", "QUJD")) is None
+
+
+class TestLanguageFit:
+    """Plan T6 is a pure enum-membership check: the app never maps codes."""
+
+    def test_language_fit_no_parameter_means_not_sent(self):
+        assert tts_client._language_value_is_accepted(None, "en") is False
+
+    def test_language_fit_empty_value_means_not_sent(self):
+        assert tts_client._language_value_is_accepted({"enum": None}, "") is False
+
+    def test_language_fit_free_form_accepts_any_code(self):
+        # dots.tts / omnivoice style: a language parameter without an enum.
+        spec = {"name": "language", "type": "string", "enum": None}
+        assert tts_client._language_value_is_accepted(spec, "de") is True
+        assert tts_client._language_value_is_accepted(spec, "xx") is True
+
+    def test_language_fit_enum_accepts_listed_code(self):
+        spec = {"name": "language", "enum": ["en", "de", "zh"]}
+        assert tts_client._language_value_is_accepted(spec, "zh") is True
+
+    def test_language_fit_enum_rejects_unlisted_code(self):
+        spec = {"name": "language", "enum": ["en", "de", "zh"]}
+        assert tts_client._language_value_is_accepted(spec, "xx") is False
 
 
 # ---------------------------------------------------------------------------

@@ -73,8 +73,8 @@ code handles the FastAPI side of things entirely.
 
 ## Implementation plan
 
-Status: **M0 LOCKED (2026-09-04); M1 complete; M2 complete (2026-09-04)**
-Date: 2026-09-03 (plan), 2026-09-04 (M0 lock, M2)
+Status: **M0 LOCKED (2026-09-04); M1 complete; M2 complete; M3 complete (2026-09-04)**
+Date: 2026-09-03 (plan), 2026-09-04 (M0 lock, M2, M3)
 
 M2 note: the legacy migration (T2) is implemented as a `TTSConfig`
 before-validator in `app/config.py` rather than inside `load_settings()` —
@@ -92,6 +92,29 @@ unfiltered starting in M2 — this is what makes a migrated legacy
 `settings.yaml` keep working with zero user action (T2); M3's T4 filter and
 the `prompt_text` → `reference_text` rename (T11) replace the blind fold
 with the doc-driven payload builder.
+
+M3 note: live-verified on 2026-09-04 against a real OmniVoice tts-serve
+instance (`/health`, `/capabilities`, `/synthesize`): the lifespan
+warm-up cached the doc (`engine=omnivoice schema_version=2`),
+`GET /api/tts/capabilities` served it raw, and a full `POST /api/tts`
+round-trip returned 24 kHz PCM audio with the configured
+`tts.parameters` (`num_steps`) accepted by the engine. The 422 self-heal
+was exercised for real: with a stale dots-style doc seeded in the cache,
+the engine rejected the stale `speaker_scale` field with a genuine
+`extra_forbidden` 422, the cache refetched the live doc, and the retry
+succeeded. The T6 language fit check only applies when a doc is
+available to judge against — in the no-doc fallback the code is part of
+the core vocabulary and goes out unfiltered (a first-draft bug where the
+check ran with no doc and silently dropped the code, caught by tests).
+Post-M3 hardening: the non-cloning check now also lives in
+`synthesize()`, closing the cache-cold window — the router's 503 can only
+consult a *warm* cache, so the first call after a cache invalidation
+(TTS down at startup, settings save) used to fetch the doc and then let a
+non-cloning engine answer in its default voice. `synthesize()` now
+refuses (502 via the router) before the first POST when the doc it
+already fetched says `reference_audio: null`; the shared predicate
+`doc_supports_reference_audio()` backs both the router 503 and that
+backstop, and the next call gets the router's clean 503.
 
 M0 note: the confirmed code-only language policy (open question 3) changed
 tts-serve's API surface, which bumped the capabilities `schema_version`

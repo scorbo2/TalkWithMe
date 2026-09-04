@@ -7,11 +7,20 @@ exercised for real against tmp_path files.
 
 import base64
 
+import httpx
+
 import app.config as app_config
 import app.routers.stt as stt_router
 import app.routers.tts as tts_router
+import app.services.tts_client as tts_client
 from app.config import Persona, PersonasConfig
-from tests.factories import make_personas, make_settings
+from tests.factories import (
+    FakeAsyncClient,
+    json_response,
+    make_capabilities_doc,
+    make_personas,
+    make_settings,
+)
 from app.config import STTConfig, TTSConfig
 
 
@@ -113,8 +122,8 @@ class TestTTSProxy:
         _persona_cache(monkeypatch, PersonasConfig(personas=[self._tts_capable_persona(tmp_path)]))
         seen = {}
 
-        async def fake_synthesize(text, prompt_text, audio_base64, language):
-            seen.update(text=text, prompt_text=prompt_text,
+        async def fake_synthesize(text, reference_text, audio_base64, language):
+            seen.update(text=text, reference_text=reference_text,
                         audio_base64=audio_base64, language=language)
             return {"audio_base64": "QUJD", "sample_rate": 24000}
 
@@ -125,9 +134,162 @@ class TestTTSProxy:
         assert resp.status_code == 200
         assert resp.json() == {"audio_base64": "QUJD", "sample_rate": 24000}
         assert seen["text"] == "hello"
-        assert seen["prompt_text"] == "a reference transcript"
+        assert seen["reference_text"] == "a reference transcript"
         assert seen["audio_base64"] == base64.b64encode(b"RIFF-ref").decode()
         assert seen["language"] == "en"
+
+    def test_non_cloning_engine_503_without_calling_synthesize(self, client, monkeypatch, tmp_path):
+        # The cached doc (for the current base_url) says reference_audio:
+        # null — a non-cloning engine. Persona TTS is fundamentally
+        # reference-audio-based, so the router refuses before spending a
+        # request on a server that cannot do the job.
+        _persona_cache(monkeypatch, PersonasConfig(personas=[self._tts_capable_persona(tmp_path)]))
+        _active_tts_settings(monkeypatch)
+        monkeypatch.setattr(tts_client, "_capabilities_base_url", "http://tts.local:5500")
+        monkeypatch.setattr(tts_client, "_capabilities_cache",
+                            make_capabilities_doc(engine="omnivoice", reference_audio=None))
+
+        async def failing_synthesize(**kwargs):
+            raise AssertionError("synthesize must not be called for a non-cloning engine")
+
+        monkeypatch.setattr(tts_router, "synthesize", failing_synthesize)
+
+        resp = client.post("/api/tts", json={"text": "hi", "persona_name": "Luna"})
+
+        assert resp.status_code == 503
+        assert "cloning" in resp.json()["detail"]
+
+    def test_cached_doc_for_other_base_url_does_not_block_synthesis(self, client, monkeypatch, tmp_path):
+        # A cached doc belonging to a DIFFERENT base_url says nothing about
+        # the current server: the non-cloning check must not fire, and
+        # synthesis proceeds (the server decides).
+        _persona_cache(monkeypatch, PersonasConfig(personas=[self._tts_capable_persona(tmp_path)]))
+        _active_tts_settings(monkeypatch)  # base_url http://tts.local:5500
+        monkeypatch.setattr(tts_client, "_capabilities_base_url", "http://other.server:9999")
+        monkeypatch.setattr(tts_client, "_capabilities_cache",
+                            make_capabilities_doc(engine="omnivoice", reference_audio=None))
+        seen = {}
+
+        async def fake_synthesize(text, reference_text, audio_base64, language):
+            seen["called"] = True
+            return {"audio_base64": "QUJD", "sample_rate": 24000}
+
+        monkeypatch.setattr(tts_router, "synthesize", fake_synthesize)
+
+        resp = client.post("/api/tts", json={"text": "hi", "persona_name": "Luna"})
+
+        assert resp.status_code == 200
+        assert seen.get("called")
+
+    def test_cold_cache_non_cloning_engine_502_without_synthesis_call(self, client, monkeypatch, tmp_path):
+        # The backstop for the cache-cold window: the router's 503 check
+        # can only consult a WARM cache, so the first /api/tts call after a
+        # cache invalidation (TTS down at startup, settings save, ...)
+        # fetches the doc inside synthesize() and must refuse THERE —
+        # before the non-cloning engine answers in its default voice.
+        # The REAL synthesize runs (only httpx is faked); the doc fetch
+        # warms the cache, so the NEXT call gets the router's 503.
+        _persona_cache(monkeypatch, PersonasConfig(personas=[self._tts_capable_persona(tmp_path)]))
+        _active_tts_settings(monkeypatch)
+        calls = []
+
+        def responder(method, url, **kw):
+            calls.append(url)
+            if url.endswith("/capabilities"):
+                return json_response(
+                    200, make_capabilities_doc(engine="omnivoice", reference_audio=None))
+            return json_response(200, {"audio_base64": "QUJD", "sample_rate": 24000})
+
+        monkeypatch.setattr(tts_client.httpx, "AsyncClient",
+                            lambda *a, **kw: FakeAsyncClient(responder))
+
+        resp = client.post("/api/tts", json={"text": "hi", "persona_name": "Luna"})
+
+        assert resp.status_code == 502
+        # The doc was fetched, but no /synthesize request was spent on an
+        # engine that cannot do the job:
+        assert calls == ["http://tts.local:5500/capabilities"]
+
+        # Second call: the cache is now warm, so the ROUTER refuses —
+        # no further network activity of any kind.
+        calls.clear()
+        resp = client.post("/api/tts", json={"text": "hi", "persona_name": "Luna"})
+
+        assert resp.status_code == 503
+        assert "cloning" in resp.json()["detail"]
+        assert calls == []
+
+
+# ---------------------------------------------------------------------------
+# TTS capabilities endpoint (plan T5)
+# ---------------------------------------------------------------------------
+
+class TestTTSCapabilities:
+    def test_inactive_503_without_network(self, client, monkeypatch):
+        def fail(*a, **kw):
+            raise AssertionError("network must not be touched when TTS is inactive")
+
+        monkeypatch.setattr(tts_client.httpx, "AsyncClient",
+                            lambda *a, **kw: FakeAsyncClient(fail))
+
+        resp = client.get("/api/tts/capabilities")
+
+        assert resp.status_code == 503
+        assert "not active" in resp.json()["detail"]
+
+    def test_active_serves_warm_cache_without_refetching(self, client, monkeypatch):
+        _active_tts_settings(monkeypatch)
+        doc = make_capabilities_doc(engine="omnivoice")
+        monkeypatch.setattr(tts_client, "_capabilities_base_url", "http://tts.local:5500")
+        monkeypatch.setattr(tts_client, "_capabilities_cache", doc)
+        calls = []
+
+        def responder(method, url, **kw):
+            calls.append(url)
+            return json_response(200, {})
+
+        monkeypatch.setattr(tts_client.httpx, "AsyncClient",
+                            lambda *a, **kw: FakeAsyncClient(responder))
+
+        resp = client.get("/api/tts/capabilities")
+
+        # 200 + the raw document (no wrapper), served from the warm
+        # cache: zero network calls.
+        assert resp.status_code == 200
+        assert resp.json() == doc
+        assert calls == []
+
+    def test_active_fetches_when_cache_is_cold(self, client, monkeypatch):
+        _active_tts_settings(monkeypatch)
+        doc = make_capabilities_doc(engine="dots.tts")
+        calls = []
+
+        def responder(method, url, **kw):
+            calls.append(url)
+            return json_response(200, doc)
+
+        monkeypatch.setattr(tts_client.httpx, "AsyncClient",
+                            lambda *a, **kw: FakeAsyncClient(responder))
+
+        resp = client.get("/api/tts/capabilities")
+
+        assert resp.status_code == 200
+        assert resp.json() == doc
+        assert calls == ["http://tts.local:5500/capabilities"]
+
+    def test_active_but_unreachable_503(self, client, monkeypatch):
+        _active_tts_settings(monkeypatch)
+
+        def refuse(*a, **kw):
+            raise httpx.ConnectError("refused")
+
+        monkeypatch.setattr(tts_client.httpx, "AsyncClient",
+                            lambda *a, **kw: FakeAsyncClient(refuse))
+
+        resp = client.get("/api/tts/capabilities")
+
+        assert resp.status_code == 503
+        assert "capabilities" in resp.json()["detail"]
 
 
 # ---------------------------------------------------------------------------

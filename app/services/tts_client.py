@@ -9,6 +9,7 @@ STT client code lives in its own module: app.services.stt_client
 """
 
 import base64
+import json
 import logging
 from pathlib import Path
 from typing import Any, List, Optional
@@ -39,16 +40,25 @@ _CAPABILITIES_TIMEOUT_S = 3.0
 _capabilities_cache: Optional[dict] = None
 _capabilities_base_url: Optional[str] = None
 
+# base_url for which the "no capabilities doc" synthesis fallback has already
+# been warned. Streaming TTS issues one /synthesize per sentence, so the
+# fallback warning fires once per server, not once per sentence (plan T4).
+# Cleared by invalidate_capabilities(), so a changed situation (engine
+# swapped behind the same base_url, server back up) can warn again.
+_no_doc_fallback_warned_for: Optional[str] = None
+
 
 def invalidate_capabilities() -> None:
     """Drop the cached capabilities document (or a cached fetch failure).
 
     Call after a settings save that may have changed the TTS base_url, or
-    after a /synthesize 422 (the cached doc may be stale).
+    after a /synthesize 422 (the cached doc may be stale). Also resets the
+    one-per-base_url "no doc" fallback warning (see above).
     """
-    global _capabilities_cache, _capabilities_base_url
+    global _capabilities_cache, _capabilities_base_url, _no_doc_fallback_warned_for
     _capabilities_cache = None
     _capabilities_base_url = None
+    _no_doc_fallback_warned_for = None
 
 
 def cached_capabilities() -> tuple[Optional[str], Optional[dict]]:
@@ -59,6 +69,20 @@ def cached_capabilities() -> tuple[Optional[str], Optional[dict]]:
     instead of awaiting get_capabilities() — which would FETCH on a miss.
     """
     return _capabilities_base_url, _capabilities_cache
+
+
+def doc_supports_reference_audio(doc: Optional[dict]) -> bool:
+    """Does this capabilities doc describe a cloning engine?
+
+    `reference_audio: null` marks a non-cloning engine, which cannot
+    serve this app's persona TTS (fundamentally reference-audio-based).
+    A doc missing the key entirely is treated as non-cloning too: a
+    malformed doc should fail loudly with a clear message rather than
+    422 at the server. `None` (no doc at all) also returns False — that
+    is "no evidence of support", NOT "known non-cloning"; callers that
+    must distinguish the two check for a real doc before acting on this.
+    """
+    return doc is not None and doc.get("reference_audio") is not None
 
 
 async def fetch_capabilities() -> Optional[dict]:
@@ -258,42 +282,219 @@ async def check_tts_health() -> tuple[bool, Optional[str]]:
         return False, None
 
 
+# ---------------------------------------------------------------------------
+# Synthesis payload (TTS generification, plan T4 + T6)
+# ---------------------------------------------------------------------------
+#
+# The tts-serve /synthesize request models are extra="forbid": a field the
+# engine never advertised is a loud 422 naming the field. The payload is
+# therefore built from the capabilities document, never from a fixed
+# template — and that is what makes an engine switch safe by construction:
+# switching base_url stops sending the previous engine's parameters
+# automatically.
+
+# App-managed request fields (plan T4): supplied from the request and the
+# persona, never sourced from settings.tts.parameters. A stale hand-edited
+# YAML must not be able to override the persona's text, voice, transcript,
+# or language.
+_APP_MANAGED_PARAMETER_NAMES = ("text", "audio_base64", "reference_text", "language")
+
+
+def _language_value_is_accepted(spec: Optional[dict], language: str) -> bool:
+    """Plan T6 (code-only language policy): will the engine accept this
+    persona's two-letter code if we send it?
+
+    No `language` parameter at all (or no code to send) → not sent. A
+    parameter with an `enum` accepts only the codes it lists — a code
+    outside the enum would 422 the entire synthesis. A free-form parameter
+    (no enum) accepts any code. The app NEVER converts codes (confirmed Q3
+    policy): a rejected code is dropped, degrading to the server's own
+    default, rather than guessed or mapped.
+    """
+    if spec is None or not language:
+        return False
+    enum = spec.get("enum")
+    return enum is None or language in enum
+
+
+def _warn_no_capabilities_doc(base_url: str) -> None:
+    """Log (once per base_url) that synthesis proceeds without a doc.
+
+    Streaming TTS issues one /synthesize per sentence; a per-sentence
+    warning would be spam. The flag is cleared by
+    invalidate_capabilities(), so a server that later recovers (and fails
+    again) can warn once more.
+    """
+    global _no_doc_fallback_warned_for
+    if _no_doc_fallback_warned_for == base_url:
+        return
+    _no_doc_fallback_warned_for = base_url
+    logger.warning(
+        "TTS /capabilities unavailable for %s: sending the core vocabulary "
+        "plus ALL configured tts.parameters unfiltered (a stale parameter "
+        "will 422 until the self-heal refreshes the document)",
+        base_url,
+    )
+
+
+def build_synthesis_payload(
+    doc: Optional[dict],
+    text: str,
+    reference_text: Optional[str],
+    audio_base64: Optional[str],
+    language: str,
+    configured_parameters: Optional[dict],
+) -> dict:
+    """Build the /synthesize JSON body from a capabilities doc (plan T4).
+
+    Always: `text`. Then each app-managed field — `audio_base64`,
+    `reference_text`, `language` — only if the doc advertises it (or no doc
+    is available at all, in which case the caller has already logged the
+    fallback warning) and a value is present. Then every configured
+    `tts.parameters` entry whose name is advertised and whose value is not
+    "not set" (None or empty string — an absent key is the universal
+    "engine decides" signal). A field the engine doesn't advertise would
+    422 under extra="forbid", so it is never sent.
+
+    `configured_parameters` can never override the app-managed fields —
+    see _APP_MANAGED_PARAMETER_NAMES.
+    """
+    payload: dict = {"text": text}
+    specs = _advertised_parameter_specs(doc) if doc is not None else None
+
+    def advertised(name: str) -> bool:
+        # No doc: we cannot know, so send (best effort; the 422 self-heal
+        # in synthesize() is the backstop).
+        return specs is None or name in specs
+
+    if audio_base64 and advertised("audio_base64"):
+        payload["audio_base64"] = audio_base64
+    if reference_text and advertised("reference_text"):
+        payload["reference_text"] = reference_text
+    if language and advertised("language"):
+        if specs is None:
+            # No doc: the language code is part of the core vocabulary and
+            # goes out unfiltered (the caller has already warned). The T6
+            # fit check needs a doc to judge against; without one there is
+            # nothing to judge.
+            payload["language"] = language
+        elif _language_value_is_accepted(specs.get("language"), language):
+            payload["language"] = language
+        else:
+            logger.warning(
+                "TTS: persona language %r is not accepted by the engine "
+                "(not in its language enum); omitting it so the server can "
+                "fall back to its default. TalkWithMe never maps language "
+                "codes — the code-only API contract (plan T6) forbids it.",
+                language,
+            )
+    for name, value in (configured_parameters or {}).items():
+        if name in _APP_MANAGED_PARAMETER_NAMES:
+            continue  # app-managed: never sourced from tts.parameters
+        if value is None or value == "":
+            continue  # "not set" — let the engine decide
+        if advertised(name):
+            payload[name] = value
+    return payload
+
+
+def _response_detail(response: httpx.Response) -> str:
+    """Human-readable body of an error response; a FastAPI 422 body yields
+    the JSON of its `detail` (it names the offending field — the diagnostic
+    that matters)."""
+    try:
+        body = response.json()
+    except Exception:
+        return response.text[:500]
+    if isinstance(body, dict) and "detail" in body:
+        return json.dumps(body["detail"])
+    return json.dumps(body)
+
+
+async def _post_synthesis(url: str, payload: dict, timeout: float) -> httpx.Response:
+    async with httpx.AsyncClient(timeout=timeout) as client:
+        return await client.post(url, json=payload)
+
+
 async def synthesize(
     text: str,
-    prompt_text: str,
+    reference_text: str,
     audio_base64: str,
     language: str = "en",
 ) -> Optional[dict]:
-    """Call the TTS server's /synthesize endpoint.
+    """Call the TTS server's /synthesize endpoint with a doc-driven payload.
 
-    Returns dict with {"audio_base64": str, "sample_rate": int} or None on failure.
+    Returns the server's raw response dict (engine extras pass through; the
+    frontend only reads `audio_base64`) or None on failure.
+
+    The payload is built from the cached capabilities document (plan T4):
+    only fields the engine advertises are sent. If no document is available
+    (server without /capabilities, unreachable, ...), the core vocabulary
+    plus all configured parameters are sent unfiltered, with one warning
+    per base_url.
+
+    A 422 from /synthesize triggers the self-heal (plan T3): the cached
+    document may have gone stale (e.g. the engine behind base_url was
+    replaced), so the cache is invalidated, the document refetched, the
+    payload rebuilt, and the request retried EXACTLY ONCE. The server's 422
+    detail is logged at warning in either case — it names the offending
+    field.
     """
     settings = get_settings()
     if not settings.tts.is_active:
         logger.warning("TTS synthesis skipped: feature not active (no base_url or disabled)")
         return None
-    url = f"{settings.tts.base_url}/synthesize"
+    base_url = settings.tts.base_url
+    url = f"{base_url}/synthesize"
 
-    payload = {
-        "text": text,
-        "prompt_text": prompt_text,
-        "audio_base64": audio_base64,
-        "language": language,
-    }
-    # Engine parameters, generically (TTS generification): whatever the user
-    # configured under tts.parameters passes through as-is. This milestone
-    # does NOT yet filter against the capabilities doc — plan T4 (only send
-    # advertised fields) and the prompt_text -> reference_text rename (T11)
-    # land with the generic payload builder in the next milestone. Sending
-    # the migrated legacy values unfiltered is deliberate: it keeps
-    # pre-ported server scripts behaving exactly as before.
-    payload.update(settings.tts.parameters)
+    def payload_for(doc: Optional[dict]) -> dict:
+        return build_synthesis_payload(
+            doc, text, reference_text, audio_base64, language,
+            settings.tts.parameters,
+        )
 
     try:
-        async with httpx.AsyncClient(timeout=settings.tts.timeout) as client:
-            resp = await client.post(url, json=payload)
-            resp.raise_for_status()
-            return resp.json()
+        doc = await get_capabilities()
+        if doc is None:
+            _warn_no_capabilities_doc(base_url)
+        elif not doc_supports_reference_audio(doc):
+            # A non-cloning engine (reference_audio: null) would accept a
+            # text-only payload and answer in its DEFAULT voice — a
+            # "success" with the wrong voice for the persona. Fail loudly
+            # before spending the request; the doc is already in hand, so
+            # this check costs no fetch. (The router 503s on the WARM
+            # cache; this is the backstop for the first call after a
+            # cache invalidation, when the cache is still cold.)
+            logger.warning(
+                "TTS engine at %s does not support reference-audio voice "
+                "cloning (capabilities: reference_audio=null); persona TTS "
+                "is unavailable",
+                base_url,
+            )
+            return None
+        response = await _post_synthesis(url, payload_for(doc), settings.tts.timeout)
+        if response.status_code == 422:
+            logger.warning(
+                "TTS /synthesize rejected the payload (422) from %s: %s",
+                url, _response_detail(response),
+            )
+            # Self-heal: the cached doc may be stale — drop it, refetch,
+            # rebuild, and retry exactly once.
+            invalidate_capabilities()
+            doc = await get_capabilities()
+            if doc is None:
+                _warn_no_capabilities_doc(base_url)
+            response = await _post_synthesis(url, payload_for(doc), settings.tts.timeout)
+            if response.status_code == 422:
+                logger.warning(
+                    "TTS /synthesize rejected the payload (422) again from %s "
+                    "after refetching the capabilities document: %s",
+                    url, _response_detail(response),
+                )
+        if response.status_code != 200:
+            logger.warning("TTS synthesis failed: HTTP %d from %s", response.status_code, url)
+            return None
+        return response.json()
     except Exception as exc:
         logger.warning("TTS synthesis failed: %s", exc)
         return None

@@ -128,12 +128,6 @@ class AudioUploadRequest(BaseModel):
     mime_type: Optional[str] = None
 
 
-class TTSResponse(BaseModel):
-    """Base64-encoded audio from the TTS server."""
-    audio_base64: str
-    sample_rate: int = 24000
-
-
 class STTResponse(BaseModel):
     """Transcribed text from an OpenAI-compatible STT server."""
     text: str
