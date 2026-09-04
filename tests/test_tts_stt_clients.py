@@ -122,7 +122,11 @@ class TestSynthesize:
         assert result is None
 
     def test_synthesize_posts_configured_payload_and_returns_body(self, monkeypatch):
-        tts = _active_tts(monkeypatch, num_steps=7, guidance_scale=2.5, seed=42)
+        # Engine parameters are configured generically now (TTS
+        # generification): whatever sits in tts.parameters is folded into
+        # the /synthesize payload as-is (filtering against the
+        # capabilities doc lands in the next milestone, plan T4).
+        _active_tts(monkeypatch, parameters={"num_steps": 7, "guidance_scale": 2.5, "seed": 42})
         seen = {}
 
         def responder(method, url, **kw):
@@ -145,6 +149,28 @@ class TestSynthesize:
             "seed": 42,
         }
 
+    def test_synthesize_without_parameters_sends_core_fields_only(self, monkeypatch):
+        # "Engine decides" must be the zero-config behaviour: with no
+        # parameters configured, the payload is exactly the four core
+        # fields and nothing else.
+        _active_tts(monkeypatch)
+        seen = {}
+
+        def responder(method, url, **kw):
+            seen["payload"] = kw.get("json")
+            return json_response(200, {"audio_base64": "QUJD", "sample_rate": 24000})
+
+        _patch_http(monkeypatch, responder)
+        # language defaults to "en" at the function signature.
+        _run(tts_client.synthesize("hi", "p", "QUJD"))
+
+        assert seen["payload"] == {
+            "text": "hi",
+            "prompt_text": "p",
+            "audio_base64": "QUJD",
+            "language": "en",
+        }
+
     def test_synthesize_http_error_returns_none(self, monkeypatch):
         _active_tts(monkeypatch)
         _patch_http(monkeypatch, lambda method, url, **kw: json_response(500, {}))
@@ -159,6 +185,105 @@ class TestSynthesize:
 
         _patch_http(monkeypatch, refuse)
         assert _run(tts_client.synthesize("hi", "p", "QUJD")) is None
+
+
+# ---------------------------------------------------------------------------
+# TTS capabilities: settings-save parameter validation (plan T7)
+# ---------------------------------------------------------------------------
+
+class TestValidateTTSParameters:
+    """Pure validation of tts.parameters against a capabilities doc.
+
+    The router turns a non-None return into a 422 on settings save; the
+    doc used here is the real dots.tts snapshot from factories.py.
+    """
+
+    DOC = make_capabilities_doc(engine="dots.tts")
+
+    def test_validate_tts_parameters_all_valid_returns_none(self):
+        values = {
+            "num_steps": 16,
+            "guidance_scale": 0.1,
+            "speaker_scale": 1.5,
+            "ode_method": "rk4",
+            "seed": 7,
+        }
+        assert tts_client.validate_tts_parameters(self.DOC, values) is None
+
+    def test_validate_tts_parameters_empty_values_passes(self):
+        assert tts_client.validate_tts_parameters(self.DOC, {}) is None
+
+    def test_validate_tts_parameters_unknown_parameter_is_named(self):
+        error = tts_client.validate_tts_parameters(self.DOC, {"bogus_knob": 1})
+        assert error is not None and "bogus_knob" in error
+
+    def test_validate_tts_parameters_integer_above_max_rejected(self):
+        # dots.tts num_steps: min 1, max 64
+        error = tts_client.validate_tts_parameters(self.DOC, {"num_steps": 100})
+        assert "num_steps" in error and "64" in error
+
+    def test_validate_tts_parameters_integer_below_min_rejected(self):
+        error = tts_client.validate_tts_parameters(self.DOC, {"num_steps": 0})
+        assert "num_steps" in error and "1" in error
+
+    def test_validate_tts_parameters_number_above_max_rejected(self):
+        # dots.tts guidance_scale: min 0, max 5
+        error = tts_client.validate_tts_parameters(self.DOC, {"guidance_scale": 7.5})
+        assert "guidance_scale" in error and "5" in error
+
+    def test_validate_tts_parameters_non_enum_string_rejected_and_names_allowed_values(self):
+        error = tts_client.validate_tts_parameters(self.DOC, {"ode_method": "runge-kutta"})
+        assert "ode_method" in error and "rk4" in error
+
+    def test_validate_tts_parameters_wrong_type_rejected(self):
+        error = tts_client.validate_tts_parameters(self.DOC, {"num_steps": "ten"})
+        assert "num_steps" in error and "str" in error
+
+    def test_validate_tts_parameters_bool_is_not_an_integer(self):
+        # JSON true must not silently become seed 1.
+        error = tts_client.validate_tts_parameters(self.DOC, {"seed": True})
+        assert "seed" in error
+
+    def test_validate_tts_parameters_integer_valued_float_is_accepted(self):
+        # A hand-edited "num_steps: 10.0" in YAML: tts-serve's lax pydantic
+        # models coerce it, so the save path must not 422 it.
+        assert tts_client.validate_tts_parameters(self.DOC, {"num_steps": 10.0}) is None
+
+    def test_validate_tts_parameters_non_integer_valued_float_rejected(self):
+        error = tts_client.validate_tts_parameters(self.DOC, {"num_steps": 4.5})
+        assert "num_steps" in error
+
+    def test_validate_tts_parameters_none_values_are_skipped(self):
+        # "Not set" is an absent key; an explicit null is treated the same.
+        assert tts_client.validate_tts_parameters(self.DOC, {"seed": None, "num_steps": None}) is None
+
+    def test_validate_tts_parameters_multiple_errors_are_all_named(self):
+        error = tts_client.validate_tts_parameters(
+            self.DOC, {"bogus": 1, "num_steps": 100, "ode_method": "nope"})
+        assert "bogus" in error and "num_steps" in error and "ode_method" in error
+
+    def test_validate_tts_parameters_unrecognized_type_is_skipped(self):
+        # The doc is forward-compatible: a spec with a type we don't
+        # understand is not our call to make — the server's own 422 is the
+        # backstop (same stance as the frontend's raw-JSON escape hatch).
+        doc = make_capabilities_doc(engine="dots.tts")
+        doc["parameters"].append(
+            {"name": "flux", "type": "quaternion", "min": None, "max": None, "enum": None})
+        assert tts_client.validate_tts_parameters(doc, {"flux": [1, 2, 3, 4]}) is None
+
+
+class TestCachedCapabilities:
+    def test_cached_capabilities_empty_slot_returns_none_pair(self):
+        # The autouse isolation fixture invalidates the slot, so a fresh
+        # test sees the "never fetched" state.
+        assert tts_client.cached_capabilities() == (None, None)
+
+    def test_cached_capabilities_returns_the_slot_it_holds(self, monkeypatch):
+        doc = make_capabilities_doc(engine="dots.tts")
+        monkeypatch.setattr(tts_client, "_capabilities_base_url", "http://tts.local:5500")
+        monkeypatch.setattr(tts_client, "_capabilities_cache", doc)
+
+        assert tts_client.cached_capabilities() == ("http://tts.local:5500", doc)
 
 
 # ---------------------------------------------------------------------------

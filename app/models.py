@@ -1,6 +1,6 @@
 """Pydantic request / response models for the TalkWithMe API."""
 
-from typing import List, Optional, Literal
+from typing import Any, Dict, List, Optional, Literal
 
 from pydantic import BaseModel, Field
 
@@ -180,14 +180,21 @@ class LLMSettingsRequest(BaseModel):
 
 
 class TTSSettingsRequest(BaseModel):
-    """TTS configuration from the settings editor."""
+    """TTS configuration from the settings editor.
+
+    `parameters` is the generic engine parameter map (TTS generification,
+    plan T1): name -> value for whatever the connected engine's
+    /capabilities document advertises. "No value" is an absent key — the
+    old seed 0->None convention is gone. Legacy num_steps/guidance_scale/
+    seed keys from a pre-generification client are ignored on purpose:
+    they degrade to engine defaults instead of erroring, until the dynamic
+    parameter form replaces the static fields (plan M4).
+    """
     enabled: bool = True
     base_url: str = Field(default="", min_length=0)
-    num_steps: int = Field(..., ge=4, le=20)
-    guidance_scale: float = Field(..., ge=1.0, le=2.0)
-    seed: int = Field(default=0, description="0 means null (no seed)")
     timeout: float = Field(..., ge=5, le=300)
     streaming: bool = False
+    parameters: Dict[str, Any] = Field(default_factory=dict)
 
 
 class STTSettingsRequest(BaseModel):
@@ -230,14 +237,12 @@ class LLMSettingsResponse(BaseModel):
 
 
 class TTSSettingsResponse(BaseModel):
-    """TTS configuration for the frontend."""
+    """TTS configuration for the frontend (mirrors TTSSettingsRequest)."""
     enabled: bool
     base_url: Optional[str] = None
-    num_steps: int
-    guidance_scale: float
-    seed: Optional[int] = None
     timeout: float
     streaming: bool
+    parameters: Dict[str, Any] = Field(default_factory=dict)
 
 
 class STTSettingsResponse(BaseModel):

@@ -73,8 +73,25 @@ code handles the FastAPI side of things entirely.
 
 ## Implementation plan
 
-Status: **M0 LOCKED (2026-09-04); M1 complete**
-Date: 2026-09-03 (plan), 2026-09-04 (M0 lock)
+Status: **M0 LOCKED (2026-09-04); M1 complete; M2 complete (2026-09-04)**
+Date: 2026-09-03 (plan), 2026-09-04 (M0 lock, M2)
+
+M2 note: the legacy migration (T2) is implemented as a `TTSConfig`
+before-validator in `app/config.py` rather than inside `load_settings()` —
+same observable behaviour, and it also covers the router-side construction
+of `TTSConfig` on save. Two extra migration rules were needed for the real
+world: `seed: 0` is omitted as well as `seed: null` (the old UI's "0 =
+random" encoding is the same value as "absent"), and a non-dict
+`tts.parameters` (hand-editing accident) is dropped with a warning instead
+of crashing startup. The T7 validator (`validate_tts_parameters` in
+`tts_client.py`) accepts an integer-valued float (`10.0`) for an
+`integer`-typed parameter on purpose: tts-serve's pydantic models run in
+lax mode and coerce it, so rejecting it here would 422 a value the server
+takes. `synthesize()` folds `settings.tts.parameters` into the payload
+unfiltered starting in M2 — this is what makes a migrated legacy
+`settings.yaml` keep working with zero user action (T2); M3's T4 filter and
+the `prompt_text` → `reference_text` rename (T11) replace the blind fold
+with the doc-driven payload builder.
 
 M0 note: the confirmed code-only language policy (open question 3) changed
 tts-serve's API surface, which bumped the capabilities `schema_version`

@@ -11,7 +11,7 @@ STT client code lives in its own module: app.services.stt_client
 import base64
 import logging
 from pathlib import Path
-from typing import Optional
+from typing import Any, List, Optional
 
 import httpx
 
@@ -49,6 +49,16 @@ def invalidate_capabilities() -> None:
     global _capabilities_cache, _capabilities_base_url
     _capabilities_cache = None
     _capabilities_base_url = None
+
+
+def cached_capabilities() -> tuple[Optional[str], Optional[dict]]:
+    """Synchronous read of the cache slot: (base_url it holds, doc-or-None).
+
+    The settings save path is a sync endpoint and must stay offline-safe
+    (plan T7: no network during a save), so it reads the slot directly
+    instead of awaiting get_capabilities() — which would FETCH on a miss.
+    """
+    return _capabilities_base_url, _capabilities_cache
 
 
 async def fetch_capabilities() -> Optional[dict]:
@@ -126,6 +136,101 @@ async def ensure_capabilities() -> None:
     )
 
 
+# ---------------------------------------------------------------------------
+# Settings-save parameter validation (TTS generification, plan T7)
+# ---------------------------------------------------------------------------
+#
+# PUT /api/settings validates the incoming tts.parameters against the cached
+# capabilities document — but only when that document belongs to the exact
+# base_url being saved (a stale doc after an engine switch would 422 a
+# legitimate switch; T4 makes the switch safe anyway). These helpers are
+# pure and synchronous: the save path never touches the network.
+
+def _advertised_parameter_specs(doc: dict) -> dict:
+    """Map advertised parameter name -> spec entry from a capabilities doc."""
+    specs = {}
+    for entry in doc.get("parameters") or []:
+        if isinstance(entry, dict) and entry.get("name"):
+            specs[entry["name"]] = entry
+    return specs
+
+
+def _wrong_type_message(name: str, expected: str, value: Any) -> str:
+    return f"TTS parameter {name!r} expects {expected}, got {type(value).__name__}"
+
+
+def _bounds_errors(name: str, value: float, spec: dict) -> List[str]:
+    errors = []
+    minimum = spec.get("min")
+    maximum = spec.get("max")
+    if minimum is not None and value < minimum:
+        errors.append(f"TTS parameter {name!r} must be >= {minimum}, got {value}")
+    if maximum is not None and value > maximum:
+        errors.append(f"TTS parameter {name!r} must be <= {maximum}, got {value}")
+    return errors
+
+
+def _parameter_value_errors(name: str, value: Any, spec: dict) -> List[str]:
+    param_type = spec.get("type")
+    if param_type == "boolean":
+        if not isinstance(value, bool):
+            return [_wrong_type_message(name, "a boolean", value)]
+        return []
+    if param_type == "integer":
+        # bool is an int subclass in Python: JSON true/false must not pass
+        # as 1/0 for an integer parameter. An integer-valued float (a
+        # hand-edited "num_steps: 10.0" in YAML) is accepted on purpose:
+        # tts-serve's pydantic models run in lax mode and coerce it the
+        # same way, so rejecting here would 422 a value the server takes.
+        if isinstance(value, bool):
+            return [_wrong_type_message(name, "an integer", value)]
+        if isinstance(value, float) and not value.is_integer():
+            return [_wrong_type_message(name, "an integer", value)]
+        if not isinstance(value, (int, float)):
+            return [_wrong_type_message(name, "an integer", value)]
+        return _bounds_errors(name, value, spec)
+    if param_type == "number":
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
+            return [_wrong_type_message(name, "a number", value)]
+        return _bounds_errors(name, value, spec)
+    if param_type == "string":
+        if not isinstance(value, str):
+            return [_wrong_type_message(name, "a string", value)]
+        enum = spec.get("enum")
+        if enum is not None and value not in enum:
+            return [
+                f"TTS parameter {name!r} must be one of "
+                f"{', '.join(repr(v) for v in enum)}, got {value!r}"
+            ]
+        return []
+    # Unrecognized type: skip. Like the frontend's raw-JSON escape hatch
+    # (plan T9), the server's own 422 is the backstop.
+    return []
+
+
+def validate_tts_parameters(doc: dict, values: dict) -> Optional[str]:
+    """Validate tts.parameters values against a capabilities doc (plan T7).
+
+    Returns None when every value is acceptable, otherwise a single message
+    naming every offending parameter (the router turns it into a 422).
+    Checks performed: unknown parameter names, JSON-type conformance
+    (boolean/integer/number/string), numeric min/max bounds, and enum
+    membership for string parameters. None values are treated as "not set"
+    and skipped — an absent key is the universal "engine decides" signal.
+    """
+    specs = _advertised_parameter_specs(doc)
+    errors: List[str] = []
+    for name, value in values.items():
+        if value is None:
+            continue
+        spec = specs.get(name)
+        if spec is None:
+            errors.append(f"unknown TTS parameter {name!r}")
+            continue
+        errors.extend(_parameter_value_errors(name, value, spec))
+    return "; ".join(errors) or None
+
+
 async def check_tts_health() -> tuple[bool, Optional[str]]:
     """Return (is_reachable, server_type) from the TTS server's /health endpoint.
 
@@ -174,10 +279,15 @@ async def synthesize(
         "prompt_text": prompt_text,
         "audio_base64": audio_base64,
         "language": language,
-        "num_steps": settings.tts.num_steps,
-        "guidance_scale": settings.tts.guidance_scale,
-        "seed": settings.tts.seed,
     }
+    # Engine parameters, generically (TTS generification): whatever the user
+    # configured under tts.parameters passes through as-is. This milestone
+    # does NOT yet filter against the capabilities doc — plan T4 (only send
+    # advertised fields) and the prompt_text -> reference_text rename (T11)
+    # land with the generic payload builder in the next milestone. Sending
+    # the migrated legacy values unfiltered is deliberate: it keeps
+    # pre-ported server scripts behaving exactly as before.
+    payload.update(settings.tts.parameters)
 
     try:
         async with httpx.AsyncClient(timeout=settings.tts.timeout) as client:

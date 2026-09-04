@@ -63,6 +63,160 @@ class TestTTSConfigIsActive:
         assert cfg.is_active is False
 
 
+# ---------------------------------------------------------------------------
+# TTS generic parameters (TTS generification, plan T1/T2)
+# ---------------------------------------------------------------------------
+
+class TestTTSConfigParameters:
+    """The hard-coded num_steps/guidance_scale/seed fields are gone, replaced
+    by an untyped parameters map; legacy keys fold in on load."""
+
+    def test_tts_config_parameters_default_to_empty_dict(self):
+        assert TTSConfig().parameters == {}
+
+    def test_tts_config_has_no_legacy_parameter_fields(self):
+        cfg = TTSConfig()
+        for legacy_key in ("num_steps", "guidance_scale", "seed"):
+            assert not hasattr(cfg, legacy_key)
+
+    @pytest.mark.parametrize("values", [
+        {"num_steps": "lots", "guidance_scale": "1.5-ish"},
+        {"seed": True, "exaggeration": [1, 2], "cfg_weight": {"a": 1}},
+        {"num_steps": 16, "ode_method": "rk4"},
+        {},
+    ])
+    def test_tts_config_parameters_pass_values_through_untouched(self, values):
+        # Deliberately untyped: type enforcement happens at settings-save
+        # time (T7) and in the server's own 422s, never at model level.
+        assert TTSConfig(parameters=values).parameters == values
+
+    def test_tts_config_non_dict_parameters_warns_and_resets(self, caplog):
+        with caplog.at_level(logging.WARNING):
+            cfg = TTSConfig(parameters=["num_steps", 10])
+        assert cfg.parameters == {}
+        assert "tts.parameters" in caplog.text
+
+    def test_tts_config_legacy_keys_alone_are_folded_and_logged(self, caplog):
+        with caplog.at_level(logging.INFO):
+            cfg = TTSConfig(
+                enabled=True, base_url="http://tts:1",
+                num_steps=14, guidance_scale=1.5, seed=999,
+            )
+        assert cfg.parameters == {"num_steps": 14, "guidance_scale": 1.5, "seed": 999}
+        assert "folded legacy TTS keys" in caplog.text
+
+    def test_tts_config_legacy_null_and_seed_zero_are_omitted(self):
+        # "Absent key = engine decides": null never migrates, and seed 0 is
+        # the old UI's "no seed" encoding — the same value, new spelling.
+        assert TTSConfig(num_steps=10, seed=None).parameters == {"num_steps": 10}
+        assert TTSConfig(seed=0).parameters == {}
+
+    def test_tts_config_legacy_null_values_are_omitted_from_the_fold(self):
+        cfg = TTSConfig(num_steps=None, guidance_scale=1.5, seed=None)
+        assert cfg.parameters == {"guidance_scale": 1.5}
+
+    def test_tts_config_parameters_present_wins_over_legacy_with_warning(self, caplog):
+        with caplog.at_level(logging.WARNING):
+            cfg = TTSConfig(parameters={"num_steps": 32}, num_steps=10, seed=5)
+        assert cfg.parameters == {"num_steps": 32}
+        assert "legacy" in caplog.text
+
+    def test_tts_config_new_shape_does_not_warn(self, caplog):
+        with caplog.at_level(logging.WARNING):
+            TTSConfig(parameters={"num_steps": 32})
+        assert "legacy" not in caplog.text
+
+
+class TestLoadSettingsTTSLegacyMigration:
+    """End-to-end through the YAML layer: a legacy settings.yaml loads with
+    the values folded into tts.parameters (plan T2, M2 acceptance)."""
+
+    @staticmethod
+    def _write(tmp_path, tts_yaml):
+        path = tmp_path / "settings.yaml"
+        path.write_text(f"tts:\n{tts_yaml}")
+        return path
+
+    def test_legacy_block_folds_into_parameters(self, tmp_path):
+        path = self._write(tmp_path,
+            "  enabled: true\n  base_url: http://tts:1\n  num_steps: 14\n"
+            "  guidance_scale: 1.5\n  seed: 999\n  timeout: 120.0\n  streaming: true\n")
+
+        settings = app_config.load_settings(path)
+
+        assert settings.tts.enabled is True
+        assert settings.tts.base_url == "http://tts:1"
+        assert settings.tts.timeout == 120.0
+        assert settings.tts.streaming is True
+        assert settings.tts.parameters == {
+            "num_steps": 14, "guidance_scale": 1.5, "seed": 999}
+
+    def test_legacy_seed_null_is_omitted_from_parameters(self, tmp_path):
+        # The exact shape a pre-generification TalkWithMe writes today.
+        path = self._write(tmp_path,
+            "  enabled: true\n  base_url: http://tts:1\n  num_steps: 14\n"
+            "  guidance_scale: 1.5\n  seed: null\n  timeout: 120.0\n  streaming: true\n")
+
+        settings = app_config.load_settings(path)
+
+        assert settings.tts.parameters == {"num_steps": 14, "guidance_scale": 1.5}
+        assert "seed" not in settings.tts.parameters
+
+    def test_partial_legacy_block_migrates_only_present_keys(self, tmp_path):
+        path = self._write(tmp_path, "  enabled: true\n  seed: 42\n")
+
+        assert app_config.load_settings(path).tts.parameters == {"seed": 42}
+
+    def test_parameters_present_wins_and_legacy_keys_are_ignored(self, tmp_path, caplog):
+        path = self._write(tmp_path,
+            "  enabled: true\n  base_url: http://tts:1\n"
+            "  num_steps: 10\n  seed: 5\n"
+            "  parameters:\n    num_steps: 32\n    seed: 7\n")
+
+        with caplog.at_level(logging.WARNING):
+            settings = app_config.load_settings(path)
+
+        assert settings.tts.parameters == {"num_steps": 32, "seed": 7}
+        assert "legacy" in caplog.text
+
+    def test_new_shape_with_parameters_does_not_warn(self, tmp_path, caplog):
+        path = self._write(tmp_path,
+            "  enabled: true\n  base_url: http://tts:1\n"
+            "  parameters:\n    num_steps: 32\n")
+
+        with caplog.at_level(logging.WARNING):
+            settings = app_config.load_settings(path)
+
+        assert settings.tts.parameters == {"num_steps": 32}
+        assert "legacy" not in caplog.text
+
+    def test_migration_is_idempotent_and_save_rewrites_the_new_shape(self, tmp_path, caplog):
+        path = tmp_path / "settings.yaml"
+        path.write_text(
+            "tts:\n  enabled: true\n  base_url: http://tts:1\n"
+            "  num_steps: 14\n  guidance_scale: 1.5\n  seed: null\n"
+        )
+
+        first = app_config.load_settings(path)
+        # Reloading the still-legacy file folds the same values again — the
+        # migration is a pure function of the file content.
+        second = app_config.load_settings(path)
+        assert first.tts.parameters == second.tts.parameters == {
+            "num_steps": 14, "guidance_scale": 1.5}
+
+        # A settings save rewrites the file in the new shape ...
+        app_config.save_settings(first, path)
+        on_disk = yaml.safe_load(path.read_text())["tts"]
+        assert on_disk["parameters"] == {"num_steps": 14, "guidance_scale": 1.5}
+        assert not any(k in on_disk for k in ("num_steps", "guidance_scale", "seed"))
+
+        # ... and reloading it is clean (no legacy keys, no warnings).
+        with caplog.at_level(logging.WARNING):
+            reloaded = app_config.load_settings(path)
+        assert reloaded.tts.parameters == {"num_steps": 14, "guidance_scale": 1.5}
+        assert "legacy" not in caplog.text
+
+
 class TestSTTConfigIsActive:
     def test_stt_config_enabled_without_base_url_is_not_active(self):
         assert STTConfig(enabled=True).is_active is False
