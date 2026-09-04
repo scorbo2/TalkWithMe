@@ -82,6 +82,17 @@ html, body {
     overflow: hidden;
 }
 
+/*
+ * Generic show/hide utility. JS toggles the "hidden" class on modal
+ * overlays, error banners, and the list/form views inside the persona and
+ * chat room editors. The !important is load-bearing, not decoration:
+ * #pe-list-view and #pe-form-view set their layout via ID selectors, and
+ * an ID rule would out-specify a plain .hidden rule and defeat it.
+ */
+.hidden {
+    display: none !important;
+}
+
 /* --------------------------------------------------------------------------
    Top bar
    -------------------------------------------------------------------------- */
@@ -226,10 +237,6 @@ html, body {
     border-color: var(--accent);
     border-style: solid;
     color: #fff;
-}
-
-.btn-add-persona.hidden {
-    display: none;
 }
 
 /* Remove persona "x" button on persona cards */
@@ -701,10 +708,6 @@ html, body {
     padding: 20px;
 }
 
-.modal-overlay.hidden {
-    display: none;
-}
-
 .modal-box {
     background: var(--bg-secondary);
     border: 1px solid var(--border-color);
@@ -1065,10 +1068,6 @@ html, body {
     padding: 8px 14px;
     font-size: 0.85rem;
     margin: 0 20px 0 20px;
-}
-
-.pe-form-error.hidden {
-    display: none;
 }
 
 .pe-confirm-msg {
