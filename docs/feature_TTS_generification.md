@@ -1,0 +1,356 @@
+# TTS Generification
+
+This document describes a change to the way TalkWithMe interacts with TTS servers.
+The goal is to move away from a "lowest common denominator" approach, and provide
+discoverability of unique TTS engine features. Those unique features can then be
+exposed in TalkWithMe's Servers modal in a dynamic UI.
+
+## Current state
+
+There are three officially supported TTS engines right now:
+- dots.tts
+- OmniVoice
+- Qwen3-TTS
+
+These engines are supported by custom server scripts (in Python, using FastAPI) that
+present a consistent REST API for supplying certain parameters for voice cloning
+and speech generation. Each of these scripts offers a `GET /health` endpoint that
+returns a fixed string identifying the underlying TTS engine type. Each server
+script also offers a `POST /synthesize` endpoint that accepts certain parameters:
+
+- `text`: the text to be generated, as a string
+- `audio_base64`: reference audio for the voice clone, base64-encoded
+- `prompt_text`: reference audio transcript
+- `language`: reference audio language
+- `seed`: the random seed to use for generation
+- `num_steps`: step count
+- `guidance_scale`: CFG
+- `speaker_scale`
+- `ode_method`
+
+The script then returns a standardized response object that the application can parse:
+
+- `audio_base64`: the generated audio
+- `sample_rate`: Audio sample rate (Hz)
+- `seed`: Seed used for this generation
+- `num_steps`: Number of steps used
+- `time_used`: wall-clock generation time
+- `rtf`: real-time factor (time used / audio duration)
+
+This solution works reasonably well, but it has several drawbacks:
+
+- Unique features offered by only one TTS engine generally get ignored.
+- Adding support for a new TTS engine involves copy+paste+modifying one of the existing scripts, an error-prone process.
+- Not all input parameters are needed or used by all TTS engines, leading to unnecessary input fields in our UI.
+
+## Proposed approach
+
+A new Python package `tts-engine-common` has been developed - pure fastapi + pydantic, no torch.
+Capabilities are exposed via a new `GET /capabilities` endpoint. The returned Json document 
+contains engine identity, output audio facts (sample rate, watermarking), reference-audio requirements,
+supported languages, and the full parameter table. TalkWithMe can use this information to dynamically
+build a server settings UI specifically for those capabilities.
+
+### Goal 1 - unique TTS engine features can be exposed
+
+TalkWithMe can build input fields on the Servers modal based on the capabilities document returned
+by whatever TTS engine is currently connected. The user can view/modify advanced settings, even
+if those settings are unique to that one TTS engine.
+
+### Goal 2 - adding support for new TTS engines becomes much easier
+
+The copy+paste+modify dance ends forever. Adding a new TTS engine to TalkWithMe simply means
+adding a new server script that uses `tts-engine-common` to expose capabilities. The common
+code handles the FastAPI side of things entirely.
+
+### Changes needed in TalkWithMe
+
+**Front end**:
+- major changes to the Servers modal. The `TTS` section must be built dynamically.
+
+**Back end**:
+- changes to TTS request flow. Request must be formed using the parameters supplied by the front end. No more one-size-fits-all requests.
+
+## Implementation plan
+
+Status: **PLAN — reviewed against the TalkWithMe codebase, no code written yet**
+Date: 2026-09-03
+
+The `tts-serve` repository contains a `docs/` directory with low-level details
+and a full Json specification of the capabilities document, with examples.
+Additionally, the old server scripts have been ported to use the new `tts-engine-common`,
+and those new scripts will serve as excellent examples for implementation purposes here.
+
+### Target protocol (recap)
+
+What TalkWithMe will talk to (one tts-serve server per engine, e.g.
+`tts-serve/impl/server_omnivoice.py`):
+
+- `GET /health` → `{status, serverType, model, device}` (unchanged from today).
+- `GET /capabilities` → the machine-readable document: `schema_version` (1),
+  `engine` (stable slug), `model`, `device`, `sample_rate`, `watermarked`,
+  `endpoint`, `reference_audio` (null for non-cloning engines), `languages`
+  (array or null), and `parameters[]` — one entry per request field with
+  `name`, `type` (`string`/`integer`/`number`/`boolean`), `required`,
+  `default`, `description`, `min`/`max`/`step`, `enum`, `min_length`/`max_length`,
+  `group` (`common`/`engine`), `advanced`.
+- `POST /synthesize` → JSON body with top-level fields **exactly as
+  advertised**; `extra="forbid"`, so an unadvertised field is a loud
+  `422` naming the field. Core vocabulary: `text`, `audio_base64`,
+  `reference_text` (**renamed from the old scripts' `prompt_text`**),
+  `language`, `seed`. Response: `audio_base64`, `sample_rate`, `seed`,
+  `time_used`, `rtf`, plus engine extras.
+
+Reference documents: `tts-serve/docs/01-server-generification.md` (design,
+incl. §4.2 field reference and §4.3 UI rendering rules),
+`tts-serve/tts-engine-common/README.md` (package API), and the four live
+snapshots in `tts-serve/impl/tests/snapshots/*_capabilities.json` (the exact
+shape of the document, per engine).
+
+### Key design decisions
+
+| # | Decision | Rationale |
+|---|----------|-----------|
+| T1 | **Engine parameters are user settings, stored generically.** `TTSConfig` drops the hard-coded `num_steps` / `guidance_scale` / `seed` fields and gains `parameters: dict[str, Any]` (parameter name → value). `settings.yaml` gains `tts.parameters:`. | The parameter set is engine-declared; there is no fixed schema to model. A flat dict is exactly what the UI renders and the request builder filters. |
+| T2 | **Legacy migration on load, not on save.** `load_settings()` folds `num_steps` / `guidance_scale` / `seed` from a legacy `tts:` block into `parameters` (idempotent, logged once). `save_settings()` writes the new shape, so legacy keys leave disk after the first save. | An existing `settings.yaml` must keep working with zero user action. Migrating on load (not a destructive one-time rewrite) means a failed save never corrupts the file. |
+| T3 | **Capabilities cache lives in the backend** (`app/services/tts_client.py`): a single slot holding `(base_url, doc-or-None)`. Warmed at startup (lifespan), invalidated on settings save, and self-healed on a synthesis `422` (refetch + one retry). Fetch failures are **negatively cached** for the process lifetime (until invalidation). | Streaming TTS issues one `/synthesize` per sentence — a per-sentence `/capabilities` GET is unacceptable. The doc is static for the server's lifetime and carries no `Cache-Control` (per tts-serve), so the invalidation events above are the complete freshness story. |
+| T4 | **The synthesis payload is built from the capabilities doc.** Always: `text`. Then, only if advertised and available: `audio_base64` (persona ref audio), `reference_text` (persona transcript), `language` (persona language, per T6), and finally every `settings.tts.parameters` entry whose name is advertised and whose value is not empty. Fields the engine doesn't advertise are **never sent** (they would 422). `text`/`audio_base64`/`reference_text`/`language` can never be supplied from `parameters` (app-managed; defense against a stale hand-edited YAML). | `extra="forbid"` makes "send only what is advertised" a hard requirement, and it makes engine switches safe by construction: switching the TTS server in the Servers modal automatically stops sending the old engine's parameters. |
+| T5 | **New endpoint `GET /api/tts/capabilities`** — returns the (cached or freshly fetched) document with `200`, or `503` with a detail string when TTS is inactive or the server is unreachable/lacks `/capabilities`. No wrapper: the doc is the payload, and it is self-describing (the frontend gates on `schema_version`). | The browser cannot reach the TTS server directly (separate host/port, CORS); everything else is proxied the same way. `503` matches the existing STT "inactive" convention, so the frontend needs no new error machinery. |
+| T6 | **Language enum-fit policy.** The persona stores an ISO-2-ish code (`en`). Engine `language` enums differ (Chatterbox: codes; Qwen3-TTS: names like `english`; dots.tts/OmniVoice: free-form, `languages: null`). Payload rule: send the persona value if it is in the parameter's `enum`; else send the mapped ISO→English-name value if *that* is in the enum (small built-in table, covers Qwen3); else **omit** `language` (engine falls back to its own default/auto) and log a warning. | Sending a value the server will reject turns a missing hint into a hard TTS failure (422). Omission degrades gracefully; the mapping keeps the hint when it can be expressed losslessly. |
+| T7 | **Settings save validates parameters against a *fresh* doc only.** `PUT /api/settings` validates `tts.parameters` (unknown name, out-of-bounds number, non-enum string → `422` naming the parameter) **only when** the cached doc belongs to the exact `base_url` being saved. If the user switches engines in the same save, validation is skipped (the doc is stale; T4 makes the switch safe anyway). | Catches garbage from the UI/API without bricking a legitimate engine switch, and keeps the save path synchronous and offline-safe (no network during save). |
+| T8 | **Frontend: the TTS section of the Servers modal is built dynamically** by a new `static/tts-params.js` module with *pure* core functions (doc → widget specs, container → collected values, values → validation error) plus thin DOM builders. Widget rules per `tts-serve/docs/01-server-generification.md` §4.3, refined in T9. `advanced: true` params render inside a collapsed "Advanced" `<details>`. App-managed fields (`text`, `audio_base64`, `reference_text`, `language`) are **never rendered** as settings. | The whole point of the feature is zero per-engine UI code. Pure core functions make the renderer testable in the plain-Node `vm.Context` harness (same pattern as `tests/test_persona_form.js`), keeping pytest Python-only. |
+| T9 | **Widget rules (final, testable).** `boolean` → checkbox (pre-set from `default`; always sent). `string` + `enum` → `<select>` (leading "— not set —" option when `default` is null; otherwise preselected and always sent). `string` without enum → text input (empty = not sent). `number` with `min`+`max`+`step` and a non-null `default` → range slider with live value readout (always sent). `integer` with `min`+`max`+`step` → slider. `integer` with `min`+`max`, no step → slider if the span is ≤ 100, else number input. Any other numeric shape → number input (empty = not sent). Any **unrecognized** `type` → raw-JSON escape-hatch input (user types the JSON value; invalid JSON is a validation error). Empty = "let the engine decide" is the universal meaning of a blank field — this is what makes Qwen3's default-`null` params (`temperature`, `top_p`, …) behave correctly. | Derived from §4.3 plus the actual four snapshots (e.g. Qwen3 `temperature` has bounds+step but `default: null`, so it must be a blankable number input, not a slider; `seed` is 1–1000 with no step and null default → number input, blank = random). The rules are implemented once and locked by Node tests against all four real snapshots. |
+| T10 | **Version gate + disclosures.** `schema_version > 1` → minimal mode: no parameter inputs, a notice ("TTS server speaks capabilities schema vN — this app supports up to v1"), synthesis still sends `text` + reference data only. `watermarked: true` → a visible notice in the modal (Chatterbox's PerTh watermark). `sample_rate` / `model` / `engine` / `device` → an information block (replacing today's static "Server Type" field's role; the health-derived `server_type` string is kept as-is, it still works with the new servers' `/health`). | Forward-compat rule from tts-serve §3.5; the watermark notice is the responsible-AI surface from §7.5. No resampling: the browser's `decodeAudioData` handles 24 kHz and 48 kHz alike, so `sample_rate` is display-only. |
+| T11 | **Old pre-ported server scripts are unsupported (hard cutover).** The new app sends `reference_text` (old scripts want `prompt_text`) and only advertised fields (old scripts expect `num_steps`/`guidance_scale` unconditionally). A user running an old script gets loud 422s from the server — logged with the full detail — and a README pointer to the tts-serve ported scripts. | Per the tts-serve Q3 answer, the old scripts are not salvageable; pretending to support both protocols would recreate the LCM swamp this feature exists to kill. |
+
+### Milestones
+
+Each milestone ends with a clean `python3 -m pytest` (and the Node suite where
+marked). M2–M4 form one release unit (the settings request model and the form
+that fills it must switch together); M2 and M3 are individually green and
+non-breaking on their own — between M2 and M4 the static parameter fields in
+the old UI simply have no effect (their values are ignored by the new request
+model and engine defaults apply).
+
+#### M0 — Decision lock (this document)
+
+No code. Confirm the open questions below (seed-as-generic-parameter, old
+script cutover, language policy, endpoint shape). Deliverable: this section.
+
+#### M1 — Backend: capabilities client + cache (purely additive)
+
+- `app/services/tts_client.py`:
+  - `fetch_capabilities() -> Optional[dict]` — `GET {base_url}/capabilities`,
+    short timeout (3 s), returns the parsed JSON body; `404`/non-2xx/connection
+    error → `None` + warning. Inactive TTS → `None` without touching the network.
+  - Cache slot `_capabilities_cache: Optional[dict]` + `_capabilities_base_url:
+    Optional[str]`; `get_capabilities() -> Optional[dict]` (return if the slot
+    matches the current `base_url` — including a cached *failure*; else fetch
+    and store, negative result included); `invalidate_capabilities()`.
+  - `ensure_capabilities()` — used by the lifespan: fetch + log the engine slug
+    when TTS is active, never raise.
+- `app/main.py` lifespan: after `load_settings()`, `await ensure_capabilities()`
+  (imported at call site so tests monkeypatch it the same way as `load_tools`).
+- `tests/conftest.py`: **the autouse `isolated_app_state` fixture must reset
+  the new module-level cache** (AGENTS.md rule: new module global → new patch).
+- `tests/factories.py`: `make_capabilities_doc(engine=...)` — faithful copies
+  of the four real snapshots from `tts-serve/impl/tests/snapshots/` (plus
+  helpers for a minimal doc and an unknown-field 422 body).
+- Tests (`tests/test_tts_stt_clients.py`, `tests/test_main.py`): fetch success /
+  404 / 5xx / connection error / inactive-without-network; cache hit for same
+  base_url; refetch on base_url change; negative cache (one fetch, many calls);
+  invalidation forces refetch; lifespan warms the cache and survives a fetch
+  failure.
+
+**Acceptance:** all green; `/synthesize` behaviour byte-identical to today.
+
+#### M2 — Backend: generic TTS config + settings round-trip
+
+- `app/config.py`:
+  - `TTSConfig`: remove `num_steps` / `guidance_scale` / `seed`; add
+    `parameters: Dict[str, Any] = {}` (values pass through as-is; they are
+    validated at save time per T7 and by the server's own 422s — the model
+    deliberately stays untyped so a hand-edited YAML never crashes startup).
+  - `load_settings()`: legacy migration per T2 (legacy keys → `parameters`;
+    `parameters` present wins, legacy keys warned and ignored; `seed: null` →
+    key omitted, not stored as null).
+- `app/models.py`: `TTSSettingsRequest` → `enabled`, `base_url`, `timeout`,
+  `streaming`, `parameters: Dict[str, Any]` (the old required
+  `num_steps`/`guidance_scale` and the `seed` 0→None convention are gone —
+  "no value" is simply an absent key); `TTSSettingsResponse` mirrors it.
+- `app/routers/settings.py`: drop the `seed == 0` normalization; T7 validation
+  (unknown name / out-of-bounds / non-enum → `422` naming the parameter, only
+  when the cached doc matches the saved base_url); `mcp` carry-over untouched.
+- Tests: `test_config.py` (every legacy-migration shape, idempotence, warning
+  on conflicting sources), `test_models.py`, `test_routers_settings.py` (new
+  PUT shape accepted; old-shape PUT degrades without error; 422 cases for
+  unknown/out-of-bounds parameters; engine-switch skips validation; mcp
+  preservation unchanged).
+
+**Acceptance:** all green; an on-disk legacy `settings.yaml` loads with the
+values migrated into `parameters`; saving rewrites it in the new shape.
+
+#### M3 — Backend: generic synthesis + `/api/tts/capabilities`
+
+- `app/services/tts_client.py`:
+  - New `synthesize(text, reference_text, audio_base64, language)` (the
+    `prompt_text` parameter is **renamed** to `reference_text` — T11's breaking
+    edge). Payload built per T4 from `get_capabilities()`; no doc cached →
+    core vocabulary + all configured parameters, one warning per base_url.
+  - T6 language enum-fit helper (ISO→name table lives here, ~15 entries).
+  - 422 self-heal: on a `422` from `/synthesize`, invalidate the cache,
+    refetch, rebuild the payload, and **retry exactly once**; log the server's
+    422 detail at warning either way.
+- `app/routers/tts.py`:
+  - call-site rename (`prompt_text=` → `reference_text=`);
+  - if the cached doc says `reference_audio: null` (a non-cloning engine),
+    return `503` with a clear detail before calling out (persona TTS is
+    fundamentally reference-audio-based; this engine simply doesn't fit);
+  - **new** `GET /api/tts/capabilities` per T5.
+- `app/models.py`: delete the dead `TTSResponse` model (the router returns the
+  server's raw dict on purpose — engine extras like `fid`/`num_steps` pass
+  through, and the frontend only reads `audio_base64`).
+- `AGENTS.md`: add the endpoint to the table (enforced by `test_docs.py`) and
+  update the TTS section (capabilities flow, `parameters` dict, self-heal).
+- Tests: `test_tts_stt_clients.py` (payload matrix: core fields present;
+  `reference_text` sent only when advertised — Chatterbox never receives it;
+  `language` fit cases: code in enum / name-mapped / omitted; unadvertised
+  parameter dropped; empty/`None` values omitted; app-managed names never
+  sourced from `parameters`; 422 self-heal retries once with the refetched
+  doc; no-doc fallback unfiltered + warned), `test_routers_tts_stt.py`
+  (new endpoint: 200 + doc from cache, 503 when inactive, 503 when
+  unreachable, cache used not re-fetched when warm; proxy tests renamed),
+  `test_docs.py`.
+
+**Acceptance:** all green; against a real tts-serve engine:
+`/api/tts/capabilities` serves the doc and a full synthesis round-trip works.
+
+#### M4 — Frontend: dynamic TTS section of the Servers modal
+
+- **New `static/tts-params.js`** (loaded after `utils.js`, before
+  `settings.js`):
+  - constants: `TTS_SUPPORTED_SCHEMA_VERSION = 1`,
+    `TTS_APP_MANAGED_FIELDS = ["text","audio_base64","reference_text","language"]`;
+  - pure core: `selectTtsParams(doc) -> {renderable, advanced, error}`
+    (filters app-managed fields; splits on `advanced`; returns an error for
+    `schema_version > 1` → T10), `widgetFor(spec)` (T9 table),
+    `collectTtsParamValues(container) -> object` (empty = key absent; booleans
+    and defaulted selects always present), `validateTtsParamValues(values,
+    doc) -> string|null` (type, bounds, enum membership — server-side
+    enforcement is the backstop, this gives the user an immediate message);
+  - DOM builders: `renderTtsParameters(doc, container, savedValues)`
+    (label + hint from `description`/bounds as `title`/`.field-hint`,
+    `advanced` params inside a collapsed `<details>`),
+    `renderTtsInfo(doc, container)` (engine, model, device, sample rate,
+    watermark notice per T10).
+- `templates/index.html`: TTS fieldset loses the three static parameter rows
+  (Step Count, CFG, Seed) and gains `<div id="sf-tts-params">` +
+  `<div id="sf-tts-info">`; Base URL, Timeout, Streaming and Server Type stay.
+- `static/state.js`: replace `sfTtsNumSteps`/`sfTtsGuidanceScale`/`sfTtsSeed`
+  with `sfTtsParams`/`sfTtsInfo` references.
+- `static/settings.js`:
+  - `openSettings()` → after populating, `await refreshTtsCapabilities()`:
+    TTS enabled + non-blank Base URL → `GET /api/tts/capabilities` → render
+    (503 → info line "TTS server not reachable — parameter options
+    unavailable"); disabled/blank → "not configured" line;
+  - Base URL `change` → refetch + re-render (saved values re-applied; note in
+    the info line that unsaved parameter edits are discarded on engine switch);
+  - `collectSettingsFromForm()` → `tts.parameters = collectTtsParamValues(...)`
+    (empty object when nothing is rendered); `validateSettings()` → base checks
+    + `validateTtsParamValues` (the hard-coded 4–20 / 1.0–2.0 ranges die).
+- `static/style.css`: slider row (range + readout), `<details>` styling,
+  info block — small additions to the existing stylesheet.
+- **New `tests/test_tts_settings.js`** (plain Node 20+, *not* part of pytest,
+  same harness pattern as `test_persona_form.js`: fresh `vm.Context`, DOM
+  stub, the real `utils.js` + `tts-params.js` evaluated, the four real
+  capability snapshots copied into `tests/fixtures/`): widget rule per
+  parameter across all four engines (Chatterbox's 10 params, Qwen3's
+  default-null numbers → blankable inputs, dots' `ode_method` select,
+  OmniVoice's `denoise` checkbox); app-managed fields never rendered;
+  `advanced` params hidden until the disclosure opens; collect omits empties
+  and coerces types; version gate renders the notice and no inputs; escape
+  hatch accepts valid JSON, rejects invalid; `validateTtsParamValues` catches
+  out-of-bounds / non-enum input.
+- `AGENTS.md`: frontend module table + Node-test coverage map entries.
+
+**Acceptance:** `python3 -m pytest` all green **and**
+`node tests/test_tts_settings.js` all green. Manual: open the modal against
+each engine — the parameter list matches `/capabilities` exactly.
+
+#### M5 — E2E verification + documentation
+
+- The four-engine matrix (mirrors `tts-serve/docs/01-server-generification.md`
+  §11): for each of Chatterbox, OmniVoice, Qwen3-TTS, dots.tts — modal shows
+  exactly the advertised params; every param moved to a non-default value
+  synthesizes without 422; audio sanity-checked (dots at 48 kHz included).
+- **Zero-code-change proof**: add a throwaway `test_knob` parameter to one
+  server script, confirm TalkWithMe renders it, persists it, and sends it —
+  with zero app code touched — then revert.
+- Cross-cutting checks: Qwen3 receives `language: "english"` for an `en`
+  persona (T6); Chatterbox receives **no** `reference_text`; the watermark
+  notice appears for Chatterbox only; switching the Base URL between engines
+  mid-session re-renders and stops sending the previous engine's params (T4).
+- Docs: `README.md` (new `tts.parameters` block in the settings.yaml sample;
+  TTS section pointing at the tts-serve docs instead of the old ai-playground
+  scripts; engine table), `AGENTS.md` final pass, `docs/feature_TTS_generification.md`
+  marked done, updated `screenshots/server_settings.png`.
+
+**Acceptance:** matrix + zero-code-change proof pass; docs current.
+
+### Testing strategy (summary)
+
+| Layer | What | Where |
+|-------|------|-------|
+| Backend unit | capabilities fetch/cache/negative-cache/invalidation | `tests/test_tts_stt_clients.py` |
+| Backend unit | legacy settings migration (all shapes) | `tests/test_config.py` |
+| Backend unit | payload builder matrix + 422 self-heal + language fit | `tests/test_tts_stt_clients.py` |
+| API | `/api/tts/capabilities` (200/503 paths), settings PUT with `parameters` + T7 validation | `tests/test_routers_tts_stt.py`, `tests/test_routers_settings.py` |
+| Contract | AGENTS.md endpoints table matches routes | `tests/test_docs.py` |
+| Frontend (Node) | widget rules × 4 real snapshots, collect/validate semantics, version gate, escape hatch, advanced disclosure | `tests/test_tts_settings.js` (plain Node, not pytest) |
+| E2E (manual) | four-engine matrix, zero-code-change proof, M5 checklist | on the GPU box |
+
+Everything hermetic per AGENTS.md: fake httpx via `tests/factories.py` (new
+`make_capabilities_doc` + 422 helpers), the new module-level capabilities
+cache re-pointed by the autouse conftest fixture, router stubs at the
+import site. The four tts-serve capability snapshots double as the fixture
+source, so the tests exercise the *real* document shape, not a paraphrase.
+
+### Risks & edge cases
+
+- **Old server scripts (T11):** the one true break. Loud 422s + a README
+  pointer are the mitigation; there is no silent-compat mode by design.
+- **Per-sentence streaming traffic:** the negative cache (T3) guarantees at
+  most one `/capabilities` GET per base_url per process (plus the documented
+  invalidation events) even in streaming mode.
+- **Hand-edited `settings.yaml` with garbage `tts.parameters` values**
+  (e.g. a string where a number belongs): not caught at load (the doc is not
+  available yet in the lifespan ordering); the server's own 422 will name the
+  field on the first synthesis and the self-heal keeps things consistent.
+  Accepted: the UI is the primary editor and validates live (T8/T9).
+- **Engine switch in the same save as new parameters (T7):** validation is
+  skipped on purpose; T4 drops anything the new engine doesn't advertise, so
+  the worst case is unused settings keys, never a 422 storm.
+- **`language` omission (T6):** for an engine whose enum accepts neither the
+  code nor the mapped name, the hint is dropped rather than guessed — cloning
+  still works, just unconditioned on language. Logged so it is diagnosable.
+- **Non-cloning engines (`reference_audio: null`):** out of scope for the
+  persona-TTS model; the app 503s with an explanatory detail rather than
+  pretending to work (M3).
+- **Multiple TTS server versions at once:** out of scope (tts-serve Q5
+  answer); the cache is a single slot keyed by base_url.
+
+### Open questions (to confirm at M0)
+
+1. **Seed as a generic parameter** — `seed` stops being a first-class
+   settings field; the UI's "0 = random" convention becomes "blank = random"
+   (the engine picks and echoes the seed in its response). Confirmed-by-absence
+   of a better option, but it changes the on-disk shape, so worth an explicit
+   thumbs-up.
+2. **Hard cutover (T11)** — old pre-ported server scripts are unsupported
+   immediately on this branch. OK to ship that way?
+3. **Language mapping table (T6)** — ISO→English-name table built in vs.
+   omit-on-mismatch only. The plan says: small built-in table (Qwen3's
+   `english`-style enums are the main beneficiary).
+4. **`GET /api/tts/capabilities` shape (T5)** — raw document with `503` when
+   unavailable, no wrapper object.
+
