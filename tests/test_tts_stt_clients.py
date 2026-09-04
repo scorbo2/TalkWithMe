@@ -6,6 +6,7 @@ need an active feature re-point the settings cache.
 """
 
 import asyncio
+import logging
 
 import httpx
 import pytest
@@ -13,7 +14,12 @@ import pytest
 import app.config as app_config
 import app.services.stt_client as stt_client
 import app.services.tts_client as tts_client
-from tests.factories import FakeAsyncClient, json_response, make_settings
+from tests.factories import (
+    FakeAsyncClient,
+    json_response,
+    make_capabilities_doc,
+    make_settings,
+)
 from app.config import STTConfig, TTSConfig
 
 
@@ -153,6 +159,215 @@ class TestSynthesize:
 
         _patch_http(monkeypatch, refuse)
         assert _run(tts_client.synthesize("hi", "p", "QUJD")) is None
+
+
+# ---------------------------------------------------------------------------
+# TTS capabilities: fetch
+# ---------------------------------------------------------------------------
+
+class TestFetchCapabilities:
+    def test_fetch_capabilities_success_returns_parsed_doc(self, monkeypatch):
+        _active_tts(monkeypatch)
+        _patch_http(monkeypatch,
+                    lambda method, url, **kw: json_response(
+                        200, make_capabilities_doc(engine="dots.tts")))
+
+        doc = _run(tts_client.fetch_capabilities())
+
+        assert doc == make_capabilities_doc(engine="dots.tts")
+
+    def test_fetch_capabilities_uses_capabilities_path_and_short_timeout(self, monkeypatch):
+        _active_tts(monkeypatch)
+        seen = {}
+
+        def client_factory(*args, **kwargs):
+            seen["kwargs"] = kwargs
+            return FakeAsyncClient(
+                lambda method, url, **kw: (seen.__setitem__("url", url),
+                                           json_response(200, make_capabilities_doc()))[1])
+
+        monkeypatch.setattr(tts_client.httpx, "AsyncClient", client_factory)
+        _run(tts_client.fetch_capabilities())
+
+        assert seen["url"] == "http://tts.local:5500/capabilities"
+        assert seen["kwargs"] == {"timeout": 3.0}
+
+    def test_fetch_capabilities_inactive_tts_returns_none_without_network(self, monkeypatch):
+        def fail(*a, **kw):
+            raise AssertionError("network must not be touched when TTS is inactive")
+
+        _patch_http(monkeypatch, fail)
+        assert _run(tts_client.fetch_capabilities()) is None
+
+    def test_fetch_capabilities_404_returns_none_and_warns(self, monkeypatch, caplog):
+        _active_tts(monkeypatch)
+        _patch_http(monkeypatch,
+                    lambda method, url, **kw: json_response(404, {"detail": "no such endpoint"}))
+
+        with caplog.at_level(logging.WARNING):
+            result = _run(tts_client.fetch_capabilities())
+
+        assert result is None
+        assert "/capabilities" in caplog.text
+        assert "404" in caplog.text
+
+    def test_fetch_capabilities_500_returns_none(self, monkeypatch):
+        _active_tts(monkeypatch)
+        _patch_http(monkeypatch, lambda method, url, **kw: json_response(500, {"detail": "boom"}))
+
+        assert _run(tts_client.fetch_capabilities()) is None
+
+    def test_fetch_capabilities_connection_error_returns_none(self, monkeypatch):
+        _active_tts(monkeypatch)
+
+        def refuse(*a, **kw):
+            raise httpx.ConnectError("refused")
+
+        _patch_http(monkeypatch, refuse)
+        assert _run(tts_client.fetch_capabilities()) is None
+
+    def test_fetch_capabilities_non_json_body_returns_none(self, monkeypatch):
+        _active_tts(monkeypatch)
+        _patch_http(monkeypatch,
+                    lambda method, url, **kw: httpx.Response(200, content=b"<html>hi</html>"))
+
+        assert _run(tts_client.fetch_capabilities()) is None
+
+    def test_fetch_capabilities_non_object_json_returns_none(self, monkeypatch):
+        _active_tts(monkeypatch)
+        _patch_http(monkeypatch, lambda method, url, **kw: json_response(200, ["not", "a", "dict"]))
+
+        assert _run(tts_client.fetch_capabilities()) is None
+
+
+# ---------------------------------------------------------------------------
+# TTS capabilities: cache
+# ---------------------------------------------------------------------------
+
+class TestCapabilitiesCache:
+    def test_get_capabilities_inactive_tts_returns_none_without_network(self, monkeypatch):
+        def fail(*a, **kw):
+            raise AssertionError("network must not be touched when TTS is inactive")
+
+        _patch_http(monkeypatch, fail)
+        assert _run(tts_client.get_capabilities()) is None
+
+    def test_get_capabilities_same_base_url_fetches_once(self, monkeypatch):
+        _active_tts(monkeypatch)
+        calls = []
+
+        def responder(method, url, **kw):
+            calls.append(url)
+            return json_response(200, make_capabilities_doc(engine="omnivoice"))
+
+        _patch_http(monkeypatch, responder)
+        first = _run(tts_client.get_capabilities())
+        second = _run(tts_client.get_capabilities())
+
+        # Two calls, one fetch: the slot was populated for this base_url.
+        assert first == second == make_capabilities_doc(engine="omnivoice")
+        assert calls == ["http://tts.local:5500/capabilities"]
+
+    def test_get_capabilities_refetches_when_base_url_changes(self, monkeypatch):
+        _active_tts(monkeypatch)
+        calls = []
+
+        def responder(method, url, **kw):
+            calls.append(url)
+            return json_response(200, make_capabilities_doc(engine="omnivoice"))
+
+        _patch_http(monkeypatch, responder)
+        _run(tts_client.get_capabilities())
+
+        # Point the app at a *different* TTS server: the cached doc belongs
+        # to the old base_url and must not be served for the new one.
+        monkeypatch.setattr(
+            app_config, "_settings_cache",
+            make_settings(tts=TTSConfig(enabled=True, base_url="http://tts.other:5501")),
+        )
+        _run(tts_client.get_capabilities())
+
+        assert calls == ["http://tts.local:5500/capabilities",
+                         "http://tts.other:5501/capabilities"]
+
+    def test_get_capabilities_negative_result_is_cached(self, monkeypatch):
+        _active_tts(monkeypatch)
+        calls = []
+
+        def responder(method, url, **kw):
+            calls.append(url)
+            return json_response(404, {"detail": "no /capabilities (old pre-ported script?)"})
+
+        _patch_http(monkeypatch, responder)
+        assert _run(tts_client.get_capabilities()) is None
+        assert _run(tts_client.get_capabilities()) is None
+        assert _run(tts_client.get_capabilities()) is None
+
+        # One fetch for three calls: the failure is cached, so a dead
+        # endpoint is never retried across a stream of syntheses.
+        assert calls == ["http://tts.local:5500/capabilities"]
+
+    def test_invalidate_capabilities_forces_refetch_and_clears_negative(self, monkeypatch):
+        _active_tts(monkeypatch)
+        calls = []
+        mode = {"status": 404}
+
+        def responder(method, url, **kw):
+            calls.append(url)
+            if mode["status"] == 200:
+                return json_response(200, make_capabilities_doc(engine="omnivoice"))
+            return json_response(404, {"detail": "down"})
+
+        _patch_http(monkeypatch, responder)
+
+        # First fetch fails and the failure is cached:
+        assert _run(tts_client.get_capabilities()) is None
+        assert _run(tts_client.get_capabilities()) is None
+        assert len(calls) == 1
+
+        # Invalidation (e.g. the user just saved new settings) forces a
+        # refetch, and the recovered server's doc is then cached:
+        tts_client.invalidate_capabilities()
+        mode["status"] = 200
+        assert _run(tts_client.get_capabilities()) == make_capabilities_doc(engine="omnivoice")
+        assert _run(tts_client.get_capabilities()) == make_capabilities_doc(engine="omnivoice")
+        # Two fetches in total: the initial 404 and the post-invalidation 200;
+        # both "get again" pairs were served from the cache.
+        assert len(calls) == 2
+
+    def test_ensure_capabilities_warms_cache_and_logs_engine_slug(self, monkeypatch, caplog):
+        _active_tts(monkeypatch)
+        _patch_http(monkeypatch,
+                    lambda method, url, **kw: json_response(
+                        200, make_capabilities_doc(engine="dots.tts")))
+
+        with caplog.at_level(logging.INFO, logger="app.services.tts_client"):
+            _run(tts_client.ensure_capabilities())
+
+        assert "dots.tts" in caplog.text
+
+        # The warm cache now serves without another request:
+        def dead(*a, **kw):
+            raise AssertionError("the capabilities cache should have been warm")
+
+        _patch_http(monkeypatch, dead)
+        assert _run(tts_client.get_capabilities()) == make_capabilities_doc(engine="dots.tts")
+
+    def test_ensure_capabilities_inactive_tts_is_a_noop(self, monkeypatch):
+        def fail(*a, **kw):
+            raise AssertionError("network must not be touched when TTS is inactive")
+
+        _patch_http(monkeypatch, fail)
+        _run(tts_client.ensure_capabilities())  # must not raise
+
+    def test_ensure_capabilities_never_raises_when_fetch_raises(self, monkeypatch):
+        _active_tts(monkeypatch)
+
+        async def boom():
+            raise RuntimeError("fetch blew up")
+
+        monkeypatch.setattr(tts_client, "get_capabilities", boom)
+        _run(tts_client.ensure_capabilities())  # must not raise
 
 
 # ---------------------------------------------------------------------------

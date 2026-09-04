@@ -34,6 +34,22 @@ rejected, never truncated — the LLM can reformulate a shorter one."""
 # Settings
 # ---------------------------------------------------------------------------
 
+def _clean_base_url(raw: Optional[str]) -> Optional[str]:
+    """Normalize a user-supplied base URL for the config models.
+
+    Strips surrounding whitespace and any trailing slashes, then maps an
+    empty result to None. Trailing slashes matter because every client
+    builds URLs as f"{base_url}/path": a stored trailing slash turns into
+    a doubled "///path" that servers 404 on — and for TTS that 404 gets
+    negative-cached, blinding /capabilities discovery for the process
+    lifetime.
+    """
+    if raw is None:
+        return None
+    cleaned = raw.strip().rstrip("/")
+    return cleaned or None
+
+
 class LLMSettings(BaseModel):
     base_url: str = "http://localhost:8080"
     model: str = "default"
@@ -52,9 +68,8 @@ class TTSConfig(BaseModel):
 
     @model_validator(mode="after")
     def _normalize_base_url(self) -> "TTSConfig":
-        """Treat blank strings as None so a missing URL implicitly disables TTS."""
-        if self.base_url is not None and not self.base_url.strip():
-            self.base_url = None
+        """Blank → None (implicitly disables TTS); trailing slashes stripped."""
+        self.base_url = _clean_base_url(self.base_url)
         return self
 
     @property
@@ -71,9 +86,8 @@ class STTConfig(BaseModel):
 
     @model_validator(mode="after")
     def _normalize_base_url(self) -> "STTConfig":
-        """Treat blank strings as None so a missing URL implicitly disables STT."""
-        if self.base_url is not None and not self.base_url.strip():
-            self.base_url = None
+        """Blank → None (implicitly disables STT); trailing slashes stripped."""
+        self.base_url = _clean_base_url(self.base_url)
         return self
 
     @property

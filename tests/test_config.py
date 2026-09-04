@@ -44,6 +44,24 @@ class TestTTSConfigIsActive:
         assert cfg.base_url is None
         assert cfg.is_active is False
 
+    def test_tts_config_trailing_slash_is_stripped_from_base_url(self):
+        cfg = TTSConfig(enabled=True, base_url="http://tts:1/")
+        assert cfg.base_url == "http://tts:1"
+        assert cfg.is_active is True
+
+    def test_tts_config_whitespace_and_trailing_slashes_are_stripped(self):
+        cfg = TTSConfig(enabled=True, base_url="  http://tts:1//  ")
+        assert cfg.base_url == "http://tts:1"
+
+    def test_tts_config_trailing_slash_of_path_is_stripped_but_path_kept(self):
+        cfg = TTSConfig(enabled=True, base_url="http://tts:1/tts/")
+        assert cfg.base_url == "http://tts:1/tts"
+
+    def test_tts_config_slash_only_base_url_is_normalized_to_none(self):
+        cfg = TTSConfig(enabled=True, base_url="///")
+        assert cfg.base_url is None
+        assert cfg.is_active is False
+
 
 class TestSTTConfigIsActive:
     def test_stt_config_enabled_without_base_url_is_not_active(self):
@@ -57,6 +75,24 @@ class TestSTTConfigIsActive:
 
     def test_stt_config_blank_base_url_is_normalized_to_none(self):
         cfg = STTConfig(enabled=True, base_url="")
+        assert cfg.base_url is None
+        assert cfg.is_active is False
+
+    def test_stt_config_trailing_slash_is_stripped_from_base_url(self):
+        cfg = STTConfig(enabled=True, base_url="http://stt:1/")
+        assert cfg.base_url == "http://stt:1"
+        assert cfg.is_active is True
+
+    def test_stt_config_whitespace_and_trailing_slashes_are_stripped(self):
+        cfg = STTConfig(enabled=True, base_url="  http://stt:1//  ")
+        assert cfg.base_url == "http://stt:1"
+
+    def test_stt_config_trailing_slash_of_path_is_stripped_but_path_kept(self):
+        cfg = STTConfig(enabled=True, base_url="http://stt:1/stt/")
+        assert cfg.base_url == "http://stt:1/stt"
+
+    def test_stt_config_slash_only_base_url_is_normalized_to_none(self):
+        cfg = STTConfig(enabled=True, base_url="///")
         assert cfg.base_url is None
         assert cfg.is_active is False
 

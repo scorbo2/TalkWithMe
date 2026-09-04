@@ -465,7 +465,7 @@ details about setting up the server-side TTS script.
   - Fix longstanding display issues in Persona/Chat Room modals (#94)
   - Bump dependency versions to something less ancient (#81)
 - **Work in progress, update with release date when ready** v7.0
-  - TODO release notes for v7 go here
+  - Dynamic UI for TTS server configuration via `tts-serve` (#86)
 
 ## License
 

@@ -1,4 +1,5 @@
-"""TTS client — talks to a local REST server's /synthesize endpoint.
+"""TTS client — talks to a local REST server's /synthesize and /capabilities
+endpoints.
 
 The TTS server is optional. If it's down or misconfigured, the app logs
 a warning and gracefully disables TTS. The frontend gets the status via
@@ -17,6 +18,112 @@ import httpx
 from app.config import get_settings
 
 logger = logging.getLogger(__name__)
+
+# /capabilities is a discovery request on a server the user just pointed us
+# at; 3 s is enough for a local box and bounds how long a dead endpoint can
+# stall startup or the first synthesis.
+_CAPABILITIES_TIMEOUT_S = 3.0
+
+# ---------------------------------------------------------------------------
+# Capabilities cache (TTS generification, plan T3)
+# ---------------------------------------------------------------------------
+#
+# Single slot: (base_url it was fetched for, doc-or-None). The document is
+# static for the server's lifetime and carries no Cache-Control (the tts-serve
+# design answers this explicitly), so freshness is a closed set of events:
+# warm at startup, invalidate on a settings save, self-heal on a 422.
+# A *failure* is cached just like a document (negative cache): streaming TTS
+# issues one /synthesize per sentence, and each of those must not retry a
+# dead /capabilities endpoint.
+
+_capabilities_cache: Optional[dict] = None
+_capabilities_base_url: Optional[str] = None
+
+
+def invalidate_capabilities() -> None:
+    """Drop the cached capabilities document (or a cached fetch failure).
+
+    Call after a settings save that may have changed the TTS base_url, or
+    after a /synthesize 422 (the cached doc may be stale).
+    """
+    global _capabilities_cache, _capabilities_base_url
+    _capabilities_cache = None
+    _capabilities_base_url = None
+
+
+async def fetch_capabilities() -> Optional[dict]:
+    """GET {base_url}/capabilities and return the parsed JSON document.
+
+    Returns None — with a warning, never an exception — on a non-200 status,
+    a non-JSON or non-object body, a connection error, or when TTS is
+    inactive. Discovery is best-effort: a down TTS server must not break
+    startup or synthesis.
+    """
+    settings = get_settings()
+    if not settings.tts.is_active:
+        return None
+    url = f"{settings.tts.base_url}/capabilities"
+    try:
+        async with httpx.AsyncClient(timeout=_CAPABILITIES_TIMEOUT_S) as client:
+            resp = await client.get(url)
+            if resp.status_code != 200:
+                logger.warning(
+                    "TTS /capabilities request failed: HTTP %d from %s",
+                    resp.status_code, url,
+                )
+                return None
+            doc = resp.json()
+    except Exception as exc:
+        logger.warning("TTS /capabilities fetch failed for %s: %s", url, exc)
+        return None
+    if not isinstance(doc, dict):
+        logger.warning(
+            "TTS /capabilities at %s returned a non-object JSON body; ignoring it",
+            url,
+        )
+        return None
+    return doc
+
+
+async def get_capabilities() -> Optional[dict]:
+    """Return the capabilities document for the *current* TTS base_url.
+
+    Serves the cache — including a cached *failure* — when the slot was
+    populated for exactly this base_url; otherwise fetches and stores the
+    result. An inactive TTS returns None without touching the network and
+    without disturbing the cache (there is no base_url to key it on).
+    """
+    global _capabilities_cache, _capabilities_base_url
+    settings = get_settings()
+    base_url = settings.tts.base_url if settings.tts.is_active else None
+    if not base_url:
+        return None
+    if _capabilities_base_url == base_url:
+        return _capabilities_cache
+    doc = await fetch_capabilities()
+    _capabilities_cache = doc
+    _capabilities_base_url = base_url
+    return doc
+
+
+async def ensure_capabilities() -> None:
+    """Lifespan hook: warm the capabilities cache and log the engine slug.
+
+    Never raises — startup must survive a down TTS server, a server without
+    /capabilities (old pre-ported scripts, unsupported per plan T11), or any
+    other fetch failure.
+    """
+    try:
+        doc = await get_capabilities()
+    except Exception:
+        logger.warning("TTS capabilities warm-up failed", exc_info=True)
+        return
+    if doc is None:
+        return
+    logger.info(
+        "TTS capabilities cached: engine=%s schema_version=%s (from %s)",
+        doc.get("engine"), doc.get("schema_version"), _capabilities_base_url,
+    )
 
 
 async def check_tts_health() -> tuple[bool, Optional[str]]:

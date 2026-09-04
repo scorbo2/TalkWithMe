@@ -5,6 +5,7 @@ stand in for the LLM/TTS/STT/MCP servers lives here so individual test
 modules stay focused on behaviour, not plumbing.
 """
 
+import copy
 import json
 import json as _json  # alias: FakeMCPClient.post has a `json` *parameter* that
                       # shadows the module, so its SSE handlers use _json.dumps
@@ -166,6 +167,839 @@ def parse_sse_events(body: str) -> List[dict]:
 
 def sse_events_by_type(events: List[dict], event_type: str) -> List[dict]:
     return [e for e in events if e.get("type") == event_type]
+
+
+
+# ---------------------------------------------------------------------------
+# TTS capabilities documents (TTS generification)
+# ---------------------------------------------------------------------------
+#
+# The four snapshots below are FAITHFUL COPIES of the real v2 documents served
+# by the tts-serve engine servers (source: tts-serve/impl/tests/snapshots/*.json).
+# They span the full range of the document shape — enum vs free-form language,
+# watermarked vs not, default-null numbers, booleans, advanced params — so
+# tests built on them exercise the *real* protocol, not a paraphrase. If a
+# snapshot changes upstream, re-copy it here verbatim (a throwaway script
+# that reads the snapshot files is the reliable way to do it).
+
+_CAPABILITIES_SNAPSHOTS = {
+    'chatterbox': json.loads(r'''
+{
+  "schema_version": 2,
+  "engine": "chatterbox",
+  "model": "chatterbox-multilingual-v3",
+  "device": "cuda",
+  "sample_rate": 24000,
+  "watermarked": true,
+  "endpoint": "/synthesize",
+  "reference_audio": {
+    "required": true,
+    "formats": [
+      "wav",
+      "mp3",
+      "ogg",
+      "flac"
+    ],
+    "min_duration_s": 2.0,
+    "max_duration_s": null,
+    "note": "Only the first 10 s are used for speaker conditioning; longer clips are truncated."
+  },
+  "languages": [
+    "ar",
+    "da",
+    "de",
+    "el",
+    "en",
+    "es",
+    "fi",
+    "fr",
+    "he",
+    "hi",
+    "it",
+    "ja",
+    "ko",
+    "ms",
+    "nl",
+    "no",
+    "pl",
+    "pt",
+    "ru",
+    "sv",
+    "sw",
+    "tr",
+    "zh"
+  ],
+  "parameters": [
+    {
+      "name": "text",
+      "type": "string",
+      "required": true,
+      "default": null,
+      "description": "Text to synthesize, e.g. 'Hello there'.",
+      "min": null,
+      "max": null,
+      "step": null,
+      "enum": null,
+      "min_length": 1,
+      "max_length": null,
+      "group": "common",
+      "advanced": false
+    },
+    {
+      "name": "audio_base64",
+      "type": "string",
+      "required": true,
+      "default": null,
+      "description": "Reference voice sample (roughly 10 s works well) as a base64 string.  Any container soundfile can decode (WAV, MP3, OGG, FLAC, ...).  The model uses only its first 10 s.",
+      "min": null,
+      "max": null,
+      "step": null,
+      "enum": null,
+      "min_length": 1,
+      "max_length": 10000000,
+      "group": "common",
+      "advanced": false
+    },
+    {
+      "name": "language",
+      "type": "string",
+      "required": false,
+      "default": "en",
+      "description": "Two-letter language code, e.g. 'en', 'fr', 'zh' (supported: ar, da, de, el, en, es, fi, fr, he, hi, it, ja, ko, ms, nl, no, pl, pt, ru, sv, sw, tr, zh).  Omitted or empty defaults to 'en'.",
+      "min": null,
+      "max": null,
+      "step": null,
+      "enum": [
+        "ar",
+        "da",
+        "de",
+        "el",
+        "en",
+        "es",
+        "fi",
+        "fr",
+        "he",
+        "hi",
+        "it",
+        "ja",
+        "ko",
+        "ms",
+        "nl",
+        "no",
+        "pl",
+        "pt",
+        "ru",
+        "sv",
+        "sw",
+        "tr",
+        "zh"
+      ],
+      "min_length": null,
+      "max_length": null,
+      "group": "common",
+      "advanced": false
+    },
+    {
+      "name": "seed",
+      "type": "integer",
+      "required": false,
+      "default": null,
+      "description": "Random seed for reproducibility.  If omitted, a random seed in [1, 1000] is chosen and echoed in the response.",
+      "min": 1.0,
+      "max": 1000.0,
+      "step": null,
+      "enum": null,
+      "min_length": null,
+      "max_length": null,
+      "group": "common",
+      "advanced": false
+    },
+    {
+      "name": "exaggeration",
+      "type": "number",
+      "required": false,
+      "default": 0.5,
+      "description": "Expression/energy boost (README: ~0.5 general use, ~0.7+ for dramatic speech).  Higher values tend to speed up delivery.",
+      "min": 0.0,
+      "max": 2.0,
+      "step": 0.05,
+      "enum": null,
+      "min_length": null,
+      "max_length": null,
+      "group": "engine",
+      "advanced": false
+    },
+    {
+      "name": "cfg_weight",
+      "type": "number",
+      "required": false,
+      "default": 0.5,
+      "description": "Classifier-free guidance weight (README: ~0.5 general use, ~0.3 for fast-talking references or to reduce accent bleed from a foreign-language reference clip).",
+      "min": 0.0,
+      "max": 1.0,
+      "step": 0.05,
+      "enum": null,
+      "min_length": null,
+      "max_length": null,
+      "group": "engine",
+      "advanced": false
+    },
+    {
+      "name": "temperature",
+      "type": "number",
+      "required": false,
+      "default": 0.8,
+      "description": "Sampling temperature for the T3 language model.",
+      "min": 0.0,
+      "max": 2.0,
+      "step": 0.05,
+      "enum": null,
+      "min_length": null,
+      "max_length": null,
+      "group": "engine",
+      "advanced": false
+    },
+    {
+      "name": "repetition_penalty",
+      "type": "number",
+      "required": false,
+      "default": 1.2,
+      "description": "Penalty applied to repeated speech tokens.",
+      "min": 1.0,
+      "max": 2.0,
+      "step": 0.05,
+      "enum": null,
+      "min_length": null,
+      "max_length": null,
+      "group": "engine",
+      "advanced": true
+    },
+    {
+      "name": "min_p",
+      "type": "number",
+      "required": false,
+      "default": 0.05,
+      "description": "Min-p sampling threshold.",
+      "min": 0.0,
+      "max": 1.0,
+      "step": 0.01,
+      "enum": null,
+      "min_length": null,
+      "max_length": null,
+      "group": "engine",
+      "advanced": true
+    },
+    {
+      "name": "top_p",
+      "type": "number",
+      "required": false,
+      "default": 1.0,
+      "description": "Nucleus (top-p) sampling threshold.",
+      "min": 0.0,
+      "max": 1.0,
+      "step": 0.01,
+      "enum": null,
+      "min_length": null,
+      "max_length": null,
+      "group": "engine",
+      "advanced": true
+    }
+  ]
+}
+'''),
+    'dots.tts': json.loads(r'''
+{
+  "schema_version": 2,
+  "engine": "dots.tts",
+  "model": "rednote-hilab/dots.tts-soar",
+  "device": "cpu",
+  "sample_rate": 48000,
+  "watermarked": false,
+  "endpoint": "/synthesize",
+  "reference_audio": {
+    "required": true,
+    "formats": [
+      "wav",
+      "mp3",
+      "ogg",
+      "flac"
+    ],
+    "min_duration_s": 2.0,
+    "max_duration_s": null,
+    "note": "Roughly 10 s of clean, low-noise audio clones best.  The transcript (reference_text) is optional but improves conditioning."
+  },
+  "languages": null,
+  "parameters": [
+    {
+      "name": "text",
+      "type": "string",
+      "required": true,
+      "default": null,
+      "description": "Text to synthesize, e.g. 'Hello there'.",
+      "min": null,
+      "max": null,
+      "step": null,
+      "enum": null,
+      "min_length": 1,
+      "max_length": null,
+      "group": "common",
+      "advanced": false
+    },
+    {
+      "name": "audio_base64",
+      "type": "string",
+      "required": true,
+      "default": null,
+      "description": "Reference voice sample (roughly 10 s works well) as a base64 string.  Any container soundfile can decode (WAV, MP3, OGG, FLAC, ...).",
+      "min": null,
+      "max": null,
+      "step": null,
+      "enum": null,
+      "min_length": 1,
+      "max_length": 10000000,
+      "group": "common",
+      "advanced": false
+    },
+    {
+      "name": "reference_text",
+      "type": "string",
+      "required": false,
+      "default": null,
+      "description": "Exact transcript of the reference audio.  Optional \u2014 audio-only cloning works, but the transcript improves conditioning.",
+      "min": null,
+      "max": null,
+      "step": null,
+      "enum": null,
+      "min_length": null,
+      "max_length": null,
+      "group": "common",
+      "advanced": false
+    },
+    {
+      "name": "language",
+      "type": "string",
+      "required": false,
+      "default": "en",
+      "description": "Two-letter language code, e.g. 'en' or 'zh', or 'auto' for auto-detection.  Omitted or empty defaults to 'en'.",
+      "min": null,
+      "max": null,
+      "step": null,
+      "enum": null,
+      "min_length": null,
+      "max_length": null,
+      "group": "common",
+      "advanced": false
+    },
+    {
+      "name": "seed",
+      "type": "integer",
+      "required": false,
+      "default": null,
+      "description": "Random seed for reproducibility.  If omitted, a random seed in [1, 1000] is chosen and echoed in the response.",
+      "min": 1.0,
+      "max": 1000.0,
+      "step": null,
+      "enum": null,
+      "min_length": null,
+      "max_length": null,
+      "group": "common",
+      "advanced": false
+    },
+    {
+      "name": "num_steps",
+      "type": "integer",
+      "required": false,
+      "default": 10,
+      "description": "Flow-matching sampling steps.",
+      "min": 1.0,
+      "max": 64.0,
+      "step": 1.0,
+      "enum": null,
+      "min_length": null,
+      "max_length": null,
+      "group": "engine",
+      "advanced": false
+    },
+    {
+      "name": "guidance_scale",
+      "type": "number",
+      "required": false,
+      "default": 1.2,
+      "description": "Classifier-free guidance scale.",
+      "min": 0.0,
+      "max": 5.0,
+      "step": 0.1,
+      "enum": null,
+      "min_length": null,
+      "max_length": null,
+      "group": "engine",
+      "advanced": false
+    },
+    {
+      "name": "speaker_scale",
+      "type": "number",
+      "required": false,
+      "default": 1.5,
+      "description": "Scale applied to the reference speaker embedding.",
+      "min": 0.0,
+      "max": 3.0,
+      "step": 0.1,
+      "enum": null,
+      "min_length": null,
+      "max_length": null,
+      "group": "engine",
+      "advanced": false
+    },
+    {
+      "name": "ode_method",
+      "type": "string",
+      "required": false,
+      "default": "euler",
+      "description": "ODE / flow-matching solver method.",
+      "min": null,
+      "max": null,
+      "step": null,
+      "enum": [
+        "euler",
+        "midpoint",
+        "rk4"
+      ],
+      "min_length": null,
+      "max_length": null,
+      "group": "engine",
+      "advanced": false
+    }
+  ]
+}
+'''),
+    'omnivoice': json.loads(r'''
+{
+  "schema_version": 2,
+  "engine": "omnivoice",
+  "model": "k2-fsa/OmniVoice",
+  "device": "cuda",
+  "sample_rate": 24000,
+  "watermarked": false,
+  "endpoint": "/synthesize",
+  "reference_audio": {
+    "required": true,
+    "formats": [
+      "wav",
+      "mp3",
+      "ogg",
+      "flac"
+    ],
+    "min_duration_s": 2.0,
+    "max_duration_s": 20.0,
+    "note": "3-10 s recommended.  Clips over 20 s are trimmed at the largest silence gap and cloning quality degrades.  If reference_text is omitted, the clip is auto-transcribed with Whisper."
+  },
+  "languages": null,
+  "parameters": [
+    {
+      "name": "text",
+      "type": "string",
+      "required": true,
+      "default": null,
+      "description": "Text to synthesize, e.g. 'Hello there'.",
+      "min": null,
+      "max": null,
+      "step": null,
+      "enum": null,
+      "min_length": 1,
+      "max_length": null,
+      "group": "common",
+      "advanced": false
+    },
+    {
+      "name": "audio_base64",
+      "type": "string",
+      "required": true,
+      "default": null,
+      "description": "Reference voice sample (3-10 s recommended) as a base64 string. Any container soundfile can decode (WAV, MP3, OGG, FLAC, ...). Clips over 20 s are trimmed at the largest silence gap.",
+      "min": null,
+      "max": null,
+      "step": null,
+      "enum": null,
+      "min_length": 1,
+      "max_length": 10000000,
+      "group": "common",
+      "advanced": false
+    },
+    {
+      "name": "reference_text",
+      "type": "string",
+      "required": false,
+      "default": null,
+      "description": "Exact transcript of the reference audio.  If omitted, the reference is auto-transcribed with Whisper ASR (the first such request pays a one-time ASR model load, which can be slow).",
+      "min": null,
+      "max": null,
+      "step": null,
+      "enum": null,
+      "min_length": null,
+      "max_length": null,
+      "group": "common",
+      "advanced": false
+    },
+    {
+      "name": "language",
+      "type": "string",
+      "required": false,
+      "default": "en",
+      "description": "Two-letter language code, e.g. 'en' or 'fr'.  Omitted or empty defaults to 'en'.",
+      "min": null,
+      "max": null,
+      "step": null,
+      "enum": null,
+      "min_length": null,
+      "max_length": null,
+      "group": "common",
+      "advanced": false
+    },
+    {
+      "name": "seed",
+      "type": "integer",
+      "required": false,
+      "default": null,
+      "description": "Random seed for reproducibility.  If omitted, a random seed in [1, 1000] is chosen and echoed in the response.",
+      "min": 1.0,
+      "max": 1000.0,
+      "step": null,
+      "enum": null,
+      "min_length": null,
+      "max_length": null,
+      "group": "common",
+      "advanced": false
+    },
+    {
+      "name": "num_steps",
+      "type": "integer",
+      "required": false,
+      "default": 32,
+      "description": "Flow-matching sampling steps.  32 is the engine default; 16 is a reasonable fast/quality trade-off.",
+      "min": 4.0,
+      "max": 128.0,
+      "step": 4.0,
+      "enum": null,
+      "min_length": null,
+      "max_length": null,
+      "group": "engine",
+      "advanced": false
+    },
+    {
+      "name": "guidance_scale",
+      "type": "number",
+      "required": false,
+      "default": 2.0,
+      "description": "Classifier-free guidance scale.",
+      "min": 0.0,
+      "max": 10.0,
+      "step": 0.1,
+      "enum": null,
+      "min_length": null,
+      "max_length": null,
+      "group": "engine",
+      "advanced": false
+    },
+    {
+      "name": "denoise",
+      "type": "boolean",
+      "required": false,
+      "default": true,
+      "description": "Prepend the denoise token (recommended when the reference clip has background noise).",
+      "min": null,
+      "max": null,
+      "step": null,
+      "enum": null,
+      "min_length": null,
+      "max_length": null,
+      "group": "engine",
+      "advanced": true
+    }
+  ]
+}
+'''),
+    'qwen3-tts': json.loads(r'''
+{
+  "schema_version": 2,
+  "engine": "qwen3-tts",
+  "model": "Qwen/Qwen3-TTS-12Hz-1.7B-Base",
+  "device": "cuda",
+  "sample_rate": 24000,
+  "watermarked": false,
+  "endpoint": "/synthesize",
+  "reference_audio": {
+    "required": true,
+    "formats": [
+      "wav",
+      "mp3",
+      "ogg",
+      "flac"
+    ],
+    "min_duration_s": 2.0,
+    "max_duration_s": null,
+    "note": "~3 s is enough for high-quality cloning.  If reference_text is omitted, cloning falls back to speaker-embedding-only mode."
+  },
+  "languages": [
+    "de",
+    "en",
+    "es",
+    "fr",
+    "it",
+    "ja",
+    "ko",
+    "pt",
+    "ru",
+    "zh"
+  ],
+  "parameters": [
+    {
+      "name": "text",
+      "type": "string",
+      "required": true,
+      "default": null,
+      "description": "Text to synthesize, e.g. 'Hello there'.",
+      "min": null,
+      "max": null,
+      "step": null,
+      "enum": null,
+      "min_length": 1,
+      "max_length": null,
+      "group": "common",
+      "advanced": false
+    },
+    {
+      "name": "audio_base64",
+      "type": "string",
+      "required": true,
+      "default": null,
+      "description": "Reference voice sample as a base64 string.  Any container soundfile can decode (WAV, MP3, OGG, FLAC, ...).  ~3 s is enough for high-quality cloning.",
+      "min": null,
+      "max": null,
+      "step": null,
+      "enum": null,
+      "min_length": 1,
+      "max_length": 10000000,
+      "group": "common",
+      "advanced": false
+    },
+    {
+      "name": "reference_text",
+      "type": "string",
+      "required": false,
+      "default": null,
+      "description": "Exact transcript of the reference audio.  If omitted, x_vector_only_mode is enabled automatically (speaker-embedding-only cloning; quality may be reduced).",
+      "min": null,
+      "max": null,
+      "step": null,
+      "enum": null,
+      "min_length": null,
+      "max_length": null,
+      "group": "common",
+      "advanced": false
+    },
+    {
+      "name": "language",
+      "type": "string",
+      "required": false,
+      "default": "en",
+      "description": "Two-letter language code, e.g. 'en', 'zh', or 'auto' for auto-detection (supported: de, en, es, fr, it, ja, ko, pt, ru, zh).  Omitted or empty defaults to 'en'.",
+      "min": null,
+      "max": null,
+      "step": null,
+      "enum": [
+        "auto",
+        "zh",
+        "en",
+        "fr",
+        "de",
+        "it",
+        "ja",
+        "ko",
+        "pt",
+        "ru",
+        "es"
+      ],
+      "min_length": null,
+      "max_length": null,
+      "group": "common",
+      "advanced": false
+    },
+    {
+      "name": "seed",
+      "type": "integer",
+      "required": false,
+      "default": null,
+      "description": "Random seed for reproducibility.  If omitted, a random seed in [1, 1000] is chosen and echoed in the response.",
+      "min": 1.0,
+      "max": 1000.0,
+      "step": null,
+      "enum": null,
+      "min_length": null,
+      "max_length": null,
+      "group": "common",
+      "advanced": false
+    },
+    {
+      "name": "x_vector_only_mode",
+      "type": "boolean",
+      "required": false,
+      "default": false,
+      "description": "Use only the speaker embedding (no reference transcript / in-context codes).  Cloning quality may be reduced.",
+      "min": null,
+      "max": null,
+      "step": null,
+      "enum": null,
+      "min_length": null,
+      "max_length": null,
+      "group": "engine",
+      "advanced": true
+    },
+    {
+      "name": "temperature",
+      "type": "number",
+      "required": false,
+      "default": null,
+      "description": "Sampling temperature.  Omit for the engine default.",
+      "min": 0.0,
+      "max": 2.0,
+      "step": 0.05,
+      "enum": null,
+      "min_length": null,
+      "max_length": null,
+      "group": "engine",
+      "advanced": false
+    },
+    {
+      "name": "top_p",
+      "type": "number",
+      "required": false,
+      "default": null,
+      "description": "Nucleus sampling threshold.  Omit for the engine default.",
+      "min": 0.0,
+      "max": 1.0,
+      "step": 0.01,
+      "enum": null,
+      "min_length": null,
+      "max_length": null,
+      "group": "engine",
+      "advanced": true
+    },
+    {
+      "name": "repetition_penalty",
+      "type": "number",
+      "required": false,
+      "default": null,
+      "description": "Penalty applied to repeated tokens.  Omit for the engine default.",
+      "min": 1.0,
+      "max": 2.0,
+      "step": 0.05,
+      "enum": null,
+      "min_length": null,
+      "max_length": null,
+      "group": "engine",
+      "advanced": true
+    }
+  ]
+}
+'''),
+}
+
+
+def make_capabilities_doc(engine: str = "omnivoice", **overrides: Any) -> dict:
+    """A fresh copy of the real capabilities snapshot for `engine`.
+
+    `engine` is the stable slug from the document itself: one of
+    "chatterbox", "dots.tts", "omnivoice", "qwen3-tts". `overrides`
+    replaces top-level document fields (e.g. schema_version, watermarked).
+    Returns a deep copy: mutating the result never touches the snapshot.
+    """
+    if engine not in _CAPABILITIES_SNAPSHOTS:
+        raise ValueError(
+            f"Unknown capabilities engine {engine!r}; expected one of "
+            f"{sorted(_CAPABILITIES_SNAPSHOTS)}"
+        )
+    doc = copy.deepcopy(_CAPABILITIES_SNAPSHOTS[engine])
+    doc.update(overrides)
+    return doc
+
+
+def make_minimal_capabilities_doc(engine: str = "generic", **overrides: Any) -> dict:
+    """Smallest well-formed v2 document: the core vocabulary only.
+
+    A cloning engine with a free-form language and no engine-specific
+    parameters — a neutral baseline that carries none of the real engines'
+    quirks. Parameter shapes mirror the common fields of the snapshots.
+    """
+    doc = {
+        "schema_version": 2,
+        "engine": engine,
+        "model": "generic-test-model",
+        "device": "cpu",
+        "sample_rate": 24000,
+        "watermarked": False,
+        "endpoint": "/synthesize",
+        "reference_audio": {
+            "required": True,
+            "formats": ["wav"],
+            "min_duration_s": 2.0,
+            "max_duration_s": None,
+            "note": "Test fixture.",
+        },
+        "languages": None,
+        "parameters": [
+            {
+                "name": "text", "type": "string", "required": True, "default": None,
+                "description": "Text to synthesize.",
+                "min": None, "max": None, "step": None, "enum": None,
+                "min_length": 1, "max_length": None, "group": "common", "advanced": False,
+            },
+            {
+                "name": "audio_base64", "type": "string", "required": True, "default": None,
+                "description": "Reference voice sample as a base64 string.",
+                "min": None, "max": None, "step": None, "enum": None,
+                "min_length": 1, "max_length": 10000000, "group": "common", "advanced": False,
+            },
+            {
+                "name": "reference_text", "type": "string", "required": False, "default": None,
+                "description": "Exact transcript of the reference audio.",
+                "min": None, "max": None, "step": None, "enum": None,
+                "min_length": None, "max_length": None, "group": "common", "advanced": False,
+            },
+            {
+                "name": "language", "type": "string", "required": False, "default": "en",
+                "description": "Two-letter language code; omitted or empty defaults to 'en'.",
+                "min": None, "max": None, "step": None, "enum": None,
+                "min_length": None, "max_length": None, "group": "common", "advanced": False,
+            },
+            {
+                "name": "seed", "type": "integer", "required": False, "default": None,
+                "description": "Random seed; omitted means the engine picks one.",
+                "min": 1.0, "max": 1000.0, "step": None, "enum": None,
+                "min_length": None, "max_length": None, "group": "common", "advanced": False,
+            },
+        ],
+    }
+    doc.update(overrides)
+    return doc
+
+
+def make_unexpected_field_422(field: str, value: Any = None) -> dict:
+    """The 422 body an extra="forbid" /synthesize returns for a field the
+    engine never advertised (e.g. a parameter left over from the previous
+    engine after a base_url switch). Mirrors the FastAPI/Pydantic-v2 shape
+    that tts-serve's derived request models produce.
+    """
+    return {
+        "detail": [
+            {
+                "type": "extra_forbidden",
+                "loc": ["body", field],
+                "msg": "Extra inputs are not permitted",
+                "input": value,
+            }
+        ]
+    }
+
 
 
 # ---------------------------------------------------------------------------

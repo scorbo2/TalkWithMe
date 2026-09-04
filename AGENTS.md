@@ -3,8 +3,10 @@
 ## Run the app
 
 ```bash
+source .venv/bin/activate
 pip install -r requirements.txt
 uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
+deactivate
 ```
 
 Requires a locally running **llama.cpp** server with an OpenAI-compatible API. TTS and STT servers are optional.
@@ -13,18 +15,20 @@ Open `http://localhost:8000` in a browser.
 ## Testing — pytest, fully offline
 
 ```bash
+source .venv/bin/activate
 pip install -r requirements-dev.txt
-python3 -m pytest        # from the project root; config in pytest.ini
+python -m pytest # config in pytest.ini
+deactivate
 ```
 
 - **No servers needed.** The suite is hermetic: every external HTTP endpoint (LLM, TTS, STT, MCP) is faked via `tests/factories.py` (fake `httpx.AsyncClient`s, config factories, SSE helpers). It must run — and pass — with nothing but Python installed.
-- **Isolation**: `tests/conftest.py` has an autouse fixture that points every module-level global at per-test `tmp_path` state: the config caches in `app/config.py`, `_PERSISTENCE_ROOT` (in both `app/persistence.py` and `app/routers/persistence.py` — the router imported it *by value*, so it needs its own patch), the `session` singleton, and the MCP tool registry. Real `settings.yaml` / `Personas/` / `chatrooms.yaml` / `chatrooms/` data is never read or written. **If you add a new module-level global to the app, add it to that fixture.**
+- **Isolation**: `tests/conftest.py` has an autouse fixture that points every module-level global at per-test `tmp_path` state: the config caches in `app/config.py`, `_PERSISTENCE_ROOT` (in both `app/persistence.py` and `app/routers/persistence.py` — the router imported it *by value*, so it needs its own patch), the `session` singleton, the MCP tool registry, and the TTS capabilities cache in `app/services/tts_client.py`. Real `settings.yaml` / `Personas/` / `chatrooms.yaml` / `chatrooms/` data is never read or written. **If you add a new module-level global to the app, add it to that fixture.**
 - **Lifespan**: the `client` fixture uses `TestClient` *without* the startup lifespan, because the lifespan re-reads the real YAML files (clobbering test caches) and attempts MCP discovery. Tests that exercise the lifespan do so explicitly with a local `TestClient` in a `with` block and monkeypatched `load_*`/`load_tools` (see `tests/test_main.py`).
 - **Coverage map**: `test_config.py` (config models + YAML load/save), `test_persona_store.py` (persona directory discovery: frontmatter, file ops, language/avatar helpers, memory-file append/purge, YAML→dir migration), `test_builtin.py` (the built-in `add_memory` tool: registry, availability gating, save/error paths), `test_models.py` (API request/response models), `test_persistence.py` (disk persistence + audio staging), `test_session_manager.py`, `test_llm.py` (SSE parsing + agentic tool loop), `test_mcp_client.py`, `test_tool_registry.py`, `test_tts_stt_clients.py`, `test_chat_sse.py` (the `/api/chat` SSE endpoint — LLM stubbed, selection/persistence/echo/tool events for real), `test_main.py`, `test_docs.py` (the AGENTS.md API endpoints table must match the routes actually registered on the app — run it after adding/removing endpoints and update the table), one `test_routers_*.py` per API router, and `test_persona_form.js` (plain Node, **not** part of pytest — see below: the persona editor form logic in `static/persona.js`).
 - **Frontend tests (Node)**: `tests/test_persona_form.js` runs with plain Node 20+ — no npm packages, no network: `node tests/test_persona_form.js`. It evaluates the real `static/utils.js` + `state.js` + `persona.js` in a fresh `vm.Context` per test against a minimal DOM stub, stubs `fetch` to capture the multipart `FormData`, and drives the real `openPersonaForm()`, Remove-button listeners, file-input change handlers, and `submitPersonaForm()`. It exists to lock in the invariants that `remove_avatar_image` / `remove_reference_audio` are sent **only** after an explicit "Remove" click — never derived from server-side file presence (that bug silently deleted a persona's avatar and reference audio on every plain text save) — and, by the same rule, that `clear_memories` is sent only after an explicit "Clear saved memories" click while `memory_size` is **always** sent (the update endpoint requires it; an omitted value must not silently reset the persona's memory budget). It is kept out of the pytest suite on purpose: pytest must stay runnable with nothing but Python installed.
 - **Two expected deprecation warnings**: a clean run is "all tests pass", even when the `warnings summary` contains exactly two third-party deprecation warnings. Both come from Starlette 1.x's own testclient (pulled in via the `fastapi.testclient` import), not from app or test code: a `StarletteDeprecationWarning` that the httpx-based testclient will one day be replaced by a new `httpx2` package, and an `anyio.abc.BlockingPortal` alias deprecation raised from inside `starlette/testclient.py`. Neither is harmful today — the testclient works fine on httpx as of Starlette 1.6 — so don't chase them and don't "fix" app/test code in response. The eventual resolution, if it ever comes, is a future Starlette/httpx2 bump, not a code change here.
 - **Rules**:
-  - Every code change must be followed by a clean run: `python3 -m pytest`, all green. No exceptions, no skipped tests. Changes to `static/persona.js` (or anything else covered by the Node tests) additionally require `node tests/test_persona_form.js` all green.
+  - Every code change must be followed by a clean run: `.venv/bin/python -m pytest`, all green. No exceptions, no skipped tests. Changes to `static/persona.js` (or anything else covered by the Node tests) additionally require `node tests/test_persona_form.js` all green.
   - New functionality or API endpoints require new tests in the matching `test_*.py` file before the change is complete.
   - API tests use the `client` fixture + config caches (re-point `app.config._settings_cache` / `_personas_cache` / `_chatrooms_cache` via `monkeypatch`); router-level stubs are applied at the router's import site (e.g. `app.routers.chat.stream_chat`), since routers import service functions by name.
   - All fake responses in `tests/factories.py` attach an `httpx.Request` before returning: the httpx versions this project supports (0.24–0.28) raise `RuntimeError` from `response.url` / `raise_for_status()` if no `request` is attached to a `Response`, and the public `.request` *getter* itself raises when unset (check the private `response._request` attribute instead).

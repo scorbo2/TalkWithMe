@@ -73,8 +73,14 @@ code handles the FastAPI side of things entirely.
 
 ## Implementation plan
 
-Status: **PLAN — reviewed against the TalkWithMe codebase, no code written yet**
-Date: 2026-09-03
+Status: **M0 LOCKED (2026-09-04); M1 complete**
+Date: 2026-09-03 (plan), 2026-09-04 (M0 lock)
+
+M0 note: the confirmed code-only language policy (open question 3) changed
+tts-serve's API surface, which bumped the capabilities `schema_version`
+from 1 to 2 (see `tts-serve/docs/02-language-handling.md`). All
+supported-version references in this plan were corrected v1 → v2 to match
+the four live snapshots; the *shape* of the gate itself is unchanged.
 
 The `tts-serve` repository contains a `docs/` directory with low-level details
 and a full Json specification of the capabilities document, with examples.
@@ -87,7 +93,8 @@ What TalkWithMe will talk to (one tts-serve server per engine, e.g.
 `tts-serve/impl/server_omnivoice.py`):
 
 - `GET /health` → `{status, serverType, model, device}` (unchanged from today).
-- `GET /capabilities` → the machine-readable document: `schema_version` (1),
+- `GET /capabilities` → the machine-readable document: `schema_version` (2 —
+  bumped from 1 by the code-only language contract, see M0 note),
   `engine` (stable slug), `model`, `device`, `sample_rate`, `watermarked`,
   `endpoint`, `reference_audio` (null for non-cloning engines), `languages`
   (array or null), and `parameters[]` — one entry per request field with
@@ -103,9 +110,10 @@ What TalkWithMe will talk to (one tts-serve server per engine, e.g.
 
 Reference documents: `tts-serve/docs/01-server-generification.md` (design,
 incl. §4.2 field reference and §4.3 UI rendering rules),
-`tts-serve/tts-engine-common/README.md` (package API), and the four live
-snapshots in `tts-serve/impl/tests/snapshots/*_capabilities.json` (the exact
-shape of the document, per engine).
+`tts-serve/docs/02-language-handling.md` (the code-only language contract
+behind T6), `tts-serve/tts-engine-common/README.md` (package API), and the
+four live snapshots in `tts-serve/impl/tests/snapshots/*_capabilities.json`
+(the exact shape of the document, per engine).
 
 ### Key design decisions
 
@@ -116,11 +124,11 @@ shape of the document, per engine).
 | T3 | **Capabilities cache lives in the backend** (`app/services/tts_client.py`): a single slot holding `(base_url, doc-or-None)`. Warmed at startup (lifespan), invalidated on settings save, and self-healed on a synthesis `422` (refetch + one retry). Fetch failures are **negatively cached** for the process lifetime (until invalidation). | Streaming TTS issues one `/synthesize` per sentence — a per-sentence `/capabilities` GET is unacceptable. The doc is static for the server's lifetime and carries no `Cache-Control` (per tts-serve), so the invalidation events above are the complete freshness story. |
 | T4 | **The synthesis payload is built from the capabilities doc.** Always: `text`. Then, only if advertised and available: `audio_base64` (persona ref audio), `reference_text` (persona transcript), `language` (persona language, per T6), and finally every `settings.tts.parameters` entry whose name is advertised and whose value is not empty. Fields the engine doesn't advertise are **never sent** (they would 422). `text`/`audio_base64`/`reference_text`/`language` can never be supplied from `parameters` (app-managed; defense against a stale hand-edited YAML). | `extra="forbid"` makes "send only what is advertised" a hard requirement, and it makes engine switches safe by construction: switching the TTS server in the Servers modal automatically stops sending the old engine's parameters. |
 | T5 | **New endpoint `GET /api/tts/capabilities`** — returns the (cached or freshly fetched) document with `200`, or `503` with a detail string when TTS is inactive or the server is unreachable/lacks `/capabilities`. No wrapper: the doc is the payload, and it is self-describing (the frontend gates on `schema_version`). | The browser cannot reach the TTS server directly (separate host/port, CORS); everything else is proxied the same way. `503` matches the existing STT "inactive" convention, so the frontend needs no new error machinery. |
-| T6 | **Language enum-fit policy.** The persona stores an ISO-2-ish code (`en`). Engine `language` enums differ (Chatterbox: codes; Qwen3-TTS: names like `english`; dots.tts/OmniVoice: free-form, `languages: null`). Payload rule: send the persona value if it is in the parameter's `enum`; else send the mapped ISO→English-name value if *that* is in the enum (small built-in table, covers Qwen3); else **omit** `language` (engine falls back to its own default/auto) and log a warning. | Sending a value the server will reject turns a missing hint into a hard TTS failure (422). Omission degrades gracefully; the mapping keeps the hint when it can be expressed losslessly. |
+| T6 | **Language pass-through policy (confirmed, Q3).** The app **never** converts language codes: it sends the persona's stored two-letter code (`en`) as-is. Engine-specific conversions (Qwen3's code→name, dots' code→`auto_detect`, …) live entirely inside the tts-serve server scripts (see `tts-serve/docs/02-language-handling.md`). Payload rule: send the persona value only when the engine advertises a `language` parameter AND (the parameter has no `enum`, OR the persona value is in the `enum`); otherwise **omit** `language` (the server defaults omitted/empty to `en`) and log a warning. | The API surface is codes-only by contract, so no mapping table is needed in the app. A code the enum rejects would 422 the whole synthesis — dropping the hint degrades gracefully instead. |
 | T7 | **Settings save validates parameters against a *fresh* doc only.** `PUT /api/settings` validates `tts.parameters` (unknown name, out-of-bounds number, non-enum string → `422` naming the parameter) **only when** the cached doc belongs to the exact `base_url` being saved. If the user switches engines in the same save, validation is skipped (the doc is stale; T4 makes the switch safe anyway). | Catches garbage from the UI/API without bricking a legitimate engine switch, and keeps the save path synchronous and offline-safe (no network during save). |
 | T8 | **Frontend: the TTS section of the Servers modal is built dynamically** by a new `static/tts-params.js` module with *pure* core functions (doc → widget specs, container → collected values, values → validation error) plus thin DOM builders. Widget rules per `tts-serve/docs/01-server-generification.md` §4.3, refined in T9. `advanced: true` params render inside a collapsed "Advanced" `<details>`. App-managed fields (`text`, `audio_base64`, `reference_text`, `language`) are **never rendered** as settings. | The whole point of the feature is zero per-engine UI code. Pure core functions make the renderer testable in the plain-Node `vm.Context` harness (same pattern as `tests/test_persona_form.js`), keeping pytest Python-only. |
 | T9 | **Widget rules (final, testable).** `boolean` → checkbox (pre-set from `default`; always sent). `string` + `enum` → `<select>` (leading "— not set —" option when `default` is null; otherwise preselected and always sent). `string` without enum → text input (empty = not sent). `number` with `min`+`max`+`step` and a non-null `default` → range slider with live value readout (always sent). `integer` with `min`+`max`+`step` → slider. `integer` with `min`+`max`, no step → slider if the span is ≤ 100, else number input. Any other numeric shape → number input (empty = not sent). Any **unrecognized** `type` → raw-JSON escape-hatch input (user types the JSON value; invalid JSON is a validation error). Empty = "let the engine decide" is the universal meaning of a blank field — this is what makes Qwen3's default-`null` params (`temperature`, `top_p`, …) behave correctly. | Derived from §4.3 plus the actual four snapshots (e.g. Qwen3 `temperature` has bounds+step but `default: null`, so it must be a blankable number input, not a slider; `seed` is 1–1000 with no step and null default → number input, blank = random). The rules are implemented once and locked by Node tests against all four real snapshots. |
-| T10 | **Version gate + disclosures.** `schema_version > 1` → minimal mode: no parameter inputs, a notice ("TTS server speaks capabilities schema vN — this app supports up to v1"), synthesis still sends `text` + reference data only. `watermarked: true` → a visible notice in the modal (Chatterbox's PerTh watermark). `sample_rate` / `model` / `engine` / `device` → an information block (replacing today's static "Server Type" field's role; the health-derived `server_type` string is kept as-is, it still works with the new servers' `/health`). | Forward-compat rule from tts-serve §3.5; the watermark notice is the responsible-AI surface from §7.5. No resampling: the browser's `decodeAudioData` handles 24 kHz and 48 kHz alike, so `sample_rate` is display-only. |
+| T10 | **Version gate + disclosures.** `schema_version > 2` → minimal mode: no parameter inputs, a notice ("TTS server speaks capabilities schema vN — this app supports up to v2"), synthesis still sends `text` + reference data only. `watermarked: true` → a visible notice in the modal (Chatterbox's PerTh watermark). `sample_rate` / `model` / `engine` / `device` → an information block (replacing today's static "Server Type" field's role; the health-derived `server_type` string is kept as-is, it still works with the new servers' `/health`). | Forward-compat rule from tts-serve §3.5; the watermark notice is the responsible-AI surface from §7.5. No resampling: the browser's `decodeAudioData` handles 24 kHz and 48 kHz alike, so `sample_rate` is display-only. |
 | T11 | **Old pre-ported server scripts are unsupported (hard cutover).** The new app sends `reference_text` (old scripts want `prompt_text`) and only advertised fields (old scripts expect `num_steps`/`guidance_scale` unconditionally). A user running an old script gets loud 422s from the server — logged with the full detail — and a README pointer to the tts-serve ported scripts. | Per the tts-serve Q3 answer, the old scripts are not salvageable; pretending to support both protocols would recreate the LCM swamp this feature exists to kill. |
 
 ### Milestones
@@ -133,6 +141,11 @@ the old UI simply have no effect (their values are ignored by the new request
 model and engine defaults apply).
 
 #### M0 — Decision lock (this document)
+
+Status: **LOCKED** (2026-09-04) — all four open questions answered; the
+answers are recorded in the **Open questions** section below, and their
+consequences (code-only language policy, `schema_version` 1 → 2) are folded
+into T6 / T10 / the M3–M5 bullets.
 
 No code. Confirm the open questions below (seed-as-generic-parameter, old
 script cutover, language policy, endpoint shape). Deliverable: this section.
@@ -181,6 +194,12 @@ script cutover, language policy, endpoint shape). Deliverable: this section.
 - `app/routers/settings.py`: drop the `seed == 0` normalization; T7 validation
   (unknown name / out-of-bounds / non-enum → `422` naming the parameter, only
   when the cached doc matches the saved base_url); `mcp` carry-over untouched.
+  On a successful save, call `tts_client.invalidate_capabilities()` — clears
+  the slot only, no inline refetch (T7 keeps the save path offline-safe; the
+  next `get_capabilities()` call refetches). This is where T3's "invalidated
+  on settings save" freshness event gets implemented; without it, a negative
+  cache from a TTS server that was down at startup would persist for the
+  process lifetime (the 422 self-heal only fires on a failing synthesis).
 - Tests: `test_config.py` (every legacy-migration shape, idempotence, warning
   on conflicting sources), `test_models.py`, `test_routers_settings.py` (new
   PUT shape accepted; old-shape PUT degrades without error; 422 cases for
@@ -197,7 +216,8 @@ values migrated into `parameters`; saving rewrites it in the new shape.
     `prompt_text` parameter is **renamed** to `reference_text` — T11's breaking
     edge). Payload built per T4 from `get_capabilities()`; no doc cached →
     core vocabulary + all configured parameters, one warning per base_url.
-  - T6 language enum-fit helper (ISO→name table lives here, ~15 entries).
+  - T6 language fit helper (enum-membership check only — per the confirmed
+    Q3 policy the app never maps codes, so no lookup table lives here).
   - 422 self-heal: on a `422` from `/synthesize`, invalidate the cache,
     refetch, rebuild the payload, and **retry exactly once**; log the server's
     422 detail at warning either way.
@@ -214,7 +234,8 @@ values migrated into `parameters`; saving rewrites it in the new shape.
   update the TTS section (capabilities flow, `parameters` dict, self-heal).
 - Tests: `test_tts_stt_clients.py` (payload matrix: core fields present;
   `reference_text` sent only when advertised — Chatterbox never receives it;
-  `language` fit cases: code in enum / name-mapped / omitted; unadvertised
+  `language` fit cases: code in enum / no-enum free-form / code not in enum
+  → omitted + warned; unadvertised
   parameter dropped; empty/`None` values omitted; app-managed names never
   sourced from `parameters`; 422 self-heal retries once with the refetched
   doc; no-doc fallback unfiltered + warned), `test_routers_tts_stt.py`
@@ -229,11 +250,11 @@ values migrated into `parameters`; saving rewrites it in the new shape.
 
 - **New `static/tts-params.js`** (loaded after `utils.js`, before
   `settings.js`):
-  - constants: `TTS_SUPPORTED_SCHEMA_VERSION = 1`,
+  - constants: `TTS_SUPPORTED_SCHEMA_VERSION = 2`,
     `TTS_APP_MANAGED_FIELDS = ["text","audio_base64","reference_text","language"]`;
   - pure core: `selectTtsParams(doc) -> {renderable, advanced, error}`
     (filters app-managed fields; splits on `advanced`; returns an error for
-    `schema_version > 1` → T10), `widgetFor(spec)` (T9 table),
+    `schema_version > 2` → T10), `widgetFor(spec)` (T9 table),
     `collectTtsParamValues(container) -> object` (empty = key absent; booleans
     and defaulted selects always present), `validateTtsParamValues(values,
     doc) -> string|null` (type, bounds, enum membership — server-side
@@ -286,8 +307,9 @@ each engine — the parameter list matches `/capabilities` exactly.
 - **Zero-code-change proof**: add a throwaway `test_knob` parameter to one
   server script, confirm TalkWithMe renders it, persists it, and sends it —
   with zero app code touched — then revert.
-- Cross-cutting checks: Qwen3 receives `language: "english"` for an `en`
-  persona (T6); Chatterbox receives **no** `reference_text`; the watermark
+- Cross-cutting checks: Qwen3 receives `language: "en"` for an `en` persona
+  and maps it to `English` server-side (T6); Chatterbox receives **no**
+  `reference_text`; the watermark
   notice appears for Chatterbox only; switching the Base URL between engines
   mid-session re-renders and stops sending the previous engine's params (T4).
 - Docs: `README.md` (new `tts.parameters` block in the settings.yaml sample;
@@ -330,9 +352,10 @@ source, so the tests exercise the *real* document shape, not a paraphrase.
 - **Engine switch in the same save as new parameters (T7):** validation is
   skipped on purpose; T4 drops anything the new engine doesn't advertise, so
   the worst case is unused settings keys, never a 422 storm.
-- **`language` omission (T6):** for an engine whose enum accepts neither the
-  code nor the mapped name, the hint is dropped rather than guessed — cloning
-  still works, just unconditioned on language. Logged so it is diagnosable.
+- **`language` omission (T6):** for an engine whose `language` enum does not
+  contain the persona's code, the hint is dropped rather than guessed (no
+  mapping is ever attempted) — cloning still works, just unconditioned on
+  language. Logged so it is diagnosable.
 - **Non-cloning engines (`reference_audio: null`):** out of scope for the
   persona-TTS model; the app 503s with an explanatory detail rather than
   pretending to work (M3).
@@ -345,12 +368,20 @@ source, so the tests exercise the *real* document shape, not a paraphrase.
    settings field; the UI's "0 = random" convention becomes "blank = random"
    (the engine picks and echoes the seed in its response). Confirmed-by-absence
    of a better option, but it changes the on-disk shape, so worth an explicit
-   thumbs-up.
+   thumbs-up. **Answer**: Confirmed. No objections.
 2. **Hard cutover (T11)** — old pre-ported server scripts are unsupported
-   immediately on this branch. OK to ship that way?
+   immediately on this branch. OK to ship that way? **Answer**: Confirmed.
+   This version will be a hard cutover. The old server scripts will no longer
+   work with this new version. This will be strongly noted in the release notes.
 3. **Language mapping table (T6)** — ISO→English-name table built in vs.
    omit-on-mismatch only. The plan says: small built-in table (Qwen3's
-   `english`-style enums are the main beneficiary).
+   `english`-style enums are the main beneficiary). **Answer**: No, this application
+   should never map 2-letter language codes into any engine-specific format.
+   I've modified `tts-serve` so that the API surface now always expects
+   a two-letter language code (or `auto` if the engine supplies a default).
+   Engine-specific mappings (example: `en` -> `English`) are now handled
+   entirely in the server implementation script. Empty/missing values
+   will be implicitly converted to `en` by the server.
 4. **`GET /api/tts/capabilities` shape (T5)** — raw document with `503` when
-   unavailable, no wrapper object.
+   unavailable, no wrapper object. **Answer**: confirmed.
 
