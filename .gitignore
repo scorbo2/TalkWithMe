@@ -11,3 +11,5 @@ settings.yaml.*
 testsetup.sh
 restore.sh
 .venv/
+startup.sh
+
