@@ -196,12 +196,30 @@ def _wrong_type_message(name: str, expected: str, value: Any) -> str:
     return f"TTS parameter {name!r} expects {expected}, got {type(value).__name__}"
 
 
+def _numeric_bound(bound: Any) -> Optional[int | float]:
+    """A spec's min/max bound, or None when absent or malformed.
+
+    The capabilities doc comes from an external server and is only
+    validated as a dict (fetch_capabilities_url); a malformed non-numeric
+    bound must not TypeError the settings-save validation (a 500 on
+    PUT /api/settings). Skipping it keeps the save alive and leaves the
+    server's own 422 as the backstop — the same "skip what we cannot
+    judge" policy as unrecognized parameter types, and the same check the
+    frontend mirror (ttsParamBoundsErrors) applies. bool is excluded on
+    purpose: a JSON true/false is not a bound (same stance as the integer
+    type check below).
+    """
+    if isinstance(bound, bool) or not isinstance(bound, (int, float)):
+        return None
+    return bound
+
+
 def _bounds_errors(name: str, value: float, spec: dict) -> List[str]:
     errors = []
-    minimum = spec.get("min")
-    maximum = spec.get("max")
+    minimum = _numeric_bound(spec.get("min"))
     if minimum is not None and value < minimum:
         errors.append(f"TTS parameter {name!r} must be >= {minimum}, got {value}")
+    maximum = _numeric_bound(spec.get("max"))
     if maximum is not None and value > maximum:
         errors.append(f"TTS parameter {name!r} must be <= {maximum}, got {value}")
     return errors

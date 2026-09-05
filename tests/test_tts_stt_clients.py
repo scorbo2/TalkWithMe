@@ -552,6 +552,38 @@ class TestValidateTTSParameters:
             {"name": "flux", "type": "quaternion", "min": None, "max": None, "enum": None})
         assert tts_client.validate_tts_parameters(doc, {"flux": [1, 2, 3, 4]}) is None
 
+    def test_validate_tts_parameters_non_numeric_min_max_are_skipped(self):
+        # The doc is external and only validated as a dict: a malformed
+        # bound must be skipped, not TypeError the synchronous save path
+        # (which would 500 PUT /api/settings). 100 is deliberately above
+        # the real max (64): with the bound intact it would be rejected.
+        doc = make_capabilities_doc(engine="dots.tts")
+        self._set_bounds(doc, "num_steps", "low", "high")
+        assert tts_client.validate_tts_parameters(doc, {"num_steps": 100}) is None
+
+    def test_validate_tts_parameters_bool_min_max_are_not_bounds(self):
+        # bool is an int subclass in Python: without the explicit exclusion
+        # True/False would compare as 1/0 and silently mis-judge (100 >
+        # False). A JSON true/false in a bound slot is malformed, not 1/0.
+        doc = make_capabilities_doc(engine="dots.tts")
+        self._set_bounds(doc, "num_steps", True, False)
+        assert tts_client.validate_tts_parameters(doc, {"num_steps": 100}) is None
+
+    def test_validate_tts_parameters_malformed_min_still_checks_intact_max(self):
+        # Partial degradation: only the broken bound is skipped — a value
+        # beyond the intact max is still rejected.
+        doc = make_capabilities_doc(engine="dots.tts")
+        self._set_bounds(doc, "num_steps", "low", 64)
+        error = tts_client.validate_tts_parameters(doc, {"num_steps": 100})
+        assert "num_steps" in error and "64" in error
+
+    @staticmethod
+    def _set_bounds(doc, name, minimum, maximum):
+        """Overwrite the min/max of the named parameter in a doc."""
+        for entry in doc["parameters"]:
+            if entry["name"] == name:
+                entry["min"], entry["max"] = minimum, maximum
+
 
 class TestCachedCapabilities:
     def test_cached_capabilities_empty_slot_returns_none_pair(self):

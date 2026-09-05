@@ -294,6 +294,24 @@ class TestUpdateTTSParameters:
         assert resp.status_code == 200
         assert resp.json()["tts"]["parameters"] == parameters
 
+    def test_malformed_doc_bounds_do_not_break_the_save(self, client, monkeypatch):
+        # The doc is external and only validated as a dict: a non-numeric
+        # min/max used to TypeError the synchronous save path — a 500 on
+        # PUT /api/settings. Malformed bounds are skipped (the engine's own
+        # 422 on the first synthesis is the backstop), so the save goes
+        # through.
+        doc = make_capabilities_doc(engine="dots.tts")
+        for entry in doc["parameters"]:
+            if entry["name"] == "num_steps":
+                entry["min"], entry["max"] = "low", "high"
+        seed_capabilities_cache(monkeypatch, TTS_BASE, doc)
+
+        resp = client.put("/api/settings", json=base_update(
+            tts=tts_update(parameters={"num_steps": 16})))
+
+        assert resp.status_code == 200
+        assert resp.json()["tts"]["parameters"] == {"num_steps": 16}
+
     # -- T7: the judge must be the right judge ---------------------------------
 
     def test_validation_skipped_when_cached_doc_is_for_another_engine(self, client, monkeypatch):
