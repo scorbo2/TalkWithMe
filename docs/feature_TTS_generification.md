@@ -5,6 +5,11 @@ The goal is to move away from a "lowest common denominator" approach, and provid
 discoverability of unique TTS engine features. Those unique features can then be
 exposed in TalkWithMe's Servers modal in a dynamic UI.
 
+> **Status (2026-09-04):** M0–M4.1 complete (pytest 641 green + both Node
+> suites green). M5: **OmniVoice fully verified live**, including the
+> zero-code-change proof; Chatterbox, Qwen3-TTS and dots.tts are pending
+> (single-engine-at-a-time box) — see the runbook at the end of M5.
+
 ## Current state
 
 There are three officially supported TTS engines right now:
@@ -413,6 +418,116 @@ same-URL (incl. trailing-slash spelling) no-clobber tests.
 
 **Acceptance:** matrix + zero-code-change proof pass; docs current.
 
+#### M5 result (2026-09-04)
+
+**OmniVoice verified live** (app on `127.0.0.1:8001` against
+`impl/server_omnivoice.py`, tts-serve @ `0e82733`, cuda). Every M5 check that
+is reachable with a single engine passed:
+
+- **Legacy migration (T2):** a legacy `settings.yaml` (`num_steps` /
+  `guidance_scale` / `seed` directly under `tts:`) folded into `parameters`
+  at load (`seed: null` dropped — blank = engine decides) and left disk on
+  the first API save.
+- **Capabilities (T5):** `GET /api/tts/capabilities` returned byte-identical
+  content to the tts-serve `omnivoice_capabilities.json` snapshot (and to the
+  `tests/fixtures/` copy).
+- **Probe (M4.1):** `?base_url=` → 200 live, 422 scheme-less
+  ("base_url must start with http:// or https://"), 503 dead, 422 empty,
+  200 trailing-slash.
+- **Frontend render:** the real `static/tts-params.js` (vm harness, live doc)
+  rendered exactly the advertised params — `seed` → number input,
+  `num_steps`/`guidance_scale` → slider, `denoise` → checkbox in the collapsed
+  advanced disclosure; the four app-managed fields never rendered; info block
+  showed engine/model/device/sample-rate and **no** watermark notice
+  (OmniVoice is un-watermarked).
+- **Synthesis (T4/T6):** baseline with the migrated legacy values produced
+  24 kHz audio and the engine echoed `num_steps: 14` (proof the folded legacy
+  param was sent). Then every advertised param at a non-default value
+  (`num_steps: 16`, `guidance_scale: 5.0`, `denoise: false`, `seed: 42`) →
+  save 200, synthesis 200, all four echoed by the engine. `language: "en"`
+  was sent for an `en` persona (OmniVoice's free-form language accepts codes
+  verbatim).
+- **T7 save-time validation (live):** unknown param → 422 "unknown TTS
+  parameter 'ode_method'"; out-of-range → 422 "TTS parameter 'num_steps' must
+  be <= 128.0, got 999"; wrong type → 422 "TTS parameter 'guidance_scale'
+  expects a number, got str".
+- **T4 drop (live):** a save that switched the base-url spelling
+  (`http://localhost:8000` → `http://127.0.0.1:8000`, i.e. the engine-switch
+  skip-gap) **and** carried the stale param `ode_method` in the same save →
+  200 (T7 skipped by design); the next synthesis was 200 and the
+  server-side request dump confirmed `ode_method` was **not** sent.
+
+**Zero-code-change proof (live):** a throwaway `test_knob` (integer 1–100,
+step 5) was added to `server_omnivoice.py` (request field, response echo,
+capabilities override). With **zero** TalkWithMe changes it: appeared in
+`/capabilities`; was rendered by the real frontend as a slider; was accepted
+on save (T7 against the refreshed doc) and persisted to `settings.yaml`; and
+was sent on synthesis (echo `test_knob: 7` + server-side request dump).
+Reverted cleanly — the server script restored and the doc identical to the
+snapshot again.
+
+**Observations worth keeping:**
+
+- **Two consecutive API saves without a capabilities refetch can bypass T7.**
+  A save *invalidates* the doc cache; T7 only validates when the cached doc
+  belongs to the url being saved. Saving `test_knob: 500` (out of range) right
+  after another save was therefore accepted and persisted. The backstop fired
+  exactly as designed: the engine 422'd ("Input should be less than or equal
+  to 100"), self-heal refetched the doc and retried once, and the client got
+  a 502 naming the failure. The **UI cannot hit this** — opening the modal
+  always refetches the doc, so a save through the modal is validated. This is
+  the same accepted-risk class as a hand-edited `settings.yaml` (see Risks);
+  it is API-only exposure and the server's 422 is the backstop.
+- **Environment gotcha found while taking the screenshot:** the app on 8001
+  had been launched with the *global* pyenv python, not the venv (global
+  fastapi 0.101 / starlette 0.27). All `/api/*` endpoints worked, but
+  `GET /` returned 500 (new-style `TemplateResponse(request, name)` vs the
+  legacy signature in starlette 0.27). Relaunching with
+  `.venv/bin/python -m uvicorn app.main:app` fixed it, and a re-check confirmed
+  identical TTS behaviour on the canonical interpreter. Launch the app with
+  the venv explicitly.
+
+**Pending (needs the other engines, see runbook below):** Chatterbox
+(incl. the watermark notice, and that it receives **no** `reference_text`),
+Qwen3-TTS (incl. `language: "en"` accepted for an `en` persona and mapped to
+`English` server-side), dots.tts (48 kHz audio sanity), and the cross-engine
+base-URL switch re-render check in the live modal.
+
+#### M5 per-engine runbook (remaining engines)
+
+For each of **Chatterbox**, **Qwen3-TTS**, **dots.tts** (run on the box that
+has that engine installed; one engine at a time — the app's TTS config is a
+single slot):
+
+1. Start the engine's tts-serve script (e.g.
+   `python impl/server_chatterbox.py`) and wait for `GET /health`.
+2. In the Servers dialog set TTS enabled + base URL (e.g.
+   `http://localhost:8000`) and press **Refresh** (or change the URL — the
+   field's `change` listener re-probes). The parameter section must
+   re-render for the new engine.
+3. Compare `GET /api/tts/capabilities` against the tts-serve snapshot
+   `impl/tests/snapshots/<engine>_capabilities.json` — must be identical.
+4. Modal check: rendered params must match the doc exactly (slider for
+   int/number ranges, checkbox for boolean, select for enum, input for
+   string; advanced collapsed).
+   - Chatterbox: the **watermark notice IS present**; confirm (via the
+     engine's request log) that **no `reference_text`** is sent on synthesis.
+   - Qwen3-TTS: `language` for an `en` persona is sent as `en` and the server
+     maps it to `English`.
+   - dots.tts: audio sanity-checks at **48 kHz**; the `ode_method` select
+     renders.
+5. Set **every** advertised param to a non-default value, save, and synthesize
+   a persona sentence: expect 200, audio decodes at the doc's sample rate, and
+   no 422 in the app log.
+6. T7 spot-check: save one param out of range → 422 naming that param.
+7. Switch the base URL to the **next** engine: the previous engine's params
+   must not be sent (no 422 storm) and the new engine's section renders.
+8. After the last engine, re-point at the production engine and synthesize once
+   more.
+
+The zero-code-change proof needs to be done against **one** engine only
+(done for OmniVoice) — it is a property of the app, not of any single server.
+
 ### Testing strategy (summary)
 
 | Layer | What | Where |
@@ -443,6 +558,10 @@ source, so the tests exercise the *real* document shape, not a paraphrase.
   available yet in the lifespan ordering); the server's own 422 will name the
   field on the first synthesis and the self-heal keeps things consistent.
   Accepted: the UI is the primary editor and validates live (T8/T9).
+  Confirmed live at M5: the same backstop also covers the API-only variant
+  (two consecutive `PUT /api/settings` without a capabilities refetch in
+  between — a save invalidates the doc cache, so T7 skips; the engine's 422
+  + self-heal still fires, and a modal round-trip re-validates).
 - **Engine switch in the same save as new parameters (T7):** validation is
   skipped on purpose; T4 drops anything the new engine doesn't advertise, so
   the worst case is unused settings keys, never a 422 storm.

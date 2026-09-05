@@ -32,10 +32,11 @@ Follow the development of this app on my YouTube channel:
 
 - Python 3.10+
 - A locally running llama.cpp server with OpenAI-compatible API (e.g., `--api` flag)
-- (Optional) A local TTS REST server with `/synthesize` and `/health` endpoints.
-   You can use one of my [TTS server scripts](https://github.com/scorbo2/ai-playground/tree/master/TTS)
-   in front of [dots.tts](https://github.com/studio-dots-ai/dots.tts), [Qwen3-TTS](https://github.com/QwenLM/Qwen3-TTS),
-   or [OmniVoice](https://github.com/k2-fsa/OmniVoice) server.
+- (Optional) A local TTS REST server with `/synthesize`, `/health`, and
+   `/capabilities` endpoints. Use one of the [tts-serve](https://github.com/scorbo2/tts-serve)
+   server scripts, running in front of [dots.tts](https://github.com/rednote-hilab/dots.tts),
+   [Qwen3-TTS](https://github.com/QwenLM/Qwen3-TTS), [OmniVoice](https://github.com/k2-fsa/OmniVoice),
+   or [Chatterbox](https://github.com/resemble-ai/chatterbox).
 - (Optional) An OpenAI-compatible STT server that exposes a `/v1/audio/transcriptions` endpoint
    accepting multipart form uploads. The `stt.base_url` in `settings.yaml` should point to the
    server's root (e.g., `http://localhost:8181`), and the app will POST to
@@ -83,11 +84,18 @@ llm:
 tts:
   enabled: true
   base_url: http://localhost:5500
-  num_steps: 10
-  guidance_scale: 1.5
-  seed: null
   timeout: 60
   streaming: false
+  # Engine parameters: a free-form map of parameter name -> value. Which names
+  # exist, their types, and their allowed ranges are defined by the TTS
+  # engine's /capabilities document, not by this app. Omitted keys (or a null
+  # value) are never sent, so the engine falls back to its own default.
+  # Example for OmniVoice (a different engine advertises a different set):
+  #   parameters:
+  #     num_steps: 16          # int 4-128
+  #     guidance_scale: 2.0    # number 0-10
+  #     seed: 42               # int 1-1000; omit for a random seed
+  parameters: {}
 
 stt:
   enabled: true
@@ -112,6 +120,34 @@ configuration here is the LLM.
 
 The `mcp` section currently has no UI — it is edited in `settings.yaml` directly and only
 read on startup (restart the app after changes).
+
+### Dynamic TTS parameters
+
+The Servers dialog does not show a fixed list of TTS parameter fields. When
+you open it (or change the TTS base URL), the app fetches the engine's
+`GET /capabilities` document and renders exactly the parameters that engine
+advertises — sliders for integer/number ranges, checkboxes for booleans,
+dropdowns for enums, plain inputs for strings — and validates your values
+against that document before saving. Values you leave blank are not sent, so
+the engine's own defaults apply. Point the base URL at a different engine and
+only that engine's parameters are shown and sent; the old engine's parameters
+are never transmitted to it (they remain harmlessly in `settings.yaml` until
+you delete them).
+
+A legacy `settings.yaml` that still carries `num_steps`, `guidance_scale`,
+and/or `seed` directly under `tts:` loads fine: those keys are folded into
+`parameters` at startup and rewritten in the new shape on the next settings
+save.
+
+The engines supported out of the box (one standalone script each, in
+[tts-serve](https://github.com/scorbo2/tts-serve)):
+
+| Engine | Server script | Sample rate | Notes |
+|--------|---------------|-------------|-------|
+| Chatterbox | `impl/server_chatterbox.py` | 24 kHz | Multilingual (23 language codes); output is PerTh-watermarked by the library |
+| OmniVoice | `impl/server_omnivoice.py` | 24 kHz | The fastest of the four; auto-transcribes the reference clip when the transcript is omitted |
+| Qwen3-TTS | `impl/server_qwen3TTS.py` | 24 kHz | 10 language names + `auto`; falls back to speaker-embedding cloning when the transcript is omitted |
+| dots.tts | `impl/server_dotsTTS.py` | 48 kHz | Flow-matching knobs (`num_steps`, `ode_method`, guidance/speaker scales) |
 
 ### Personas
 
@@ -390,8 +426,9 @@ work, if they provide an OpenAI-compatible API.
 Because both TTS and STT are optional, you have several options for running the
 application, depending on how much VRAM you can throw at it.
 
-Refer to the [TTS README](https://github.com/scorbo2/ai-playground/blob/master/TTS/README.md) for more
-details about setting up the server-side TTS script.
+Refer to the [tts-serve docs](https://github.com/scorbo2/tts-serve) for more
+details about setting up a server-side TTS script — each engine has its own
+standalone script under `impl/` with per-engine install notes.
 
 ### Minimal setup (~4GB VRAM)
 
