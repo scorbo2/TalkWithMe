@@ -85,18 +85,17 @@ def doc_supports_reference_audio(doc: Optional[dict]) -> bool:
     return doc is not None and doc.get("reference_audio") is not None
 
 
-async def fetch_capabilities() -> Optional[dict]:
-    """GET {base_url}/capabilities and return the parsed JSON document.
+async def fetch_capabilities_url(base_url: str) -> Optional[dict]:
+    """GET {base_url}/capabilities — one-shot probe of an explicit URL.
 
-    Returns None — with a warning, never an exception — on a non-200 status,
-    a non-JSON or non-object body, a connection error, or when TTS is
-    inactive. Discovery is best-effort: a down TTS server must not break
-    startup or synthesis.
+    Deliberately ignores both settings and the capabilities cache: the
+    /api/tts/capabilities?base_url= probe (the Servers-modal reconnect
+    button) may target a URL the user has NOT saved yet, and a probe must
+    never pollute the single cache slot the synthesis path relies on.
+    Returns None — with a warning, never an exception — on a non-200 status
+    or a non-JSON / non-object body (a down server reads as "unreachable").
     """
-    settings = get_settings()
-    if not settings.tts.is_active:
-        return None
-    url = f"{settings.tts.base_url}/capabilities"
+    url = f"{base_url}/capabilities"
     try:
         async with httpx.AsyncClient(timeout=_CAPABILITIES_TIMEOUT_S) as client:
             resp = await client.get(url)
@@ -117,6 +116,20 @@ async def fetch_capabilities() -> Optional[dict]:
         )
         return None
     return doc
+
+
+async def fetch_capabilities() -> Optional[dict]:
+    """GET {base_url}/capabilities and return the parsed JSON document.
+
+    Returns None — with a warning, never an exception — on a non-200 status,
+    a non-JSON or non-object body, a connection error, or when TTS is
+    inactive. Discovery is best-effort: a down TTS server must not break
+    startup or synthesis.
+    """
+    settings = get_settings()
+    if not settings.tts.is_active:
+        return None
+    return await fetch_capabilities_url(settings.tts.base_url)
 
 
 async def get_capabilities() -> Optional[dict]:

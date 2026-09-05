@@ -8,17 +8,19 @@ STT routing lives in its own module: app.routers.stt
 """
 
 import logging
+from typing import Optional
 
-from fastapi import APIRouter
+from fastapi import APIRouter, Query
 from fastapi.responses import JSONResponse
 
-from app.config import get_personas, get_settings
+from app.config import clean_base_url, get_personas, get_settings
 from app.models import TTSRequest, TTSHealthResponse
 from app.services.tts_client import (
     cached_capabilities,
     check_tts_health,
     doc_supports_reference_audio,
     encode_reference_audio,
+    fetch_capabilities_url,
     get_capabilities,
     read_transcript,
     synthesize,
@@ -42,7 +44,7 @@ async def tts_health():
 
 
 @router.get("/api/tts/capabilities")
-async def tts_capabilities():
+async def tts_capabilities(base_url: Optional[str] = Query(default=None, alias="base_url")):
     """Serve the TTS server's /capabilities document (plan T5).
 
     The document is the payload — no wrapper: it is self-describing and
@@ -51,7 +53,35 @@ async def tts_capabilities():
     convention as the STT "inactive" response; no new error machinery).
     Serves the cache when it is warm for the current base_url; otherwise
     fetches once (get_capabilities handles the fetch and negative caching).
+
+    Optional ?base_url=<url> probes a SPECIFIC url — the Servers modal's
+    reconnect button, where the url may be an unsaved edit. A probe
+    deliberately bypasses the is_active gate (the saved config may point
+    elsewhere or nowhere) and never touches the cache (one-shot answer; a
+    probe must not re-key the slot the synthesis path relies on). A
+    scheme-less probe url is a 422 — the user can fix the field in place
+    — instead of hanging until the client's connect timeout.
     """
+    if base_url is not None:
+        probe_url = clean_base_url(base_url)
+        if not probe_url:
+            return JSONResponse(
+                status_code=422,
+                content={"detail": "base_url must not be empty"},
+            )
+        if not (probe_url.startswith("http://") or probe_url.startswith("https://")):
+            return JSONResponse(
+                status_code=422,
+                content={"detail": "base_url must start with http:// or https://"},
+            )
+        doc = await fetch_capabilities_url(probe_url)
+        if doc is None:
+            return JSONResponse(
+                status_code=503,
+                content={"detail": "TTS server is unreachable or has no /capabilities endpoint"},
+            )
+        return doc
+
     settings = get_settings()
     if not settings.tts.is_active:
         return JSONResponse(

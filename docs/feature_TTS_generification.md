@@ -73,8 +73,8 @@ code handles the FastAPI side of things entirely.
 
 ## Implementation plan
 
-Status: **M0 LOCKED (2026-09-04); M1 complete; M2 complete; M3 complete (2026-09-04)**
-Date: 2026-09-03 (plan), 2026-09-04 (M0 lock, M2, M3)
+Status: **M0 LOCKED (2026-09-04); M1 complete; M2 complete; M3 complete (2026-09-04); M4 complete (2026-09-04)**
+Date: 2026-09-03 (plan), 2026-09-04 (M0 lock, M2–M4)
 
 M2 note: the legacy migration (T2) is implemented as a `TTSConfig`
 before-validator in `app/config.py` rather than inside `load_settings()` —
@@ -115,6 +115,31 @@ refuses (502 via the router) before the first POST when the doc it
 already fetched says `reference_audio: null`; the shared predicate
 `doc_supports_reference_audio()` backs both the router 503 and that
 backstop, and the next call gets the router's clean 503.
+
+M4 note: the Servers-modal TTS section is rendered from the live `/capabilities` document by
+`static/tts-params.js` (plan T8/T9); `tests/test_tts_settings.js` (plain Node, 57 tests) locks
+the T9 widget table against all four real snapshots plus the modal wiring. Two plan deviations,
+both surfaced by usability testing:
+
+- **M4.1 — reconnect (new section below).** The M4 bullet "Base URL `change` → refetch +
+  re-render" could not be implemented as written: the plain `/api/tts/capabilities` serves the
+  document for the SAVED base_url only, so a pre-save refetch after a URL edit would render the
+  *old* engine's parameter set. M4.1 adds a `?base_url=` probe (one-shot, never touches the
+  capabilities cache) plus a Refresh button, so an unsaved URL can be probed in place. The
+  engine-switch comparison normalizes trailing slashes (the backend does on save via
+  `clean_base_url`), so `http://x/` is not a switch away from a saved `http://x`.
+- **Never-wipe pass-through.** The M4 bullet said `collectSettingsFromForm()` sends "an empty
+  object when nothing is rendered". Instead, when no capabilities document is loaded the
+  last-saved `tts.parameters` are passed through unchanged — sending `{}` there would silently
+  wipe the user's parameters on every unrelated save (the same data-loss class the persona form
+  was burned by). Usability testing also surfaced the `findTtsParamRows` wipe bug: the
+  collection walk gated its descent on `Array.isArray(element.children)`, which is `false` for
+  a real browser's HTMLCollection, so in production every save collected `{}` and silently
+  wiped `tts.parameters` (reopening the modal showed the engine's doc defaults instead of the
+  saved values). The walk now iterates `children` unconditionally, and the Node harness mimics
+  the browser by making `children` array-like non-Arrays, so the regression class is caught by
+  `node tests/test_tts_settings.js` (the save→reopen round-trip test reproduces the
+  user-visible symptom).
 
 M0 note: the confirmed code-only language policy (open question 3) changed
 tts-serve's API surface, which bumped the capabilities `schema_version`
@@ -315,9 +340,11 @@ values migrated into `parameters`; saving rewrites it in the new shape.
     (503 → info line "TTS server not reachable — parameter options
     unavailable"); disabled/blank → "not configured" line;
   - Base URL `change` → refetch + re-render (saved values re-applied; note in
-    the info line that unsaved parameter edits are discarded on engine switch);
+    the info line that unsaved parameter edits are discarded on engine switch)
+    — implemented via the M4.1 probe, see M4 note;
   - `collectSettingsFromForm()` → `tts.parameters = collectTtsParamValues(...)`
-    (empty object when nothing is rendered); `validateSettings()` → base checks
+    (empty object when nothing is rendered — superseded by the never-wipe
+    pass-through, see M4 note); `validateSettings()` → base checks
     + `validateTtsParamValues` (the hard-coded 4–20 / 1.0–2.0 ranges die).
 - `static/style.css`: slider row (range + readout), `<details>` styling,
   info block — small additions to the existing stylesheet.
@@ -337,6 +364,33 @@ values migrated into `parameters`; saving rewrites it in the new shape.
 **Acceptance:** `python3 -m pytest` all green **and**
 `node tests/test_tts_settings.js` all green. Manual: open the modal against
 each engine — the parameter list matches `/capabilities` exactly.
+
+#### M4.1 — Reconnect (added 2026-09-04 after usability testing)
+
+Not in the original plan; scope added during M4's usability testing (an
+engine at an unsaved URL was only visible after save + reopen).
+
+- **Backend:** `GET /api/tts/capabilities?base_url=<url>` probes a specific
+  (possibly unsaved) url: bypasses the `is_active` gate (the saved config
+  may point elsewhere or nowhere), scheme-validates the url up front (422
+  for a scheme-less typo, so the user can fix the field in place instead of
+  hanging on a connect timeout), fetches via
+  `tts_client.fetch_capabilities_url()`, and returns 503 when unreachable
+  or when the server has no `/capabilities`. A probe never reads or writes
+  the single-slot capabilities cache (it must not re-key the slot the
+  synthesis path relies on).
+- **Frontend:** a Refresh button beside the TTS Base URL field and the
+  field's `change` listener both probe the field's current value via
+  `?base_url=` and re-render the parameter section in place — no save +
+  reopen round trip. Only a real engine switch (url change, trailing
+  slashes normalized) discards on-screen parameter edits and shows the
+  "unsaved parameter edits were discarded" note; a same-URL refetch keeps
+  in-flight edits. A scheme-less probe url shows the specific 422 line, not
+  the generic "not reachable" line.
+
+**Acceptance:** pytest + `node tests/test_tts_settings.js` all green,
+including the probe 422/503 paths, the cache-untouched assertion, and the
+same-URL (incl. trailing-slash spelling) no-clobber tests.
 
 #### M5 — E2E verification + documentation
 

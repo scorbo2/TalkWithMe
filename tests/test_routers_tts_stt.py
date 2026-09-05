@@ -291,6 +291,71 @@ class TestTTSCapabilities:
         assert resp.status_code == 503
         assert "capabilities" in resp.json()["detail"]
 
+    # -- ?base_url= probe (the Servers-modal reconnect button) -------------
+
+    def test_probe_schemeless_url_422_without_network(self, client, monkeypatch):
+        # A scheme-less typo must fail fast with 422 so the user can fix the
+        # field in place — not hang until the client's connect timeout.
+        def fail(*a, **kw):
+            raise AssertionError("a scheme-less probe url must not touch the network")
+
+        monkeypatch.setattr(tts_client.httpx, "AsyncClient",
+                            lambda *a, **kw: FakeAsyncClient(fail))
+
+        resp = client.get("/api/tts/capabilities", params={"base_url": "localhost:9000"})
+
+        assert resp.status_code == 422
+        assert "http://" in resp.json()["detail"]
+
+    def test_probe_blank_url_422(self, client, monkeypatch):
+        resp = client.get("/api/tts/capabilities", params={"base_url": "   "})
+        assert resp.status_code == 422
+
+    def test_probe_returns_doc_bypassing_inactive_settings_and_cache(self, client, monkeypatch):
+        # GIVEN TTS is INACTIVE (no settings patch: default config) and the
+        # cache slot is warm for a DIFFERENT url:
+        probe_doc = make_capabilities_doc(engine="dots.tts")
+        monkeypatch.setattr(tts_client, "_capabilities_base_url", "http://saved.local:5500")
+        monkeypatch.setattr(tts_client, "_capabilities_cache", {"engine": "saved"})
+        calls = []
+
+        def responder(method, url, **kw):
+            calls.append(url)
+            return json_response(200, probe_doc)
+
+        monkeypatch.setattr(tts_client.httpx, "AsyncClient",
+                            lambda *a, **kw: FakeAsyncClient(responder))
+
+        # WHEN the user probes a new (unsaved) url — trailing slash included,
+        # as browsers/users tend to type:
+        resp = client.get(
+            "/api/tts/capabilities", params={"base_url": "http://new.local:9000/"}
+        )
+
+        # THEN the probed server's document comes back raw: the is_active
+        # gate is bypassed (the saved config may point elsewhere), the
+        # trailing slash is stripped before the URL is built, and the cache
+        # slot is left untouched — a one-shot probe must not re-key the
+        # slot the synthesis path relies on:
+        assert resp.status_code == 200
+        assert resp.json() == probe_doc
+        assert calls == ["http://new.local:9000/capabilities"]
+        assert tts_client.cached_capabilities() == ("http://saved.local:5500", {"engine": "saved"})
+
+    def test_probe_unreachable_503(self, client, monkeypatch):
+        def refuse(*a, **kw):
+            raise httpx.ConnectError("refused")
+
+        monkeypatch.setattr(tts_client.httpx, "AsyncClient",
+                            lambda *a, **kw: FakeAsyncClient(refuse))
+
+        resp = client.get(
+            "/api/tts/capabilities", params={"base_url": "http://dead.local:9000"}
+        )
+
+        assert resp.status_code == 503
+        assert "capabilities" in resp.json()["detail"]
+
 
 # ---------------------------------------------------------------------------
 # STT health

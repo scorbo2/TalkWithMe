@@ -178,9 +178,12 @@ def sse_events_by_type(events: List[dict], event_type: str) -> List[dict]:
 # by the tts-serve engine servers (source: tts-serve/impl/tests/snapshots/*.json).
 # They span the full range of the document shape — enum vs free-form language,
 # watermarked vs not, default-null numbers, booleans, advanced params — so
-# tests built on them exercise the *real* protocol, not a paraphrase. If a
-# snapshot changes upstream, re-copy it here verbatim (a throwaway script
-# that reads the snapshot files is the reliable way to do it).
+# tests built on them exercise the *real* protocol, not a paraphrase.
+# There is a byte-identical JSON copy of each in tests/fixtures/ (used by the
+# plain-Node tests/test_tts_settings.js, which cannot import Python). If a
+# snapshot changes upstream, re-copy it into BOTH places verbatim (a
+# throwaway script that reads the snapshot files is the reliable way to do
+# it) — tests/test_tts_fixtures.py fails loudly if the two drift apart.
 
 _CAPABILITIES_SNAPSHOTS = {
     'chatterbox': json.loads(r'''

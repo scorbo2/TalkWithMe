@@ -314,27 +314,26 @@
                         <div id="sf-tts-fields" class="settings-fields">
                             <div class="form-row">
                                 <label for="sf-tts-base-url">Base URL</label>
-                                <input id="sf-tts-base-url" type="text">
+                                <div class="tts-url-row">
+                                    <input id="sf-tts-base-url" type="text">
+                                    <!-- type=button: probes the url above (saved or not)
+                                         and re-renders the parameter section in place —
+                                         it must never submit the form. -->
+                                    <button id="sf-tts-cap-refresh" type="button"
+                                            class="btn-secondary btn-small tts-cap-refresh"
+                                            title="Probe this URL and refresh the parameter options (no save needed)">
+                                        Refresh
+                                    </button>
+                                </div>
                             </div>
-                            <div class="form-row form-row-inline">
-                                <div class="form-col">
-                                    <label for="sf-tts-num-steps">Step Count <span class="field-hint">(4–20)</span></label>
-                                    <input id="sf-tts-num-steps" type="number" min="4" max="20">
-                                </div>
-                                <div class="form-col">
-                                    <label for="sf-tts-guidance-scale">CFG <span class="field-hint">(1.0–2.0)</span></label>
-                                    <input id="sf-tts-guidance-scale" type="number" min="1.0" max="2.0" step="0.1">
-                                </div>
-                            </div>
-                            <div class="form-row form-row-inline">
-                                <div class="form-col">
-                                    <label for="sf-tts-seed">Seed <span class="field-hint">(0 = random)</span></label>
-                                    <input id="sf-tts-seed" type="number" min="0">
-                                </div>
-                                <div class="form-col">
-                                    <label for="sf-tts-timeout">Timeout <span class="field-hint">(5–300s)</span></label>
-                                    <input id="sf-tts-timeout" type="number" min="5" max="300">
-                                </div>
+                            <!-- Dynamic TTS section (TTS generification, plan M4):
+                                 engine info + parameter widgets are rendered here
+                                 from the connected engine's /capabilities doc. -->
+                            <div id="sf-tts-info" class="tts-info"></div>
+                            <div id="sf-tts-params" class="tts-params"></div>
+                            <div class="form-row">
+                                <label for="sf-tts-timeout">Timeout <span class="field-hint">(5–300s)</span></label>
+                                <input id="sf-tts-timeout" type="number" min="5" max="300">
                             </div>
                             <div class="form-row">
                                 <label class="settings-checkbox-label">
@@ -443,6 +442,7 @@
     <script src="/static/chat.js"></script>
     <script src="/static/persona.js"></script>
     <script src="/static/chatrooms.js"></script>
+    <script src="/static/tts-params.js"></script>
     <script src="/static/settings.js"></script>
     <script src="/static/gen-settings.js"></script>
     <script src="/static/app.js"></script>

@@ -2,7 +2,35 @@
  * settings.js — Settings modal: load, validate, and persist server config.
  *
  * Handles LLM, TTS, and STT configuration through the settings overlay.
+ * The TTS section is partly dynamic (TTS generification, plan M4): the
+ * parameter widgets and engine info block are rendered from the connected
+ * engine's /capabilities document by static/tts-params.js.
  */
+
+/* ==========================================================================
+   Dynamic TTS state (plan M4)
+   ========================================================================== */
+
+// The capabilities document for the currently rendered parameter section
+// (null = nothing rendered: TTS off, no URL, or server unreachable).
+let ttsCapabilitiesDoc = null;
+// The URL the current document was fetched from: the probed URL when the
+// user reconnected to an (unsaved) URL, otherwise the saved base URL.
+// Compared on the next successful fetch to decide the "Engine switched"
+// note — a same-URL refetch is not an engine switch.
+let ttsCapabilitiesDocUrl = null;
+// The tts.base_url last loaded from the server (GET /api/settings). A
+// plain (no-probe) refresh serves the document for THIS url, so the
+// field's current value is not the reference — the user may have edited
+// it without blurring.
+let ttsSavedBaseUrl = null;
+// The parameter values last loaded from the server (GET /api/settings);
+// re-applied on an engine switch, and passed through on save when no
+// document is loaded (never silently wipe).
+let ttsSavedParameters = {};
+// Monotonic sequence so a slow capabilities response can't clobber a
+// newer one (user typing fast in the Base URL field).
+let ttsCapFetchSeq = 0;
 
 /* ==========================================================================
    Event listeners
@@ -21,9 +49,26 @@ settingsOverlay.addEventListener("click", (e) => {
 // Toggle TTS/STT fields visibility on checkbox change
 sfTtsEnabled.addEventListener("change", () => {
     updateTtsFieldsState();
+    refreshTtsCapabilities();
 });
 sfSttEnabled.addEventListener("change", () => {
     updateSttFieldsState();
+});
+
+// The dynamic parameter section is tied to the TTS server, not the form:
+// switching the Base URL means switching engines, so PROBE the new URL
+// (possibly still unsaved — the ?base_url= parameter exists precisely for
+// that; the plain endpoint only knows the SAVED url) and re-render
+// against whatever answers (plan M4.1).
+sfTtsBaseUrl.addEventListener("change", () => {
+    refreshTtsCapabilities(sfTtsBaseUrl.value.trim());
+});
+
+// Explicit reconnect button (plan M4.1): re-probe the URL currently in the
+// field and re-render in place — no save + reopen needed to see a new
+// engine's parameter set. type=button in the markup, so it never submits.
+sfTtsCapRefreshBtn.addEventListener("click", () => {
+    refreshTtsCapabilities(sfTtsBaseUrl.value.trim());
 });
 
 /* ==========================================================================
@@ -42,10 +87,116 @@ async function openSettings() {
 
     // Server type is ephemeral — comes from health check, not settings
     updateTtsServerTypeField();
+
+    // Populate the dynamic TTS section from the live capabilities document
+    // (plan M4). Runs after loadSettingsIntoForm on purpose: the saved
+    // parameter values it re-applies come from the same response.
+    await refreshTtsCapabilities();
 }
 
 function closeSettings() {
     settingsOverlay.classList.add("hidden");
+}
+
+/* ==========================================================================
+   Dynamic TTS section (plan M4)
+   ========================================================================== */
+
+/**
+ * Fetch the TTS server's capabilities document and (re)render the dynamic
+ * parameter section. Every "nothing to show" state renders a status line
+ * in the info area (renderTtsInfo with a null doc) so the user is never
+ * left wondering why the parameter list is missing.
+ *
+ * @param {string} [probeUrl] - When given, probe THIS url (the ?base_url=
+ *   endpoint parameter — it may be an unsaved edit the user just typed or
+ *   is about to save). When omitted, use the plain endpoint, which serves
+ *   the cached document for the SAVED base_url (the modal-open path: no
+ *   extra round-trip to the same server).
+ */
+async function refreshTtsCapabilities(probeUrl) {
+    const seq = ++ttsCapFetchSeq;
+
+    if (!sfTtsEnabled.checked) {
+        renderTtsUnavailable("TTS is not configured.");
+        return;
+    }
+    if (!sfTtsBaseUrl.value.trim()) {
+        renderTtsUnavailable("TTS Base URL is not set — parameter options unavailable.");
+        return;
+    }
+
+    const fetchUrl = probeUrl
+        ? `/api/tts/capabilities?base_url=${encodeURIComponent(probeUrl)}`
+        : "/api/tts/capabilities";
+
+    try {
+        const resp = await fetch(fetchUrl);
+        if (seq !== ttsCapFetchSeq) return; // superseded by a newer refresh
+        if (!resp.ok) {
+            // 422: a malformed probe URL (scheme-less typo) — the user can
+            // fix the field right here, so say what is wrong specifically
+            // instead of a generic "not reachable".
+            if (resp.status === 422) {
+                renderTtsUnavailable("TTS Base URL must start with http:// or https://.");
+                return;
+            }
+            // 503: TTS inactive or the server has no /capabilities — the
+            // detail string is server-side; this line is the modal's own.
+            renderTtsUnavailable("TTS server not reachable — parameter options unavailable");
+            return;
+        }
+        const doc = await resp.json();
+        if (seq !== ttsCapFetchSeq) return;
+        // The document belongs to the probed URL, or (no probe) to the
+        // SAVED one — ttsSavedBaseUrl, not the field's current value.
+        // Trailing slashes are stripped for the comparison: the backend
+        // normalizes urls on save (clean_base_url), so "http://x/" is the
+        // SAME engine as a saved "http://x" — a slash difference alone must
+        // not read as an engine switch (which would discard in-flight
+        // edits and show a false "switched" note).
+        const newUrl = (probeUrl || ttsSavedBaseUrl).replace(/\/+$/, "");
+        const prevDoc = ttsCapabilitiesDoc;
+        const prevUrl = ttsCapabilitiesDocUrl;
+        ttsCapabilitiesDoc = doc;
+        ttsCapabilitiesDocUrl = newUrl;
+        // Only a real engine change discards on-screen parameter edits
+        // (the note says so); a same-URL refetch must not clobber edits
+        // the user has in flight, so it re-applies what is on screen.
+        // First render (no previous doc) re-applies the saved values.
+        const engineSwitched = prevDoc !== null && prevUrl !== newUrl;
+        const refillValues = engineSwitched
+            ? ttsSavedParameters
+            : prevDoc !== null
+                ? collectTtsParamValues(sfTtsParams)
+                : ttsSavedParameters;
+        renderTtsInfo(
+            doc,
+            sfTtsInfo,
+            engineSwitched ? "Engine switched — unsaved parameter edits were discarded." : null,
+        );
+        // The re-applied values cover whichever names this engine
+        // advertises; names from another engine drop out naturally.
+        renderTtsParameters(doc, sfTtsParams, refillValues);
+    } catch (err) {
+        if (seq !== ttsCapFetchSeq) return;
+        console.error("Failed to load TTS capabilities:", err);
+        renderTtsUnavailable("TTS server not reachable — parameter options unavailable");
+    }
+}
+
+/**
+ * Clear the dynamic section and show a single status line explaining why
+ * there is nothing to render. Every "nothing to show" state (TTS off, no
+ * URL, scheme typo, unreachable server, fetch failure) funnels through
+ * here, so the section can never be left half-rendered and the user is
+ * never left wondering why the parameter list is missing.
+ */
+function renderTtsUnavailable(message) {
+    ttsCapabilitiesDoc = null;
+    ttsCapabilitiesDocUrl = null;
+    renderTtsParameters(null, sfTtsParams, {});
+    renderTtsInfo(null, sfTtsInfo, message);
 }
 
 /* ==========================================================================
@@ -77,13 +228,15 @@ function populateSettingsForm(data) {
     sfLlmMaxTokens.value = data.llm.max_tokens || 1024;
     sfLlmTemperature.value = data.llm.temperature ?? 0.8;
 
-    // TTS
+    // TTS (the dynamic parameter section is populated from the capabilities
+    // document by refreshTtsCapabilities(); only the static fields here)
     sfTtsEnabled.checked = data.tts.enabled;
     sfTtsBaseUrl.value = data.tts.base_url || "";
-    sfTtsNumSteps.value = data.tts.num_steps ?? 12;
-    sfTtsGuidanceScale.value = data.tts.guidance_scale ?? 1.5;
-    // seed: null from API -> 0 in form (0 means "no seed")
-    sfTtsSeed.value = data.tts.seed ?? 0;
+    // The no-probe refresh path's document belongs to the SAVED url, and
+    // the engine-switch note compares against it.
+    ttsSavedBaseUrl = data.tts.base_url || "";
+    ttsSavedParameters =
+        data.tts.parameters && typeof data.tts.parameters === "object" ? data.tts.parameters : {};
     sfTtsTimeout.value = data.tts.timeout ?? 120;
     sfTtsStreaming.checked = data.tts.streaming || false;
     updateTtsFieldsState();
@@ -141,12 +294,18 @@ function collectSettingsFromForm() {
         tts: {
             enabled: sfTtsEnabled.checked,
             base_url: sfTtsBaseUrl.value.trim(),
-            num_steps: parseInt(sfTtsNumSteps.value, 10),
-            guidance_scale: parseFloat(sfTtsGuidanceScale.value),
-            // 0 in form means null (no seed)
-            seed: sfTtsEnabled.checked ? parseInt(sfTtsSeed.value, 10) : 0,
             timeout: parseFloat(sfTtsTimeout.value),
             streaming: sfTtsStreaming.checked,
+            // Generic engine parameters (plan T1/M4): collected from the
+            // rendered widgets; an empty object when nothing is rendered.
+            // When no capabilities document is loaded (server down, TTS
+            // off, no URL) there are no widgets to collect from, so the
+            // last-saved values are passed through unchanged — silently
+            // wiping them on an unrelated save is exactly the data-loss
+            // class this modal has been burned by before (persona form).
+            parameters: ttsCapabilitiesDoc
+                ? collectTtsParamValues(sfTtsParams)
+                : { ...ttsSavedParameters },
         },
         stt: {
             enabled: sfSttEnabled.checked,
@@ -168,15 +327,14 @@ function validateSettings(data) {
     // TTS validation (only if enabled)
     if (data.tts.enabled) {
         if (!data.tts.base_url) return "TTS Base URL is required when TTS is enabled.";
-        if (isNaN(data.tts.num_steps) || data.tts.num_steps < 4 || data.tts.num_steps > 20) {
-            return "TTS Step Count must be between 4 and 20.";
-        }
-        if (isNaN(data.tts.guidance_scale) || data.tts.guidance_scale < 1.0 || data.tts.guidance_scale > 2.0) {
-            return "TTS CFG must be between 1.0 and 2.0.";
-        }
-        if (isNaN(data.tts.seed) || data.tts.seed < 0) {
-            return "TTS Seed must be a non-negative integer.";
-        }
+        // Generic parameter values are checked against the live capabilities
+        // document (plan T7/T9): type, bounds, enum membership — immediate
+        // feedback instead of a 422 round-trip. With no document loaded
+        // there is nothing to check against; the server's own 422 is the
+        // backstop (the old hard-coded 4–20 / 1.0–2.0 ranges are gone —
+        // they described one engine's knobs and now belong to the engine).
+        const paramError = validateTtsParamValues(data.tts.parameters, ttsCapabilitiesDoc);
+        if (paramError) return paramError;
         if (isNaN(data.tts.timeout) || data.tts.timeout < 5 || data.tts.timeout > 300) {
             return "TTS Timeout must be between 5 and 300 seconds.";
         }
