@@ -21,6 +21,7 @@ import app.config as app_config
 import app.persistence as persistence
 import app.routers.persistence as persistence_router
 import app.services.tool_registry as tool_registry
+import app.services.tts_client as tts_client
 from app.session import session as global_session
 
 from tests.factories import make_chatrooms, make_personas, make_settings
@@ -46,6 +47,9 @@ def isolated_app_state(tmp_path, monkeypatch):
     # Module-level registries that survive across tests.
     persistence._pending_audio.clear()
     tool_registry.reset()
+    # The TTS capabilities cache (single slot, docs and failures alike):
+    # a doc cached by one test must not leak into the next.
+    tts_client.invalidate_capabilities()
 
     # The global session singleton: start every test clean.
     global_session._history.clear()
@@ -56,6 +60,7 @@ def isolated_app_state(tmp_path, monkeypatch):
 
     persistence._pending_audio.clear()
     tool_registry.reset()
+    tts_client.invalidate_capabilities()
     global_session._history.clear()
     global_session._active_personas.clear()
     global_session.set_current_room("default")

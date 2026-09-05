@@ -1,19 +1,30 @@
 """TTS router — proxy to the local TTS server.
 
-Handles health checks and synthesis requests. The TTS server is optional;
-the app degrades gracefully if it's unavailable.
+Handles health checks, the /capabilities passthrough, and synthesis
+requests. The TTS server is optional; the app degrades gracefully if it's
+unavailable.
 
 STT routing lives in its own module: app.routers.stt
 """
 
 import logging
+from typing import Optional
 
-from fastapi import APIRouter
+from fastapi import APIRouter, Query
 from fastapi.responses import JSONResponse
 
-from app.config import get_personas, get_settings
+from app.config import clean_base_url, get_personas, get_settings
 from app.models import TTSRequest, TTSHealthResponse
-from app.services.tts_client import check_tts_health, encode_reference_audio, read_transcript, synthesize
+from app.services.tts_client import (
+    cached_capabilities,
+    check_tts_health,
+    doc_supports_reference_audio,
+    encode_reference_audio,
+    fetch_capabilities_url,
+    get_capabilities,
+    read_transcript,
+    synthesize,
+)
 
 logger = logging.getLogger(__name__)
 router = APIRouter(tags=["tts"])
@@ -32,6 +43,60 @@ async def tts_health():
     )
 
 
+@router.get("/api/tts/capabilities")
+async def tts_capabilities(base_url: Optional[str] = Query(default=None, alias="base_url")):
+    """Serve the TTS server's /capabilities document (plan T5).
+
+    The document is the payload — no wrapper: it is self-describing and
+    the frontend gates on its schema_version itself. 503 when TTS is
+    inactive or the server is unreachable / lacks /capabilities (the same
+    convention as the STT "inactive" response; no new error machinery).
+    Serves the cache when it is warm for the current base_url; otherwise
+    fetches once (get_capabilities handles the fetch and negative caching).
+
+    Optional ?base_url=<url> probes a SPECIFIC url — the Servers modal's
+    reconnect button, where the url may be an unsaved edit. A probe
+    deliberately bypasses the is_active gate (the saved config may point
+    elsewhere or nowhere) and never touches the cache (one-shot answer; a
+    probe must not re-key the slot the synthesis path relies on). A
+    scheme-less probe url is a 422 — the user can fix the field in place
+    — instead of hanging until the client's connect timeout.
+    """
+    if base_url is not None:
+        probe_url = clean_base_url(base_url)
+        if not probe_url:
+            return JSONResponse(
+                status_code=422,
+                content={"detail": "base_url must not be empty"},
+            )
+        if not (probe_url.startswith("http://") or probe_url.startswith("https://")):
+            return JSONResponse(
+                status_code=422,
+                content={"detail": "base_url must start with http:// or https://"},
+            )
+        doc = await fetch_capabilities_url(probe_url)
+        if doc is None:
+            return JSONResponse(
+                status_code=503,
+                content={"detail": "TTS server is unreachable or has no /capabilities endpoint"},
+            )
+        return doc
+
+    settings = get_settings()
+    if not settings.tts.is_active:
+        return JSONResponse(
+            status_code=503,
+            content={"detail": "TTS is not active (disabled or no base_url)"},
+        )
+    doc = await get_capabilities()
+    if doc is None:
+        return JSONResponse(
+            status_code=503,
+            content={"detail": "TTS server is unreachable or has no /capabilities endpoint"},
+        )
+    return doc
+
+
 @router.post("/api/tts")
 async def tts_proxy(req: TTSRequest):
     """Proxy a synthesis request to the TTS server.
@@ -47,6 +112,24 @@ async def tts_proxy(req: TTSRequest):
     if not persona.tts_capable:
         return JSONResponse(status_code=400, content={"detail": "This persona does not have TTS configured"})
 
+    # A non-cloning engine (its capabilities doc says reference_audio: null)
+    # cannot serve persona TTS at all — this app's TTS is fundamentally
+    # reference-audio-based, so say so before spending a request on a
+    # server that cannot do the job. Only the CACHED doc is consulted, and
+    # only when it belongs to the current base_url: the synthesis path must
+    # never fetch (streaming issues one /synthesize per sentence), and a
+    # doc from another server says nothing about this one.
+    cached_url, cached_doc = cached_capabilities()
+    if (
+        cached_doc is not None
+        and cached_url == get_settings().tts.base_url
+        and not doc_supports_reference_audio(cached_doc)
+    ):
+        return JSONResponse(
+            status_code=503,
+            content={"detail": "The connected TTS engine does not support reference-audio voice cloning"},
+        )
+
     # Load reference audio and transcript
     audio_b64 = encode_reference_audio(persona.reference_audio)
     transcript = read_transcript(persona.reference_audio_transcript)
@@ -56,7 +139,7 @@ async def tts_proxy(req: TTSRequest):
 
     result = await synthesize(
         text=req.text,
-        prompt_text=transcript,
+        reference_text=transcript,
         audio_base64=audio_b64,
         language=persona.reference_audio_language,
     )

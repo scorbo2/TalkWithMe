@@ -1229,6 +1229,174 @@ html, body {
     -moz-appearance: textfield;
 }
 
+/* Select styling for the settings modal (dynamic TTS parameters) */
+.settings-body .form-row select {
+    background: var(--bg-input);
+    color: var(--text-primary);
+    border: 1px solid var(--border-color);
+    border-radius: 6px;
+    padding: 8px 10px;
+    font-size: 0.88rem;
+    font-family: inherit;
+    outline: none;
+    transition: border-color 0.15s;
+    width: 100%;
+    cursor: pointer;
+}
+
+.settings-body .form-row select:focus {
+    border-color: var(--accent);
+}
+
+/* --------------------------------------------------------------------------
+   Dynamic TTS section (TTS generification, plan M4)
+   -------------------------------------------------------------------------- */
+
+/* Engine info block (engine / model / device / sample rate + watermark) */
+.tts-info-block {
+    display: flex;
+    flex-direction: column;
+    gap: 3px;
+    background: var(--bg-tertiary);
+    border: 1px solid var(--border-color);
+    border-radius: 6px;
+    padding: 8px 10px;
+}
+
+.tts-info-row {
+    display: flex;
+    gap: 8px;
+    font-size: 0.78rem;
+}
+
+.tts-info-key {
+    color: var(--text-muted);
+    min-width: 76px;
+    flex-shrink: 0;
+}
+
+.tts-info-value {
+    color: var(--text-secondary);
+    word-break: break-all;
+}
+
+/* Watermark disclosure (responsible-AI surface, tts-serve §7.5) */
+.tts-info-warn {
+    margin-top: 6px;
+    font-size: 0.75rem;
+    color: #e0a832;
+    background: rgba(224, 168, 50, 0.12);
+    border: 1px solid rgba(224, 168, 50, 0.4);
+    border-radius: 4px;
+    padding: 5px 8px;
+}
+
+/* Status line: "not configured", "not reachable", engine-switch note, … */
+.tts-info-line {
+    font-size: 0.78rem;
+    color: var(--text-muted);
+}
+
+/* Parameter container + stacked rows */
+.tts-params {
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+}
+
+.tts-param-list {
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+}
+
+.tts-param-row {
+    max-width: 340px;
+}
+
+/* Range slider row: slider stretches, readout sits at a fixed width */
+.tts-slider-row {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+}
+
+.tts-slider-row input[type="range"] {
+    flex: 1;
+    min-width: 0;
+    accent-color: var(--accent);
+    cursor: pointer;
+}
+
+.tts-slider-readout {
+    font-size: 0.8rem;
+    color: var(--text-secondary);
+    font-variant-numeric: tabular-nums;
+    min-width: 52px;
+    text-align: right;
+}
+
+/* Advanced disclosure */
+.tts-advanced {
+    border: 1px solid var(--border-color);
+    border-radius: 6px;
+    padding: 8px 10px;
+}
+
+.tts-advanced summary {
+    font-size: 0.8rem;
+    font-weight: 600;
+    color: var(--text-secondary);
+    cursor: pointer;
+    user-select: none;
+    margin-bottom: 8px;
+}
+
+.tts-advanced[open] summary {
+    margin-bottom: 12px;
+}
+
+.tts-advanced .tts-param-list {
+    gap: 12px;
+}
+
+/* Checkboxes in dynamic parameter rows */
+.tts-param-row input[type="checkbox"] {
+    accent-color: var(--accent);
+    width: 16px;
+    height: 16px;
+    cursor: pointer;
+}
+
+/* Notice line inside the parameter area (version gate, no params, …) */
+.tts-notice {
+    font-size: 0.78rem;
+    color: var(--text-muted);
+    background: var(--bg-tertiary);
+    border: 1px solid var(--border-color);
+    border-radius: 6px;
+    padding: 8px 10px;
+}
+
+/* Base URL row: the input stretches, the Refresh (reconnect) button sits
+   inline to its right (plan M4.1). The .form-row input[type="text"] rule
+   still applies — .tts-url-row is a descendant, not a replacement. */
+.tts-url-row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+}
+
+.tts-url-row input[type="text"] {
+    flex: 1;
+    min-width: 0;
+}
+
+.tts-cap-refresh {
+    flex-shrink: 0;
+    white-space: nowrap;
+}
+
 /* ==========================================================================
    Chat Rooms Editor Modal
    ========================================================================== */
