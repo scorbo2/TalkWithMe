@@ -18,6 +18,7 @@ from app import config as app_config
 from app.routers import chat, chatrooms, personas, persistence, session as session_router, settings, stt, tts
 from app.session import session
 from app.services.tool_registry import get_all_tools, load_tools
+from app.services.tts_client import ensure_capabilities
 
 # uvicorn configures its own loggers but leaves the root logger at the
 # Python default level (WARNING), which silently swallows every
@@ -82,6 +83,12 @@ async def lifespan(app: FastAPI):
     personas_cfg = app_config.load_personas()
     settings = app_config.load_settings()
     app_config.load_chatrooms()
+
+    # Warm the TTS capabilities cache (best-effort; ensure_capabilities
+    # never raises, so a down TTS server cannot break startup). Imported
+    # into this module's namespace so tests can monkeypatch it the same
+    # way they patch load_tools.
+    await ensure_capabilities()
 
     # Seed session with all configured personas as active
     all_names = [p.name for p in personas_cfg.personas]

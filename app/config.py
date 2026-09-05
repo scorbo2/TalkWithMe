@@ -10,7 +10,7 @@ only for the one-time startup migration — never for anything else.
 
 import logging
 from pathlib import Path
-from typing import List, Optional
+from typing import Any, Dict, List, Optional
 
 import yaml
 from pydantic import BaseModel, Field, model_validator
@@ -34,6 +34,23 @@ rejected, never truncated — the LLM can reformulate a shorter one."""
 # Settings
 # ---------------------------------------------------------------------------
 
+def clean_base_url(raw: Optional[str]) -> Optional[str]:
+    """Normalize a user-supplied base URL (config models AND save-time
+    comparisons must agree on the stored form — see the settings router).
+
+    Strips surrounding whitespace and any trailing slashes, then maps an
+    empty result to None. Trailing slashes matter because every client
+    builds URLs as f"{base_url}/path": a stored trailing slash turns into
+    a doubled "///path" that servers 404 on — and for TTS that 404 gets
+    negative-cached, blinding /capabilities discovery for the process
+    lifetime.
+    """
+    if raw is None:
+        return None
+    cleaned = raw.strip().rstrip("/")
+    return cleaned or None
+
+
 class LLMSettings(BaseModel):
     base_url: str = "http://localhost:8080"
     model: str = "default"
@@ -41,20 +58,83 @@ class LLMSettings(BaseModel):
     temperature: float = 0.8
 
 
+# Pre-generification TTS parameter keys (docs/feature_TTS_generification.md,
+# plan T2). A legacy settings.yaml stores them as top-level tts: fields; the
+# before-validator below folds them into TTSConfig.parameters so an existing
+# file keeps working with zero user action.
+_TTS_LEGACY_PARAMETER_KEYS = ("num_steps", "guidance_scale", "seed")
+
+
 class TTSConfig(BaseModel):
     enabled: bool = True
     base_url: Optional[str] = None
-    num_steps: int = 10
-    guidance_scale: float = 3.0
-    seed: Optional[int] = None
     timeout: float = 60.0
     streaming: bool = False
+    # Engine parameters, generically (TTS generification, plan T1): a name ->
+    # value map for whatever the connected engine's /capabilities document
+    # advertises. Deliberately UNtyped: values are validated at settings-save
+    # time (routers/settings.py, against the cached capabilities doc) and by
+    # the server's own 422s — a hand-edited YAML with a wrong value type must
+    # never crash startup.
+    parameters: Dict[str, Any] = Field(default_factory=dict)
+
+    @model_validator(mode="before")
+    @classmethod
+    def _migrate_legacy_parameters(cls, data):
+        """Fold legacy tts: keys (num_steps/guidance_scale/seed) into
+        `parameters` (plan T2: migrate on load, not on save).
+
+        Rules:
+        - legacy keys only  -> folded into `parameters` (logged);
+        - `parameters` AND legacy keys -> `parameters` wins, the legacy keys
+          are warned about and dropped (never merged — a hand-edited mix is
+          ambiguous by definition);
+        - null values are dropped, because an absent key means "let the
+          engine decide"; seed 0 is dropped the same way (the old UI's
+          "0 = random" encoding is the predecessor of "absent = random").
+        """
+        if not isinstance(data, dict):
+            return data
+        # A non-dict `parameters` is a hand-editing accident (the field never
+        # existed before this change, so no real file has one). Drop it with
+        # a warning rather than letting pydantic crash startup.
+        if "parameters" in data and not isinstance(data["parameters"], dict):
+            logger.warning(
+                "settings.yaml: tts.parameters must be a mapping of parameter "
+                "name to value, got %r; ignoring it",
+                type(data["parameters"]).__name__,
+            )
+            data = {**data, "parameters": {}}
+        legacy_values = {k: data[k] for k in _TTS_LEGACY_PARAMETER_KEYS if k in data}
+        if not legacy_values:
+            return data
+        cleaned = {k: v for k, v in data.items() if k not in _TTS_LEGACY_PARAMETER_KEYS}
+        if "parameters" in cleaned:
+            logger.warning(
+                "settings.yaml: tts section has both 'parameters' and the "
+                "legacy keys %s; keeping 'parameters' and ignoring the legacy "
+                "keys",
+                sorted(legacy_values),
+            )
+            return cleaned
+        migrated = {
+            key: value
+            for key, value in legacy_values.items()
+            if value is not None and not (key == "seed" and value == 0)
+        }
+        if migrated:
+            logger.info(
+                "settings.yaml: folded legacy TTS keys %s into tts.parameters "
+                "(they leave the file on the next settings save)",
+                sorted(migrated),
+            )
+        cleaned["parameters"] = migrated
+        return cleaned
 
     @model_validator(mode="after")
     def _normalize_base_url(self) -> "TTSConfig":
-        """Treat blank strings as None so a missing URL implicitly disables TTS."""
-        if self.base_url is not None and not self.base_url.strip():
-            self.base_url = None
+        """Blank → None (implicitly disables TTS); trailing slashes stripped."""
+        self.base_url = clean_base_url(self.base_url)
         return self
 
     @property
@@ -71,9 +151,8 @@ class STTConfig(BaseModel):
 
     @model_validator(mode="after")
     def _normalize_base_url(self) -> "STTConfig":
-        """Treat blank strings as None so a missing URL implicitly disables STT."""
-        if self.base_url is not None and not self.base_url.strip():
-            self.base_url = None
+        """Blank → None (implicitly disables STT); trailing slashes stripped."""
+        self.base_url = clean_base_url(self.base_url)
         return self
 
     @property
