@@ -410,11 +410,19 @@ function ttsParamValueErrors(name, value, spec) {
         // Item-count bounds. Per-ITEM bounds do not exist in the
         // capabilities contract (tts-serve captures only the item type and
         // the count), so e.g. indexTTS's per-component [0, 1] range is the
-        // engine's own validator's backstop.
-        if (typeof spec.min_items === "number" && value.length < spec.min_items) {
+        // engine's own validator's backstop. A count is an integer quantity:
+        // a non-integral bound (8.5) is a malformed doc field and is
+        // skipped ("skip what we cannot judge") rather than enforced — the
+        // same policy as the backend's _integer_bound. Number.isInteger is
+        // false for every non-number the old typeof gate skipped (strings,
+        // null, undefined) AND for non-integral numbers (8.5, NaN,
+        // Infinity). A JSON "8.0" already parses to the JS number 8 (JS has
+        // no int/float split), so no coercion is needed to match the
+        // backend's integral-float coercion.
+        if (Number.isInteger(spec.min_items) && value.length < spec.min_items) {
             errors.push(`TTS parameter '${name}' must have at least ${spec.min_items} items, got ${value.length}`);
         }
-        if (typeof spec.max_items === "number" && value.length > spec.max_items) {
+        if (Number.isInteger(spec.max_items) && value.length > spec.max_items) {
             errors.push(`TTS parameter '${name}' must have at most ${spec.max_items} items, got ${value.length}`);
         }
         errors.push(...ttsArrayItemErrors(name, value, spec.item_type));

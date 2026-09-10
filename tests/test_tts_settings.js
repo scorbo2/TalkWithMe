@@ -1046,6 +1046,38 @@ test("validateTtsParamValues_arrayItemCountOutOfBounds_named", () => {
     assert.match(h.sandbox.validateTtsParamValues({ vec: [1, 2, 3] }, doc), /'vec' must have at most 2 items, got 3/);
 });
 
+test("validateTtsParamValues_arrayNonIntegralItemCountBounds_skipped", () => {
+    const h = createSettingsHarness();
+    // min_items/max_items are item-COUNT bounds: a non-integral float
+    // (8.5) is a malformed doc field and must be skipped, not enforced —
+    // the old typeof === "number" gate rejected 7 items with "at least
+    // 8.5 items" (and 8 items as well, since 8 < 8.5), plus 13 with
+    // "at most 12.5 items". Same policy as the backend's _integer_bound.
+    const doc = docWith(spec({ name: "vec", type: "array", item_type: "number", min_items: 8.5, max_items: 12.5 }));
+    for (const length of [0, 1, 7, 8, 9, 12, 13, 100]) {
+        assert.equal(
+            h.sandbox.validateTtsParamValues({ vec: new Array(length).fill(0.5) }, doc),
+            null,
+            `malformed count bounds must not judge a ${length}-item array`,
+        );
+    }
+});
+
+test("validateTtsParamValues_arrayNonNumericItemCountBounds_skipped", () => {
+    const h = createSettingsHarness();
+    // A string in a bound slot is malformed too: skipped, not a
+    // comparison hazard ("7" < "low" is string lexicographic nonsense).
+    // The old typeof gate already skipped these; this locks that in.
+    const doc = docWith(spec({ name: "vec", type: "array", item_type: "number", min_items: "low", max_items: "high" }));
+    for (const length of [0, 1, 2, 8, 100]) {
+        assert.equal(
+            h.sandbox.validateTtsParamValues({ vec: new Array(length).fill(0.5) }, doc),
+            null,
+            `non-numeric count bounds must not judge a ${length}-item array`,
+        );
+    }
+});
+
 test("validateTtsParamValues_arrayItemWrongType_namedWithIndex", () => {
     const h = createSettingsHarness();
     // Each item type is checked the way its scalar widget would be:

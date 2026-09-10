@@ -214,6 +214,28 @@ def _numeric_bound(bound: Any) -> Optional[int | float]:
     return bound
 
 
+def _integer_bound(bound: Any) -> Optional[int]:
+    """A spec's item-count bound (min_items/max_items), or None when
+    absent or malformed.
+
+    A count is an integer quantity: a non-integral float (8.5) is a
+    malformed doc field, so — "skip what we cannot judge" — it is
+    dropped instead of enforced (enforcing it would 422 a valid 8-item
+    array with the nonsense "at least 8.5 items"). An integral float
+    (8.0) coerces to 8: the comparison is identical, and it keeps this
+    mirror in step with the frontend's (JS has no int/float split —
+    there 8.0 === 8) and with the integer-type stance above. bool is
+    excluded on purpose, as in _numeric_bound.
+    """
+    if isinstance(bound, bool):
+        return None
+    if isinstance(bound, int):
+        return bound
+    if isinstance(bound, float) and bound.is_integer():
+        return int(bound)
+    return None
+
+
 def _bounds_errors(name: str, value: float, spec: dict) -> List[str]:
     errors = []
     minimum = _numeric_bound(spec.get("min"))
@@ -262,14 +284,16 @@ def _parameter_value_errors(name: str, value: Any, spec: dict) -> List[str]:
         if not isinstance(value, list):
             return [_wrong_type_message(name, "an array", value)]
         errors = []
-        # Item-count bounds (the array analogues of min/max; the "skip what
-        # we cannot judge" policy for malformed values applies unchanged).
-        min_items = _numeric_bound(spec.get("min_items"))
+        # Item-count bounds (the array analogues of min/max). A count is an
+        # integer quantity, so the bounds go through _integer_bound — a
+        # non-integral float is a malformed doc field and is skipped ("skip
+        # what we cannot judge") rather than enforced.
+        min_items = _integer_bound(spec.get("min_items"))
         if min_items is not None and len(value) < min_items:
             errors.append(
                 f"TTS parameter {name!r} must have at least {min_items} items, "
                 f"got {len(value)}")
-        max_items = _numeric_bound(spec.get("max_items"))
+        max_items = _integer_bound(spec.get("max_items"))
         if max_items is not None and len(value) > max_items:
             errors.append(
                 f"TTS parameter {name!r} must have at most {max_items} items, "

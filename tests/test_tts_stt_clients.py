@@ -662,6 +662,42 @@ class TestValidateTTSParameters:
         assert tts_client.validate_tts_parameters(
             doc, {"emotion_vector": [0.5] * 100}) is None
 
+    def test_validate_tts_parameters_array_non_integral_float_item_bounds_are_skipped(self):
+        # min_items/max_items are item-COUNT bounds: a non-integral float
+        # (8.5) is a malformed doc field and must be skipped, not enforced —
+        # with the old float comparison, 7 items 422'd with "at least 8.5
+        # items" and 13 with "at most 12.5 items" (and 8 items, despite
+        # satisfying the obvious intent, failed min_items 8.5 as well).
+        doc = make_capabilities_doc(engine="dots.tts")
+        doc["parameters"].append(self._array_spec(min_items=8.5, max_items=12.5))
+        for length in (0, 1, 7, 8, 9, 12, 13, 100):
+            assert tts_client.validate_tts_parameters(
+                doc, {"emotion_vector": [0.5] * length}) is None, \
+                f"malformed count bounds must not judge a {length}-item array"
+
+    def test_validate_tts_parameters_array_bool_item_bounds_are_not_counts(self):
+        # bool is an int subclass in Python: a JSON true/false in an
+        # item-count slot is malformed, not 1/0 (same stance as
+        # _numeric_bound for min/max).
+        doc = make_capabilities_doc(engine="dots.tts")
+        doc["parameters"].append(self._array_spec(min_items=True, max_items=False))
+        for length in (0, 1, 2, 8, 100):
+            assert tts_client.validate_tts_parameters(
+                doc, {"emotion_vector": [0.5] * length}) is None
+
+    def test_validate_tts_parameters_array_integral_float_item_bounds_coerce_to_int(self):
+        # 8.0 is an unambiguous count: it is enforced like 8 (not skipped),
+        # and the error names the count as 8, not 8.0 — mirroring the
+        # frontend, where JS has no int/float split (8.0 === 8).
+        doc = make_capabilities_doc(engine="dots.tts")
+        doc["parameters"].append(self._array_spec(min_items=8.0, max_items=8.0))
+        assert tts_client.validate_tts_parameters(
+            doc, {"emotion_vector": [0.5] * 8}) is None
+        for length in (7, 9):
+            error = tts_client.validate_tts_parameters(
+                doc, {"emotion_vector": [0.5] * length})
+            assert error is not None and "8" in error and "8.0" not in error
+
     def test_validate_tts_parameters_item_labels_are_presentational_only(self):
         # item_labels exist for the frontend's one-labeled-row-per-item
         # rendering and are NOT part of the save-time contract: a well-formed
