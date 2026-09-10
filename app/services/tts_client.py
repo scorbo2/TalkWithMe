@@ -258,9 +258,65 @@ def _parameter_value_errors(name: str, value: Any, spec: dict) -> List[str]:
                 f"{', '.join(repr(v) for v in enum)}, got {value!r}"
             ]
         return []
+    if param_type == "array":
+        if not isinstance(value, list):
+            return [_wrong_type_message(name, "an array", value)]
+        errors = []
+        # Item-count bounds (the array analogues of min/max; the "skip what
+        # we cannot judge" policy for malformed values applies unchanged).
+        min_items = _numeric_bound(spec.get("min_items"))
+        if min_items is not None and len(value) < min_items:
+            errors.append(
+                f"TTS parameter {name!r} must have at least {min_items} items, "
+                f"got {len(value)}")
+        max_items = _numeric_bound(spec.get("max_items"))
+        if max_items is not None and len(value) > max_items:
+            errors.append(
+                f"TTS parameter {name!r} must have at most {max_items} items, "
+                f"got {len(value)}")
+        errors.extend(_array_item_errors(name, value, spec.get("item_type")))
+        return errors
     # Unrecognized type: skip. Like the frontend's raw-JSON escape hatch
     # (plan T9), the server's own 422 is the backstop.
     return []
+
+
+def _array_item_errors(name: str, value: list, item_type: Any) -> List[str]:
+    """Per-item scalar type checks for 'array' parameters.
+
+    tts-serve only emits flat scalar arrays (nested arrays / object items
+    raise a DerivationError at server import), so item_type is the complete
+    per-item contract. Per-item bounds do NOT exist in the doc (derive.py
+    captures only the item type and the count) — the engine's own validator
+    is the backstop for those (e.g. indexTTS bounds each emotion component
+    to [0, 1] itself). Mirrors the frontend's ttsArrayItemErrors so a
+    hand-edited settings.yaml gets a readable 422 for exactly what the form
+    would have blocked in place.
+    """
+    if item_type not in ("string", "integer", "number", "boolean"):
+        return []  # unknown item type: the server's own 422 is the backstop
+    errors = []
+    for index, item in enumerate(value):
+        if item_type == "boolean":
+            if not isinstance(item, bool):
+                errors.append(_wrong_type_message(f"{name}[{index}]", "a boolean", item))
+        elif item_type == "integer":
+            # Same stance as the top-level integer check: bool is not 1/0,
+            # and an integer-valued float ("10.0" in a hand-edited YAML) is
+            # accepted on purpose — tts-serve's lax models coerce it.
+            if (
+                isinstance(item, bool)
+                or not isinstance(item, (int, float))
+                or (isinstance(item, float) and not item.is_integer())
+            ):
+                errors.append(_wrong_type_message(f"{name}[{index}]", "an integer", item))
+        elif item_type == "number":
+            if isinstance(item, bool) or not isinstance(item, (int, float)):
+                errors.append(_wrong_type_message(f"{name}[{index}]", "a number", item))
+        elif item_type == "string":
+            if not isinstance(item, str):
+                errors.append(_wrong_type_message(f"{name}[{index}]", "a string", item))
+    return errors
 
 
 def validate_tts_parameters(doc: dict, values: dict) -> Optional[str]:
@@ -269,9 +325,10 @@ def validate_tts_parameters(doc: dict, values: dict) -> Optional[str]:
     Returns None when every value is acceptable, otherwise a single message
     naming every offending parameter (the router turns it into a 422).
     Checks performed: unknown parameter names, JSON-type conformance
-    (boolean/integer/number/string), numeric min/max bounds, and enum
-    membership for string parameters. None values are treated as "not set"
-    and skipped — an absent key is the universal "engine decides" signal.
+    (boolean/integer/number/string/array), numeric min/max bounds, array
+    item-count bounds and per-item scalar types, and enum membership for
+    string parameters. None values are treated as "not set" and skipped —
+    an absent key is the universal "engine decides" signal.
     """
     specs = _advertised_parameter_specs(doc)
     errors: List[str] = []

@@ -577,12 +577,132 @@ class TestValidateTTSParameters:
         error = tts_client.validate_tts_parameters(doc, {"num_steps": 100})
         assert "num_steps" in error and "64" in error
 
+    def test_validate_tts_parameters_array_conforming_items_pass(self):
+        doc = make_capabilities_doc(engine="dots.tts")
+        doc["parameters"].append(self._array_spec())
+        # The indexTTS shape: a fixed 8-item number vector. Note the
+        # per-item [0, 1] range is NOT in the doc (only the item type and
+        # the count are), so out-of-range values pass here — the engine's
+        # own validator is the backstop for those.
+        assert tts_client.validate_tts_parameters(
+            doc, {"emotion_vector": [0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8]}) is None
+
+    def test_validate_tts_parameters_array_not_a_list_rejected(self):
+        doc = make_capabilities_doc(engine="dots.tts")
+        doc["parameters"].append(self._array_spec())
+        # A stale hand-edited settings.yaml holding a string instead:
+        error = tts_client.validate_tts_parameters(doc, {"emotion_vector": "0.1 0.2"})
+        assert "emotion_vector" in error and "array" in error and "str" in error
+
+    def test_validate_tts_parameters_array_too_few_items_rejected(self):
+        doc = make_capabilities_doc(engine="dots.tts")
+        doc["parameters"].append(self._array_spec())
+        error = tts_client.validate_tts_parameters(doc, {"emotion_vector": [0.5]})
+        assert "emotion_vector" in error and "8" in error
+
+    def test_validate_tts_parameters_array_too_many_items_rejected(self):
+        doc = make_capabilities_doc(engine="dots.tts")
+        doc["parameters"].append(self._array_spec())
+        error = tts_client.validate_tts_parameters(doc, {"emotion_vector": [0.5] * 9})
+        assert "emotion_vector" in error and "8" in error
+
+    def test_validate_tts_parameters_array_wrong_item_type_rejected_and_indexed(self):
+        doc = make_capabilities_doc(engine="dots.tts")
+        doc["parameters"].append(self._array_spec(item_type="integer"))
+        error = tts_client.validate_tts_parameters(doc, {"emotion_vector": [1, 1.5]})
+        # The offending item is named by index, mirroring the frontend:
+        assert "emotion_vector[1]" in error and "integer" in error
+
+    def test_validate_tts_parameters_array_bool_item_is_not_a_number(self):
+        # bool is an int subclass in Python: a JSON true inside a numeric
+        # vector must not silently pass as 1.
+        doc = make_capabilities_doc(engine="dots.tts")
+        doc["parameters"].append(self._array_spec())
+        error = tts_client.validate_tts_parameters(doc, {"emotion_vector": [True, 0.5]})
+        assert "emotion_vector[0]" in error and "number" in error
+
+    def test_validate_tts_parameters_array_integer_item_accepts_integer_valued_float(self):
+        # A hand-edited "2.0" in YAML: tts-serve's lax models coerce it, so
+        # the save path must not 422 a value the server takes (same stance
+        # as the top-level integer check).
+        doc = make_capabilities_doc(engine="dots.tts")
+        doc["parameters"].append(self._array_spec(item_type="integer"))
+        assert tts_client.validate_tts_parameters(
+            doc, {"emotion_vector": [1, 2.0, 3, 4, 5, 6, 7, 8]}) is None
+
+    def test_validate_tts_parameters_array_string_item_rejects_non_string(self):
+        doc = make_capabilities_doc(engine="dots.tts")
+        doc["parameters"].append(self._array_spec(item_type="string"))
+        error = tts_client.validate_tts_parameters(doc, {"emotion_vector": ["a", 2]})
+        assert "emotion_vector[1]" in error and "string" in error
+
+    def test_validate_tts_parameters_array_boolean_item_rejects_non_boolean(self):
+        doc = make_capabilities_doc(engine="dots.tts")
+        doc["parameters"].append(self._array_spec(item_type="boolean"))
+        error = tts_client.validate_tts_parameters(doc, {"emotion_vector": [True, 1]})
+        assert "emotion_vector[1]" in error and "boolean" in error
+
+    def test_validate_tts_parameters_array_unknown_item_type_checks_structure_only(self):
+        # tts-serve cannot emit this (DerivationError at server import); a
+        # malformed doc still gets structure + count checks, and the
+        # server's own 422 is the backstop for per-item conformance.
+        doc = make_capabilities_doc(engine="dots.tts")
+        doc["parameters"].append(self._array_spec(item_type=None))
+        assert tts_client.validate_tts_parameters(
+            doc, {"emotion_vector": ["whatever"] * 8}) is None
+        error = tts_client.validate_tts_parameters(doc, {"emotion_vector": [1, 2]})
+        assert "emotion_vector" in error and "8" in error
+
+    def test_validate_tts_parameters_array_malformed_item_bounds_are_skipped(self):
+        # The doc is external: a malformed item-count bound must be skipped,
+        # not TypeError the synchronous save path (which would 500
+        # PUT /api/settings) — the same policy as min/max.
+        doc = make_capabilities_doc(engine="dots.tts")
+        doc["parameters"].append(self._array_spec(min_items="low", max_items="high"))
+        assert tts_client.validate_tts_parameters(
+            doc, {"emotion_vector": [0.5] * 100}) is None
+
+    def test_validate_tts_parameters_item_labels_are_presentational_only(self):
+        # item_labels exist for the frontend's one-labeled-row-per-item
+        # rendering and are NOT part of the save-time contract: a well-formed
+        # list changes nothing about validation, the count/item rules still
+        # apply, and a malformed list (the frontend degrades one to name[i]
+        # labels) must not 422 the synchronous save path.
+        good = [0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8]
+        doc = make_capabilities_doc(engine="dots.tts")
+        doc["parameters"].append(self._array_spec(item_labels=[
+            "happy", "angry", "sad", "afraid", "disgusted",
+            "melancholic", "surprised", "calm"]))
+        assert tts_client.validate_tts_parameters(doc, {"emotion_vector": good}) is None
+        error = tts_client.validate_tts_parameters(doc, {"emotion_vector": [0.5]})
+        assert "emotion_vector" in error and "8" in error, \
+            "the count rules still apply next to item_labels"
+
+        for bad in (["only", "two"], ["happy", "", "calm"], "happy", None):
+            doc2 = make_capabilities_doc(engine="dots.tts")
+            doc2["parameters"].append(self._array_spec(item_labels=bad))
+            assert tts_client.validate_tts_parameters(
+                doc2, {"emotion_vector": good}) is None, \
+                f"malformed item_labels {bad!r} must be ignored"
+
     @staticmethod
     def _set_bounds(doc, name, minimum, maximum):
         """Overwrite the min/max of the named parameter in a doc."""
         for entry in doc["parameters"]:
             if entry["name"] == name:
                 entry["min"], entry["max"] = minimum, maximum
+
+    @staticmethod
+    def _array_spec(name="emotion_vector", item_type="number",
+                    min_items=8, max_items=8, item_labels=None) -> dict:
+        """A synthetic v2 array parameter spec (no real snapshot has one yet)."""
+        return {
+            "name": name, "type": "array", "item_type": item_type,
+            "required": False, "default": None, "description": None,
+            "min": None, "max": None, "step": None, "enum": None,
+            "min_items": min_items, "max_items": max_items,
+            "item_labels": item_labels,
+        }
 
 
 class TestCachedCapabilities:

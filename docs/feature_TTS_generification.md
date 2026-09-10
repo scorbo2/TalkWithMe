@@ -123,7 +123,7 @@ already fetched says `reference_audio: null`; the shared predicate
 backstop, and the next call gets the router's clean 503.
 
 M4 note: the Servers-modal TTS section is rendered from the live `/capabilities` document by
-`static/tts-params.js` (plan T8/T9); `tests/test_tts_settings.js` (plain Node, 57 tests) locks
+`static/tts-params.js` (plan T8/T9); `tests/test_tts_settings.js` (plain Node, 82 tests) locks
 the T9 widget table against all four real snapshots plus the modal wiring. Two plan deviations,
 both surfaced by usability testing:
 
@@ -153,6 +153,46 @@ from 1 to 2 (see `tts-serve/docs/02-language-handling.md`). All
 supported-version references in this plan were corrected v1 → v2 to match
 the four live snapshots; the *shape* of the gate itself is unchanged.
 
+Array parameters note (post-M4 addition, tts-serve schema v2): tts-serve's
+`ParamSpec` gained `item_type` / `min_items` / `max_items` so engines can
+advertise flat scalar item lists — nested arrays and object items are
+rejected server-side with a `DerivationError` at import, so a `type: "array"`
+parameter is always a flat list of one scalar type. The only real example so
+far is indexTTS's `emotion_vector` (a fixed 8-item number vector, behind the
+Advanced disclosure). `SCHEMA_VERSION` stays 2: both ends of the contract are
+this project, so the array shape is an in-place v2 extension and the T10
+version gate is unchanged. TalkWithMe's side:
+
+- **Widget (T9):** a FIXED item count (`min_items === max_items > 0`) with a
+  usable `item_type` renders as **one labeled row per item** (number/integer →
+  number input, string → text, boolean → checkbox; the row label points at the
+  first item and shows the item-count hint). Each item row's label is the
+  engine's `item_labels[i]` when the spec advertises a well-formed list
+  (exactly one non-empty string per item), else the `name[i]` fallback — the
+  same notation validators use to name offending items. This is what makes
+  indexTTS's `emotion_vector` usable: eight unlabeled boxes in a wrap grid
+  force the user to guess which input is `happy` and which is `disgusted`;
+  the taller form is the price of not having to. Variable size needs
+  add/remove UI this release does not carry, a size of zero has no inputs to
+  render, and a malformed spec (missing/unknown `item_type`) must not guess —
+  all three fall to the raw-JSON escape hatch. Malformed `item_labels` do
+  NOT: labels are presentational, so they degrade to `name[i]` while the
+  per-item widget stays.
+- **Collection (T4/T9 semantics):** all items blank omits the parameter
+  (the universal "let the engine decide"); a partially filled one collects
+  with `null` in the blank slots and is a validation error. A blank slot is
+  **never** filled with an invented value (e.g. 0): absence has exactly one
+  meaning in this UI, and inventing a value would silently change what gets
+  synthesized.
+- **Validation (T7, mirrored client-side):** structure (must be a list),
+  item-count bounds (`min_items`/`max_items`), and per-item scalar type,
+  each offender named (items by index: `name[i]`). Per-ITEM bounds do not
+  exist in the doc — derive.py captures only the item type and the count —
+  so e.g. indexTTS's per-component `[0, 1]` range is the engine's own
+  validator's backstop, exactly like an unrecognized spec type. `item_labels`
+  is presentational (frontend row labels only) and never validated: a
+  malformed label list cannot 422 a save.
+
 The `tts-serve` repository contains a `docs/` directory with low-level details
 and a full Json specification of the capabilities document, with examples.
 Additionally, the old server scripts have been ported to use the new `tts-engine-common`,
@@ -169,9 +209,14 @@ What TalkWithMe will talk to (one tts-serve server per engine, e.g.
   `engine` (stable slug), `model`, `device`, `sample_rate`, `watermarked`,
   `endpoint`, `reference_audio` (null for non-cloning engines), `languages`
   (array or null), and `parameters[]` — one entry per request field with
-  `name`, `type` (`string`/`integer`/`number`/`boolean`), `required`,
-  `default`, `description`, `min`/`max`/`step`, `enum`, `min_length`/`max_length`,
-  `group` (`common`/`engine`), `advanced`.
+  `name`, `type` (`string`/`integer`/`number`/`boolean`/`array` — flat scalar
+  item lists; see the array-parameters note), `required`, `default`,
+  `description`, `min`/`max`/`step` (number/integer only), `enum`,
+   `min_length`/`max_length`, `group` (`common`/`engine`), `advanced`, and,
+   for `array` params, `item_type` (`string`/`integer`/`number`/`boolean`),
+   `min_items`/`max_items`, and `item_labels` (array of one non-empty label
+   per item or null; presentational — per-item display names, e.g. indexTTS
+   `happy`/`angry`/…; tts-serve enforces fixed size + exact length at import).
 - `POST /synthesize` → JSON body with top-level fields **exactly as
   advertised**; `extra="forbid"`, so an unadvertised field is a loud
   `422` naming the field. Core vocabulary: `text`, `audio_base64`,
@@ -196,9 +241,9 @@ four live snapshots in `tts-serve/impl/tests/snapshots/*_capabilities.json`
 | T4 | **The synthesis payload is built from the capabilities doc.** Always: `text`. Then, only if advertised and available: `audio_base64` (persona ref audio), `reference_text` (persona transcript), `language` (persona language, per T6), and finally every `settings.tts.parameters` entry whose name is advertised and whose value is not empty. Fields the engine doesn't advertise are **never sent** (they would 422). `text`/`audio_base64`/`reference_text`/`language` can never be supplied from `parameters` (app-managed; defense against a stale hand-edited YAML). | `extra="forbid"` makes "send only what is advertised" a hard requirement, and it makes engine switches safe by construction: switching the TTS server in the Servers modal automatically stops sending the old engine's parameters. |
 | T5 | **New endpoint `GET /api/tts/capabilities`** — returns the (cached or freshly fetched) document with `200`, or `503` with a detail string when TTS is inactive or the server is unreachable/lacks `/capabilities`. No wrapper: the doc is the payload, and it is self-describing (the frontend gates on `schema_version`). | The browser cannot reach the TTS server directly (separate host/port, CORS); everything else is proxied the same way. `503` matches the existing STT "inactive" convention, so the frontend needs no new error machinery. |
 | T6 | **Language pass-through policy (confirmed, Q3).** The app **never** converts language codes: it sends the persona's stored two-letter code (`en`) as-is. Engine-specific conversions (Qwen3's code→name, dots' code→`auto_detect`, …) live entirely inside the tts-serve server scripts (see `tts-serve/docs/02-language-handling.md`). Payload rule: send the persona value only when the engine advertises a `language` parameter AND (the parameter has no `enum`, OR the persona value is in the `enum`); otherwise **omit** `language` (the server defaults omitted/empty to `en`) and log a warning. | The API surface is codes-only by contract, so no mapping table is needed in the app. A code the enum rejects would 422 the whole synthesis — dropping the hint degrades gracefully instead. |
-| T7 | **Settings save validates parameters against a *fresh* doc only.** `PUT /api/settings` validates `tts.parameters` (unknown name, out-of-bounds number, non-enum string → `422` naming the parameter) **only when** the cached doc belongs to the exact `base_url` being saved. If the user switches engines in the same save, validation is skipped (the doc is stale; T4 makes the switch safe anyway). | Catches garbage from the UI/API without bricking a legitimate engine switch, and keeps the save path synchronous and offline-safe (no network during save). |
+| T7 | **Settings save validates parameters against a *fresh* doc only.** `PUT /api/settings` validates `tts.parameters` (unknown name, out-of-bounds number, non-enum string, array item-count and per-item scalar type → `422` naming the parameter, array items by index) **only when** the cached doc belongs to the exact `base_url` being saved. If the user switches engines in the same save, validation is skipped (the doc is stale; T4 makes the switch safe anyway). | Catches garbage from the UI/API without bricking a legitimate engine switch, and keeps the save path synchronous and offline-safe (no network during save). |
 | T8 | **Frontend: the TTS section of the Servers modal is built dynamically** by a new `static/tts-params.js` module with *pure* core functions (doc → widget specs, container → collected values, values → validation error) plus thin DOM builders. Widget rules per `tts-serve/docs/01-server-generification.md` §4.3, refined in T9. `advanced: true` params render inside a collapsed "Advanced" `<details>`. App-managed fields (`text`, `audio_base64`, `reference_text`, `language`) are **never rendered** as settings. | The whole point of the feature is zero per-engine UI code. Pure core functions make the renderer testable in the plain-Node `vm.Context` harness (same pattern as `tests/test_persona_form.js`), keeping pytest Python-only. |
-| T9 | **Widget rules (final, testable).** `boolean` → checkbox (pre-set from `default`; always sent). `string` + `enum` → `<select>` (leading "— not set —" option when `default` is null; otherwise preselected and always sent). `string` without enum → text input (empty = not sent). `number` with `min`+`max`+`step` and a non-null `default` → range slider with live value readout (always sent). `integer` with `min`+`max`+`step` → slider. `integer` with `min`+`max`, no step → slider if the span is ≤ 100, else number input. Any other numeric shape → number input (empty = not sent). Any **unrecognized** `type` → raw-JSON escape-hatch input (user types the JSON value; invalid JSON is a validation error). Empty = "let the engine decide" is the universal meaning of a blank field — this is what makes Qwen3's default-`null` params (`temperature`, `top_p`, …) behave correctly. | Derived from §4.3 plus the actual four snapshots (e.g. Qwen3 `temperature` has bounds+step but `default: null`, so it must be a blankable number input, not a slider; `seed` is 1–1000 with no step and null default → number input, blank = random). The rules are implemented once and locked by Node tests against all four real snapshots. |
+| T9 | **Widget rules (final, testable).** `boolean` → checkbox (pre-set from `default`; always sent). `string` + `enum` → `<select>` (leading "— not set —" option when `default` is null; otherwise preselected and always sent). `string` without enum → text input (empty = not sent). `number` with `min`+`max`+`step` and a non-null `default` → range slider with live value readout (always sent). `integer` with `min`+`max`+`step` → slider. `integer` with `min`+`max`, no step → slider if the span is ≤ 100, else number input. Any other numeric shape → number input (empty = not sent). `array` with a **fixed** item count (`min_items` = `max_items` > 0) and a scalar `item_type` → one labeled row per item (number/integer → number, string → text, boolean → checkbox; each row's label is the engine's `item_labels[i]` when well-formed, else `name[i]`; all items blank = not sent, partially filled = validation error — blank slots are never filled with invented values). `array` of any other shape (variable size, zero, malformed `item_type`) → raw-JSON escape-hatch input. Any **unrecognized** `type` → raw-JSON escape-hatch input (user types the JSON value; invalid JSON is a validation error). Empty = "let the engine decide" is the universal meaning of a blank field — this is what makes Qwen3's default-`null` params (`temperature`, `top_p`, …) behave correctly. | Derived from §4.3 plus the actual four snapshots (e.g. Qwen3 `temperature` has bounds+step but `default: null`, so it must be a blankable number input, not a slider; `seed` is 1–1000 with no step and null default → number input, blank = random), and the array rule from §4.3's "the app may special-case well-known shapes, e.g. fixed-size numeric vectors" (indexTTS `emotion_vector` is the first real one). The rules are implemented once and locked by Node tests against all four real snapshots plus synthetic array docs (no shipped snapshot has an array param yet). |
 | T10 | **Version gate + disclosures.** `schema_version > 2` → minimal mode: no parameter inputs, a notice ("TTS server speaks capabilities schema vN — this app supports up to v2"), synthesis still sends `text` + reference data only. `watermarked: true` → a visible notice in the modal (Chatterbox's PerTh watermark). `sample_rate` / `model` / `engine` / `device` → an information block (replacing today's static "Server Type" field's role; the health-derived `server_type` string is kept as-is, it still works with the new servers' `/health`). | Forward-compat rule from tts-serve §3.5; the watermark notice is the responsible-AI surface from §7.5. No resampling: the browser's `decodeAudioData` handles 24 kHz and 48 kHz alike, so `sample_rate` is display-only. |
 | T11 | **Old pre-ported server scripts are unsupported (hard cutover).** The new app sends `reference_text` (old scripts want `prompt_text`) and only advertised fields (old scripts expect `num_steps`/`guidance_scale` unconditionally). A user running an old script gets loud 422s from the server — logged with the full detail — and a README pointer to the tts-serve ported scripts. | Per the tts-serve Q3 answer, the old scripts are not salvageable; pretending to support both protocols would recreate the LCM swamp this feature exists to kill. |
 
@@ -597,7 +642,7 @@ The zero-code-change proof needs to be done against **one** engine only
 | Backend unit | payload builder matrix + 422 self-heal + language fit | `tests/test_tts_stt_clients.py` |
 | API | `/api/tts/capabilities` (200/503 paths), settings PUT with `parameters` + T7 validation | `tests/test_routers_tts_stt.py`, `tests/test_routers_settings.py` |
 | Contract | AGENTS.md endpoints table matches routes | `tests/test_docs.py` |
-| Frontend (Node) | widget rules × 4 real snapshots, collect/validate semantics, version gate, escape hatch, advanced disclosure | `tests/test_tts_settings.js` (plain Node, not pytest) |
+| Frontend (Node) | widget rules × 4 real snapshots, collect/validate semantics, version gate, escape hatch, advanced disclosure, fixed-size `array` params (grouped per-item inputs; synthetic docs — no shipped snapshot has one yet) | `tests/test_tts_settings.js` (plain Node, not pytest) |
 | E2E (manual) | four-engine matrix, zero-code-change proof, M5 checklist | on the GPU box |
 
 Everything hermetic per AGENTS.md: fake httpx via `tests/factories.py` (new

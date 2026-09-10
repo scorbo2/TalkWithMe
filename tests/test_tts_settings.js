@@ -16,6 +16,12 @@
  *   - "blank = let the engine decide": blank optional fields are omitted
  *     from the collected object, while checkboxes, sliders and
  *     selects-with-default are always present;
+ *   - the `array` parameter type (flat scalar item lists): a fixed item
+ *     count renders as ONE LABELED ROW PER ITEM — the engine's item_labels
+ *     when present and well-formed, else name[i] — all-blank omits the
+ *     parameter, a partially filled one is a validation error (blank slots
+ *     are never filled with invented values), variable-size arrays fall
+ *     back to the raw-JSON escape hatch;
  *   - the T10 version gate: a foreign schema_version renders a notice,
  *     not a guessed-at form;
  *   - client-side validation mirrors the backend T7 rules (type, bounds,
@@ -117,6 +123,7 @@ function makeElement(tag) {
         step: "",
         className: "",
         dataset: {},
+        attributes: {},
         children: makeChildList(),
         style: {},
         addEventListener(type, fn) {
@@ -131,7 +138,9 @@ function makeElement(tag) {
             el.children.push(child);
             return child;
         },
-        setAttribute() {},
+        setAttribute(name, value) {
+            el.attributes[name] = String(value);
+        },
         classList: {
             add: (c) => classSet.add(c),
             remove: (c) => classSet.delete(c),
@@ -392,6 +401,15 @@ function findClass(node, cls) {
     return out;
 }
 
+/**
+ * The per-item inputs of a rendered fixed-size array widget. The array
+ * row's `widgetEl` is the plain array of per-item inputs (the collection
+ * walk's contract), so no DOM query is needed.
+ */
+function arrayItemInputs(container, name) {
+    return rowByName(container, name).widgetEl;
+}
+
 /** Concatenated text of a node and all descendants. */
 function textOf(node) {
     const parts = [];
@@ -623,6 +641,90 @@ test("widgetFor_unrecognizedType_isRawJsonEscapeHatch", () => {
     assert.deepEqual(fromVm(h.sandbox.widgetFor(spec({ type: "object" }))), { kind: "json" });
 });
 
+test("widgetFor_arrayWithFixedScalarItems_isArrayWidgetWithItemTypeAndSize", () => {
+    const h = createSettingsHarness();
+    // The indexTTS emotion_vector shape: flat numbers, exactly 8 items.
+    // No item_labels in the spec: the widget carries a null fallback marker
+    // so the renderer can fall back to name[i] labels.
+    assert.deepEqual(
+        fromVm(h.sandbox.widgetFor(spec({
+            type: "array", item_type: "number", min_items: 8, max_items: 8,
+        }))),
+        { kind: "array", itemType: "number", size: 8, itemLabels: null },
+    );
+    // Every scalar item type earns the same widget:
+    for (const itemType of ["string", "integer", "number", "boolean"]) {
+        assert.deepEqual(
+            fromVm(h.sandbox.widgetFor(spec({
+                type: "array", item_type: itemType, min_items: 3, max_items: 3,
+            }))),
+            { kind: "array", itemType, size: 3, itemLabels: null },
+        );
+    }
+});
+
+test("widgetFor_fixedArrayWithItemLabels_carriesThemOnlyWhenWellFormed", () => {
+    const h = createSettingsHarness();
+    // Well-formed (right count, all non-empty): carried through verbatim —
+    // the renderer shows the engine's names, not invented ones:
+    assert.deepEqual(
+        fromVm(h.sandbox.widgetFor(spec({
+            type: "array", item_type: "number", min_items: 3, max_items: 3,
+            item_labels: ["happy", "angry", "calm"],
+        }))),
+        { kind: "array", itemType: "number", size: 3, itemLabels: ["happy", "angry", "calm"] },
+    );
+    // Any malformation (wrong count, blank entry, not a list) degrades to
+    // the null marker — the name[i] fallback — never to dropped items:
+    for (const bad of [["only"], ["only", "two"], ["happy", "", "calm"], "happy", 42, null]) {
+        assert.deepEqual(
+            fromVm(h.sandbox.widgetFor(spec({
+                type: "array", item_type: "number", min_items: 3, max_items: 3,
+                item_labels: bad,
+            }))),
+            { kind: "array", itemType: "number", size: 3, itemLabels: null },
+            `malformed item_labels must degrade: ${JSON.stringify(bad)}`,
+        );
+    }
+});
+
+test("widgetFor_arrayWithVariableOrZeroSize_isRawJsonEscapeHatch", () => {
+    const h = createSettingsHarness();
+    // Variable size needs add/remove UI this release does not carry, and a
+    // fixed size of zero has no inputs to render — neither earns the
+    // per-item widget, so the JSON hatch (server 422 as backstop) covers
+    // them all:
+    const cases = [
+        { min_items: 0, max_items: 10 },     // open-ended
+        { min_items: 3, max_items: 7 },      // a range
+        { min_items: 8, max_items: null },   // floor only
+        { min_items: null, max_items: null }, // unbounded
+        { min_items: 0, max_items: 0 },      // degenerate fixed size
+    ];
+    for (const bounds of cases) {
+        assert.deepEqual(
+            fromVm(h.sandbox.widgetFor(spec({ type: "array", item_type: "number", ...bounds }))),
+            { kind: "json" },
+            `must fall back to the hatch: ${JSON.stringify(bounds)}`,
+        );
+    }
+});
+
+test("widgetFor_arrayWithoutUsableItemType_isRawJsonEscapeHatch", () => {
+    const h = createSettingsHarness();
+    // tts-serve cannot emit these (a DerivationError at server import), but
+    // the doc is external: a malformed one must degrade to the hatch, not
+    // guess at a per-item rendering:
+    for (const itemType of [null, undefined, "object", "array"]) {
+        assert.deepEqual(
+            fromVm(h.sandbox.widgetFor(spec({
+                type: "array", item_type: itemType, min_items: 2, max_items: 2,
+            }))),
+            { kind: "json" },
+        );
+    }
+});
+
 test("widgetFor_allFourFixtures_matchTheT9OracleTable", () => {
     const h = createSettingsHarness();
     for (const name of Object.keys(EXPECTED_WIDGET_KINDS)) {
@@ -726,6 +828,90 @@ test("collectTtsParamValues_numberInputNonIntegerValue_passesThroughForValidatio
     assert.deepEqual(fromVm(h.sandbox.collectTtsParamValues(container)), { count: 3.7 });
 });
 
+test("collectTtsParamValues_fixedArray_allItemsBlank_omitsTheParameter", () => {
+    const h = createSettingsHarness();
+    const container = renderDoc(h, docWith(spec({
+        name: "emotion_vector", type: "array", item_type: "number", min_items: 8, max_items: 8,
+    })));
+
+    // All blank = "not set": the key is absent, the engine decides.
+    assert.deepEqual(fromVm(h.sandbox.collectTtsParamValues(container)), {});
+});
+
+test("collectTtsParamValues_fixedArray_allItemsFilled_sendsCoercedItemList", () => {
+    const h = createSettingsHarness();
+    const container = renderDoc(h, docWith(spec({
+        name: "emotion_vector", type: "array", item_type: "number", min_items: 3, max_items: 3,
+    })));
+    const items = arrayItemInputs(container, "emotion_vector");
+
+    items[0].value = "0.5";
+    items[1].value = "1";
+    items[2].value = "0.25";
+
+    assert.deepEqual(fromVm(h.sandbox.collectTtsParamValues(container)), {
+        emotion_vector: [0.5, 1, 0.25],
+    });
+});
+
+test("collectTtsParamValues_fixedArray_partiallyFilled_marksBlankSlotsWithNull", () => {
+    const h = createSettingsHarness();
+    const container = renderDoc(h, docWith(spec({
+        name: "vec", type: "array", item_type: "number", min_items: 3, max_items: 3,
+    })));
+    const items = arrayItemInputs(container, "vec");
+    items[1].value = "0.5"; // items 0 and 2 left blank
+
+    // Blank slots come back as nulls — never as invented values (e.g. 0) —
+    // so validation names the mistake instead of the engine hearing a
+    // vector the user never asked for:
+    assert.deepEqual(fromVm(h.sandbox.collectTtsParamValues(container)), {
+        vec: [null, 0.5, null],
+    });
+});
+
+test("collectTtsParamValues_fixedArray_nonNumericNumberItem_countsAsBlank", () => {
+    const h = createSettingsHarness();
+    const container = renderDoc(h, docWith(spec({
+        name: "vec", type: "array", item_type: "number", min_items: 2, max_items: 2,
+    })));
+    const items = arrayItemInputs(container, "vec");
+    // A real browser's type=number input refuses non-numeric text (value
+    // stays ""); the stub does not, so this pins the NaN-treats-as-blank
+    // branch directly — the same stance as the scalar number widget:
+    items[0].value = "abc";
+    items[1].value = "2";
+
+    assert.deepEqual(fromVm(h.sandbox.collectTtsParamValues(container)), { vec: [null, 2] });
+});
+
+test("collectTtsParamValues_fixedStringArray_keepsTrimmedRawItemText", () => {
+    const h = createSettingsHarness();
+    const container = renderDoc(h, docWith(spec({
+        name: "labels", type: "array", item_type: "string", min_items: 2, max_items: 2,
+    })));
+    const items = arrayItemInputs(container, "labels");
+    items[0].value = "  happy  ";
+    items[1].value = "angry";
+
+    assert.deepEqual(fromVm(h.sandbox.collectTtsParamValues(container)), {
+        labels: ["happy", "angry"],
+    });
+});
+
+test("collectTtsParamValues_booleanArrayItems_checkboxesAlwaysCarryValues", () => {
+    const h = createSettingsHarness();
+    const container = renderDoc(h, docWith(spec({
+        name: "flags", type: "array", item_type: "boolean", min_items: 2, max_items: 2,
+    })));
+
+    // Like the scalar boolean widget, checkbox items are never blank:
+    assert.deepEqual(fromVm(h.sandbox.collectTtsParamValues(container)), { flags: [false, false] });
+
+    arrayItemInputs(container, "flags")[1].checked = true;
+    assert.deepEqual(fromVm(h.sandbox.collectTtsParamValues(container)), { flags: [false, true] });
+});
+
 test("collectTtsParamValues_emptyContainer_returnsEmptyObject", () => {
     const h = createSettingsHarness();
     assert.deepEqual(
@@ -820,6 +1006,82 @@ test("validateTtsParamValues_jsonHatchValue_invalidJsonIsError_validJsonPasses",
     );
     assert.equal(h.sandbox.validateTtsParamValues({ blob: { k: 1 } }, doc), null);
     assert.equal(h.sandbox.validateTtsParamValues({ blob: '"quoted"' }, doc), null);
+});
+
+test("validateTtsParamValues_fixedArray_conformingItemList_passes", () => {
+    const h = createSettingsHarness();
+    const doc = docWith(spec({
+        name: "emotion_vector", type: "array", item_type: "number", min_items: 8, max_items: 8,
+    }));
+    // Note: per-item RANGES are not in the capabilities contract (only the
+    // item type and the count), so values outside e.g. indexTTS's [0, 1]
+    // pass the client-side check — the engine's own validator is the
+    // backstop for those.
+    assert.equal(
+        h.sandbox.validateTtsParamValues(
+            { emotion_vector: [0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8] }, doc),
+        null,
+    );
+});
+
+test("validateTtsParamValues_arrayValueNotAList_isNamedError", () => {
+    const h = createSettingsHarness();
+    const doc = docWith(spec({ name: "vec", type: "array", item_type: "number", min_items: 1, max_items: 1 }));
+    assert.match(h.sandbox.validateTtsParamValues({ vec: 42 }, doc), /'vec' must be an array/);
+    // A stale hand-edited settings.yaml value that is not even a list:
+    assert.match(h.sandbox.validateTtsParamValues({ vec: "0.5 0.5" }, doc), /'vec' must be an array/);
+});
+
+test("validateTtsParamValues_arrayPartiallyFilled_isNamedError", () => {
+    const h = createSettingsHarness();
+    const doc = docWith(spec({ name: "vec", type: "array", item_type: "number", min_items: 3, max_items: 3 }));
+    const error = h.sandbox.validateTtsParamValues({ vec: [0.5, null, null] }, doc);
+    assert.match(error, /'vec' is partially filled — set every item or clear them all/);
+});
+
+test("validateTtsParamValues_arrayItemCountOutOfBounds_named", () => {
+    const h = createSettingsHarness();
+    const doc = docWith(spec({ name: "vec", type: "array", item_type: "number", min_items: 2, max_items: 2 }));
+    assert.match(h.sandbox.validateTtsParamValues({ vec: [1] }, doc), /'vec' must have at least 2 items, got 1/);
+    assert.match(h.sandbox.validateTtsParamValues({ vec: [1, 2, 3] }, doc), /'vec' must have at most 2 items, got 3/);
+});
+
+test("validateTtsParamValues_arrayItemWrongType_namedWithIndex", () => {
+    const h = createSettingsHarness();
+    // Each item type is checked the way its scalar widget would be:
+    const counts = docWith(spec({ name: "counts", type: "array", item_type: "integer", min_items: 2, max_items: 2 }));
+    assert.match(
+        h.sandbox.validateTtsParamValues({ counts: [1, 1.5] }, counts),
+        /'counts' item 1 must be an integer, got 1\.5/,
+    );
+
+    const vec = docWith(spec({ name: "vec", type: "array", item_type: "number", min_items: 2, max_items: 2 }));
+    assert.match(h.sandbox.validateTtsParamValues({ vec: [1, "high"] }, vec), /'vec' item 1 must be a number, got high/);
+
+    const labels = docWith(spec({ name: "labels", type: "array", item_type: "string", min_items: 2, max_items: 2 }));
+    assert.match(h.sandbox.validateTtsParamValues({ labels: ["a", 2] }, labels), /'labels' item 1 must be a string, got 2/);
+
+    const flags = docWith(spec({ name: "flags", type: "array", item_type: "boolean", min_items: 2, max_items: 2 }));
+    assert.match(h.sandbox.validateTtsParamValues({ flags: [true, 1] }, flags), /'flags' item 1 must be a boolean, got 1/);
+});
+
+test("validateTtsParamValues_arrayMultipleOffenders_allNamedInSingleMessage", () => {
+    const h = createSettingsHarness();
+    const doc = docWith(spec({ name: "counts", type: "array", item_type: "integer", min_items: 2, max_items: 2 }));
+    const error = h.sandbox.validateTtsParamValues({ counts: [1.5, 2.5] }, doc);
+    assert.match(error, /'counts' item 0 must be an integer/);
+    assert.match(error, /'counts' item 1 must be an integer/);
+});
+
+test("validateTtsParamValues_arrayUnknownItemType_structureOnlyBackstop", () => {
+    const h = createSettingsHarness();
+    // tts-serve cannot emit these (DerivationError at server import); a
+    // malformed doc still gets the checks that exist without a per-item
+    // contract (structure + count), and the engine's own 422 is the
+    // backstop for the rest:
+    const doc = docWith(spec({ name: "vec", type: "array", min_items: 1, max_items: 1 }));
+    assert.equal(h.sandbox.validateTtsParamValues({ vec: ["whatever"] }, doc), null);
+    assert.match(h.sandbox.validateTtsParamValues({ vec: [1, 2] }, doc), /'vec' must have at most 1 items, got 2/);
 });
 
 /* ==========================================================================
@@ -961,6 +1223,126 @@ test("renderTtsParameters_sliderReadout_followsTheSliderValue", () => {
     slider.dispatch("input", {});
 
     assert.equal(readout.textContent, "48");
+});
+
+test("renderTtsParameters_fixedArray_rendersOneLabeledRowPerItem_prefillsSavedList", () => {
+    const h = createSettingsHarness();
+    const saved = [0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8];
+    const container = renderDoc(h, docWith(spec({
+        name: "emotion_vector", type: "array", item_type: "number", min_items: 8, max_items: 8,
+    })), { emotion_vector: saved });
+
+    assert.equal(kindOf(container, "emotion_vector"), "array");
+    const row = rowByName(container, "emotion_vector");
+    const [field] = findClass(container, "tts-array-field");
+    assert.ok(field, "an array row must hold a .tts-array-field group");
+    const itemRows = findClass(field, "tts-array-item");
+    const items = arrayItemInputs(container, "emotion_vector");
+    assert.equal(itemRows.length, 8, "one labeled row per item");
+    assert.equal(items.length, 8, "one input per item");
+    for (let i = 0; i < itemRows.length; i++) {
+        const [itemLabel, input] = itemRows[i].children;
+        assert.equal(input.type, "number");
+        assert.equal(input.id, `tts-param-emotion_vector-${i}`);
+        assert.equal(String(input.value), String(saved[i]), `item ${i} prefill`);
+        // No item_labels in this doc: each row falls back to name[i] —
+        // the same notation the validators use to name offending items:
+        assert.equal(itemLabel.textContent, `emotion_vector[${i}]`);
+        assert.equal(itemLabel.attributes.for, `tts-param-emotion_vector-${i}`);
+    }
+    // The row id names no single element, so the row label points at the
+    // first item input and carries the item-count hint:
+    const label = [...row.children].find((c) => c.tagName === "LABEL");
+    assert.equal(label.attributes.for, "tts-param-emotion_vector-0");
+    assert.equal(textOf(label), "emotion_vector (8 items)");
+});
+
+test("renderTtsParameters_fixedArray_savedListShorterThanSize_prefillsOnlyTheSavedItems", () => {
+    const h = createSettingsHarness();
+    const container = renderDoc(h, docWith(spec({
+        name: "vec", type: "array", item_type: "number", min_items: 3, max_items: 3,
+    })), { vec: [0.5] });
+
+    const items = arrayItemInputs(container, "vec");
+    assert.equal(String(items[0].value), "0.5", "saved item prefills");
+    assert.equal(String(items[1].value), "", "missing items stay blank");
+    assert.equal(String(items[2].value), "", "missing items stay blank");
+});
+
+test("renderTtsParameters_fixedArray_savedValueNotAList_prefillsNothing", () => {
+    const h = createSettingsHarness();
+    // A stale hand-edited settings.yaml holding a non-list value: prefill
+    // nothing rather than guess which items it meant — save-time validation
+    // names the mismatch when the user saves as-is.
+    const container = renderDoc(h, docWith(spec({
+        name: "vec", type: "array", item_type: "number", min_items: 2, max_items: 2,
+    })), { vec: "stale hand-edit" });
+
+    const items = arrayItemInputs(container, "vec");
+    assert.equal(String(items[0].value), "");
+    assert.equal(String(items[1].value), "");
+});
+
+test("renderTtsParameters_booleanArrayItems_renderAsCheckboxesWithSavedState", () => {
+    const h = createSettingsHarness();
+    const container = renderDoc(h, docWith(spec({
+        name: "flags", type: "array", item_type: "boolean", min_items: 2, max_items: 2,
+    })), { flags: [true, false] });
+
+    const items = arrayItemInputs(container, "flags");
+    assert.equal(items[0].type, "checkbox");
+    assert.equal(items[1].type, "checkbox");
+    assert.equal(items[0].checked, true, "saved true checks the box");
+    assert.equal(items[1].checked, false, "saved false leaves it unchecked");
+    // Boolean items get the same per-item labeled rows as the other types:
+    const itemRows = findClass(container, "tts-array-item");
+    assert.deepEqual(
+        fromVm(itemRows.map((r) => r.children[0].textContent)),
+        ["flags[0]", "flags[1]"],
+    );
+});
+
+test("renderTtsParameters_fixedArrayWithItemLabels_rendersTheEngineLabelsPerRow", () => {
+    const h = createSettingsHarness();
+    const container = renderDoc(h, docWith(spec({
+        name: "emotion_vector", type: "array", item_type: "number",
+        min_items: 3, max_items: 3, item_labels: ["happy", "angry", "calm"],
+    })));
+
+    // item_labels render verbatim, in order — this is the indexTTS
+    // "happy / angry / calm" UX the free-text description could not give:
+    const itemRows = findClass(container, "tts-array-item");
+    assert.equal(itemRows.length, 3);
+    assert.deepEqual(
+        fromVm(itemRows.map((r) => r.children[0].textContent)),
+        ["happy", "angry", "calm"],
+    );
+    // Each item label is wired to its own item input:
+    itemRows.forEach((r, i) => {
+        assert.equal(r.children[0].attributes.for, `tts-param-emotion_vector-${i}`);
+        assert.equal(r.children[1].id, `tts-param-emotion_vector-${i}`);
+    });
+});
+
+test("renderTtsParameters_fixedArrayWithMalformedItemLabels_fallsBackToIndexLabels", () => {
+    const h = createSettingsHarness();
+    for (const bad of [["only", "two"], ["happy", "", "calm"]]) {
+        // A wrong-length or blank-containing label list must degrade to the
+        // name[i] labels — never to guessed labels, and never to the raw
+        // JSON hatch (labels are presentational, the widget still works):
+        const container = renderDoc(h, docWith(spec({
+            name: "vec", type: "array", item_type: "number",
+            min_items: 3, max_items: 3, item_labels: bad,
+        })));
+
+        assert.equal(kindOf(container, "vec"), "array",
+            "malformed labels keep the per-item widget");
+        const itemRows = findClass(container, "tts-array-item");
+        assert.deepEqual(
+            fromVm(itemRows.map((r) => r.children[0].textContent)),
+            ["vec[0]", "vec[1]", "vec[2]"],
+        );
+    }
 });
 
 /* ==========================================================================
@@ -1277,6 +1659,62 @@ test("openSettings_saveParameters_reopen_preservesSavedValues_notDocDefaults", a
         "3.5",
         "saved guidance_scale must survive the round trip, not revert to the doc default",
     );
+});
+
+test("submitSettings_fixedArrayValues_roundTripPreservesEveryItem", async () => {
+    // The indexTTS shape end to end: an 8-item number vector as the engine's
+    // only parameter (a synthetic doc, since no shipped snapshot has one yet):
+    const h = createSettingsHarness({
+        capabilities: docWith(spec({
+            name: "emotion_vector", type: "array", item_type: "number", min_items: 8, max_items: 8,
+        })),
+    });
+    await h.sandbox.openSettings();
+
+    // WHEN the user fills every item and saves:
+    const items = arrayItemInputs(h.elementById("sf-tts-params"), "emotion_vector");
+    const wanted = [0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8];
+    for (let i = 0; i < items.length; i++) items[i].value = String(wanted[i]);
+    h.elementById("settings-form").dispatch("submit", { preventDefault() {} });
+    await settle();
+
+    // THEN the PUT carries the vector with numeric item types and the
+    // backend persisted it:
+    const call = putCall(h);
+    assert.ok(call, "expected a PUT /api/settings");
+    assert.deepEqual(fromVm(call.body.tts.parameters), { emotion_vector: wanted });
+    assert.deepEqual(fromVm(h.fetchStub.state.settings.tts.parameters), { emotion_vector: wanted });
+
+    // WHEN the user reopens the modal, THEN every item comes back:
+    await h.sandbox.openSettings();
+    const reopened = arrayItemInputs(h.elementById("sf-tts-params"), "emotion_vector");
+    for (let i = 0; i < reopened.length; i++) {
+        assert.equal(String(reopened[i].value), String(wanted[i]), `item ${i} must survive the round trip`);
+    }
+});
+
+test("submitSettings_partiallyFilledArray_blockedClientSide_noRequest", async () => {
+    const h = createSettingsHarness({
+        capabilities: docWith(spec({
+            name: "emotion_vector", type: "array", item_type: "number", min_items: 8, max_items: 8,
+        })),
+    });
+    await h.sandbox.openSettings();
+
+    // WHEN the user fills two of the eight items and saves:
+    const items = arrayItemInputs(h.elementById("sf-tts-params"), "emotion_vector");
+    items[0].value = "0.5";
+    items[1].value = "0.75";
+    h.elementById("settings-form").dispatch("submit", { preventDefault() {} });
+    await settle();
+
+    // THEN no PUT goes out — sending the half vector would require
+    // fabricating the six remaining values, and the client-side check
+    // names the mistake in place:
+    assert.equal(putCall(h), undefined, "no PUT may go out for a partial array");
+    const err = h.elementById("settings-error");
+    assert.equal(err.classList.contains("hidden"), false);
+    assert.match(err.textContent, /'emotion_vector' is partially filled/);
 });
 
 test("capRefreshClick_probesFieldUrl_rendersNewEngine_withSwitchNote", async () => {

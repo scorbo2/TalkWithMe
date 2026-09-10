@@ -1314,6 +1314,39 @@ html, body {
     max-width: 340px;
 }
 
+/* Fixed-size array parameter: ONE LABELED ROW PER ITEM (tts-serve §4.3).
+   Unlabeled boxes in a wrap grid force the user to guess which input is
+   which — the taller form is the price of not having to. The label column
+   is fixed so all inputs line up; long fallback labels (name[i]) truncate
+   with an ellipsis instead of reflowing the row. */
+.tts-array-field {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+}
+
+.tts-array-item {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+}
+
+.settings-body .form-row .tts-array-item-label {
+    width: 140px;
+    flex-shrink: 0;
+    font-size: 0.78rem;
+    color: var(--text-secondary);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.settings-body .form-row .tts-array-item input[type="number"],
+.settings-body .form-row .tts-array-item input[type="text"] {
+    width: 90px;
+    padding: 6px 8px;
+}
+
 /* Range slider row: slider stretches, readout sits at a fixed width */
 .tts-slider-row {
     display: flex;
