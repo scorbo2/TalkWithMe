@@ -2,13 +2,19 @@
 
 Wires up routers, static files, and the Jinja2 template engine.
 Loads configuration at startup and seeds the session with all configured personas.
+Auto-starts the OmniVoice TTS server subprocess when TTS is enabled.
 """
 
+import asyncio
 import logging
 import os
+import signal
+import subprocess
+import sys
 from contextlib import asynccontextmanager
 from pathlib import Path
 
+import httpx
 from fastapi import FastAPI, Request
 from fastapi.responses import HTMLResponse
 from fastapi.staticfiles import StaticFiles
@@ -20,6 +26,16 @@ from app.session import session
 from app.services import llm, llm_auth
 from app.services.tool_registry import get_all_tools, load_tools
 from app.services.tts_client import ensure_capabilities
+
+# Path to the OmniVoice REST wrapper and its venv
+_TTS_PROJECT_ROOT = Path(os.environ.get("OMNIVOICE_TTS_ROOT", "C:/ai/tts"))
+_TTS_WRAPPER = _TTS_PROJECT_ROOT / "omnivoice_rest.py"
+_TTS_VENV_PYTHON = _TTS_PROJECT_ROOT / ".venv" / "Scripts" / "python.exe"
+
+# Environment override: set OMNIVOICE_AUTO_START_TTS=0 to disable auto-start
+_AUTO_START_TTS_DEFAULT = True
+
+logger = logging.getLogger(__name__)
 
 # uvicorn configures its own loggers but leaves the root logger at the
 # Python default level (WARNING), which silently swallows every
@@ -71,7 +87,78 @@ logging.basicConfig(
 # flood the console one line per HTTP round-trip.
 logging.getLogger("httpx").setLevel(logging.WARNING)
 
-logger = logging.getLogger(__name__)
+
+def _is_port_open(host: str, port: int) -> bool:
+    """Check if a TCP port is accepting connections."""
+    import socket
+    try:
+        with socket.create_connection((host, port), timeout=1):
+            return True
+    except (OSError, ConnectionRefusedError):
+        return False
+
+
+def _start_tts_server() -> subprocess.Popen | None:
+    """Launch the OmniVoice REST server as a subprocess if not already running.
+
+    Returns the process handle, or None if:
+    - Auto-start is disabled via env var
+    - The wrapper script or venv python doesn't exist
+    - A server is already listening on port 9000
+    """
+    if os.environ.get("OMNIVOICE_AUTO_START_TTS", "1") != "1":
+        return None
+
+    # Check if something is already serving on port 9000
+    if _is_port_open("localhost", 9000):
+        # Verify it's our OmniVoice server
+        import urllib.request
+        try:
+            resp = urllib.request.urlopen("http://localhost:9000/health", timeout=2)
+            if resp.status == 200:
+                logger.info("TTS server already running on port 9000")
+                return None
+        except Exception:
+            pass  # Port is in use but not our server; fall through to start attempt
+
+    python_exe = str(_TTS_VENV_PYTHON) if _TTS_VENV_PYTHON.exists() else sys.executable
+    if not _TTS_WRAPPER.exists():
+        logger.warning("OmniVoice wrapper not found at %s; skipping TTS auto-start", _TTS_WRAPPER)
+        return None
+
+    logger.info("Starting OmniVoice TTS server from %s", _TTS_PROJECT_ROOT)
+    # Redirect stdout/stderr to a log file — using PIPE without reading causes
+    # the subprocess to block once the OS pipe buffer fills up.
+    tts_log = _TTS_PROJECT_ROOT / "tts_server.log"
+    proc = subprocess.Popen(
+        [python_exe, str(_TTS_WRAPPER)],
+        cwd=str(_TTS_PROJECT_ROOT),
+        stdout=open(tts_log, "ab"),
+        stderr=subprocess.STDOUT,
+        # Put the child in its own process group so we can kill the whole tree
+        creationflags=subprocess.CREATE_NEW_PROCESS_GROUP if os.name == "nt" else 0,
+    )
+    return proc
+
+
+def _stop_tts_server(proc: subprocess.Popen | None) -> None:
+    """Terminate the TTS subprocess and its process group."""
+    if proc is None:
+        return
+    try:
+        if os.name == "nt":
+            # Kill the entire process group (child processes like uvicorn workers)
+            proc.send_signal(signal.CTRL_BREAK_EVENT if hasattr(signal, "CTRL_BREAK_EVENT") else signal.SIGTERM)
+        else:
+            proc.terminate()
+        proc.wait(timeout=5)
+    except subprocess.TimeoutExpired:
+        logger.warning("TTS server did not exit gracefully, killing")
+        proc.kill()
+        proc.wait(timeout=2)
+    except Exception as exc:
+        logger.warning("Error stopping TTS server: %s", exc)
+
 
 # ---------------------------------------------------------------------------
 # Startup / shutdown
@@ -79,7 +166,7 @@ logger = logging.getLogger(__name__)
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    """Load config and initialize the session on startup."""
+    """Load config, initialize session, and auto-start TTS server if enabled."""
     # Load configuration files
     personas_cfg = app_config.load_personas()
     settings = app_config.load_settings()
@@ -111,13 +198,36 @@ async def lifespan(app: FastAPI):
     logger.info("TTS active: %s (endpoint: %s)", settings.tts.is_active, settings.tts.base_url)
     logger.info("STT active: %s (endpoint: %s)", settings.stt.is_active, settings.stt.base_url)
 
+    # Auto-start the TTS server if TTS is enabled
+    tts_proc = None
+    if settings.tts.is_active:
+        tts_proc = _start_tts_server()
+        if tts_proc is not None:
+            # Wait up to 60s for the server to start (model loading can take 10-30s on first run)
+            for attempt in range(60):
+                await asyncio.sleep(1)
+                try:
+                    async with httpx.AsyncClient(timeout=2) as client:
+                        resp = await client.get("http://localhost:9000/health")
+                        if resp.status_code == 200:
+                            logger.info("TTS server started successfully on port 9000")
+                            break
+                except Exception:
+                    pass  # Server not ready yet, keep waiting
+            else:
+                logger.warning("TTS server may not have started (health check failed after 60s)")
+    else:
+        logger.info("TTS disabled in config; skipping TTS server auto-start")
+
     # Discover MCP tools (per-server details are logged inside load_tools)
     await load_tools()
     logger.info("MCP tools available: %d", len(get_all_tools()))
 
     yield
 
+    # Shutdown cleanup
     logger.info("TalkWithMe shutting down")
+    _stop_tts_server(tts_proc)
 
 
 # ---------------------------------------------------------------------------

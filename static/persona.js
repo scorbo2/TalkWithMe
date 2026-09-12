@@ -68,7 +68,7 @@ function renderPersonaList(list, showRemoveButtons) {
 
         if (p.avatar_image) {
             const img = document.createElement("img");
-            img.src = `/api/personas/${encodeURIComponent(p.name)}/avatar`;
+            img.src = `/api/personas/${encodeURIComponent(p.name)}/avatar?t=${Date.now()}`;
             img.alt = p.name;
             img.onerror = () => {
                 // Fallback to initial on error
@@ -351,7 +351,7 @@ function renderPersonaAvatarPreview() {
         pfAvatarPreview.appendChild(img);
     } else if (peAvatarOnServer && !peAvatarRemoveRequested) {
         const img = document.createElement("img");
-        img.src = `/api/personas/${encodeURIComponent(peEditingName)}/avatar`;
+        img.src = `/api/personas/${encodeURIComponent(peEditingName)}/avatar?t=${Date.now()}`;
         img.alt = "Current avatar";
         img.onerror = () => {
             pfAvatarPreview.innerHTML = "";

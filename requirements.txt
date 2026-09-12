@@ -16,9 +16,6 @@ uvicorn[standard]==0.52.4
 httpx==0.28.1
 jinja2==3.1.6
 pydantic==2.13.5
-# >= rather than ==: PyYAML 5.4.1 predates Python 3.10 and has no cp310
-# wheel, so on the supported interpreters (3.10+) a fresh install takes
-# 6.x anyway. The suite passes on both.
 pyyaml>=5.4.1
 python-multipart==0.0.32
 aiofiles==25.1.0

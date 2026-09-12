@@ -153,10 +153,12 @@ class SessionManager:
                     # Another persona spoke — use role "user" to avoid consecutive
                     # assistant messages (which many LLMs reject with 400) and to
                     # prevent the model from treating another persona's words as its own.
+                    # Use a clean "Name: text" format (not bracketed) so the LLM
+                    # is less likely to mirror the bracketed third-person style.
                     messages.append(
                         {
                             "role": "user",
-                            "content": f"[{msg.persona}]: {msg.content}",
+                            "content": f"{msg.persona}: {msg.content}",
                         }
                     )
 
