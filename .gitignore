@@ -2,7 +2,9 @@ app/__pycache__/
 app/services/__pycache__/
 app/routers/__pycache__/
 tests/__pycache__/
+personas.yaml
 personas.yaml.*
+!personas.yaml.example
 future*.md
 Personas/
 chatrooms/

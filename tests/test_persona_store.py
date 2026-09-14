@@ -554,6 +554,37 @@ class TestMigrateFromLegacyYaml:
         assert path.exists()
         assert blocker.is_file()  # rmtree cannot remove a file; left in place
 
+    def test_seed_mode_creates_dirs_and_leaves_source_untouched(self, tmp_path):
+        ref_wav = tmp_path / "luna.wav"
+        ref_wav.write_bytes(b"wav-bytes")
+        path = write_legacy_yaml(tmp_path / "personas.yaml.example", [
+            {"name": "Luna", "system_prompt": "You are Luna.",
+             "reference_audio": str(ref_wav)},
+        ])
+        root = tmp_path / "Personas"
+        migrate_from_legacy_yaml(path, root, backup=False)
+
+        # The example is a tracked template, not user data: it must
+        # survive byte-for-byte, with no .bak anywhere.
+        assert path.exists()
+        assert yaml.safe_load(path.read_text())["personas"][0]["name"] == "Luna"
+        assert not (tmp_path / "personas.yaml.example.bak").exists()
+
+        # ...and it must still have migrated everything.
+        luna_dir = root / "Luna"
+        assert (luna_dir / "prompt.md").exists()
+        assert (luna_dir / "language.txt").read_text() == "en"
+        assert (luna_dir / "ref.wav").read_bytes() == b"wav-bytes"
+
+    def test_seed_mode_malformed_yaml_raises_and_leaves_source_untouched(self, tmp_path):
+        path = tmp_path / "personas.yaml.example"
+        path.write_text("personas: [\n")  # unclosed flow sequence
+        root = tmp_path / "Personas"
+        with pytest.raises(PersonaMigrationError):
+            migrate_from_legacy_yaml(path, root, backup=False)
+        assert path.exists()          # the template is never modified
+        assert not root.exists()      # no partial directory left behind
+
 
 # ---------------------------------------------------------------------------
 # Persona memories (memories.txt) — docs/feature_persona_memory.md

@@ -703,11 +703,17 @@ def load_personas_yaml(path: Path) -> List[Persona]:
     return personas
 
 
-def migrate_from_legacy_yaml(yaml_path: Path, root: Path) -> None:
+def migrate_from_legacy_yaml(yaml_path: Path, root: Path, *, backup: bool = True) -> None:
     """One-time migration: personas.yaml -> per-persona subdirectories.
 
-    On success ``yaml_path`` is renamed to ``personas.yaml.bak`` (never
-    deleted) so the migration can never run twice.
+    With ``backup=True`` (the default, used for a user's legacy
+    personas.yaml) a successful migration renames ``yaml_path`` to
+    ``personas.yaml.bak`` (never deleted) so the migration can never run
+    twice. With ``backup=False`` (the tracked ``personas.yaml.example``
+    seed) the source file is left in place, untouched: it is part of the
+    installation, not user data, so it must survive for git's benefit.
+    The caller must then guarantee the migration does not re-run — in the
+    app it only runs when the target directory does not exist at all.
 
     Error policy (docs/feature_persona_autodiscovery.md):
       * fatal (malformed YAML, unreadable file, unwritable directory,
@@ -734,18 +740,19 @@ def migrate_from_legacy_yaml(yaml_path: Path, root: Path) -> None:
     except OSError as exc:
         raise _abort_migration(yaml_path, root, f"disk error while writing personas: {exc}") from exc
 
-    backup_path = yaml_path.with_name(yaml_path.name + ".bak")
-    try:
-        yaml_path.rename(backup_path)
-    except OSError as exc:
-        # The directory is complete and the YAML is intact, so the next
-        # startup will take the (noisy but safe) "both exist" path. Do not
-        # rmtree the finished directory here.
-        raise _abort_migration(
-            yaml_path, root,
-            f"cannot rename {yaml_path.name} to {backup_path.name}: {exc}",
-            remove_partial_dir=False,
-        ) from exc
+    if backup:
+        backup_path = yaml_path.with_name(yaml_path.name + ".bak")
+        try:
+            yaml_path.rename(backup_path)
+        except OSError as exc:
+            # The directory is complete and the YAML is intact, so the next
+            # startup will take the (noisy but safe) "both exist" path. Do
+            # not rmtree the finished directory here.
+            raise _abort_migration(
+                yaml_path, root,
+                f"cannot rename {yaml_path.name} to {backup_path.name}: {exc}",
+                remove_partial_dir=False,
+            ) from exc
     logger.info(
         "Persona migration complete: %s -> %s (%d persona%s)",
         yaml_path.name, root, len(personas), "" if len(personas) == 1 else "s",

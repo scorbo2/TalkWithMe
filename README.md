@@ -77,7 +77,7 @@ Most settings can be changed in the UI. Behind the scenes, configuration is stor
 
 - `settings.yaml` stores LLM, TTS, STT, and MCP server endpoints plus general chat parameters
 - `chatrooms.yaml` stores configured chat rooms (if any)
-- the `Personas/` directory stores all personas — one subdirectory per persona, each holding a `prompt.md` (frontmatter + system prompt), an optional `language.txt`, `ref.wav` + `ref.txt` (TTS voice reference), and an optional `image.<ext>` avatar. A legacy `personas.yaml`, if still present, is migrated to this layout automatically once on first startup (then renamed to `personas.yaml.bak` and ignored).
+- the `Personas/` directory stores all personas — one subdirectory per persona, each holding a `prompt.md` (frontmatter + system prompt), an optional `language.txt`, `ref.wav` + `ref.txt` (TTS voice reference), and an optional `image.<ext>` avatar. This directory does not exist on a fresh clone: on first startup, the two stock example personas (Alex and Luna) are created from the tracked `personas.yaml.example` template, which the app reads but never modifies. A legacy `personas.yaml` from an older version, if still present, is migrated to this layout automatically once on first startup (then renamed to `personas.yaml.bak` and ignored).
 
 ### Server settings
 
@@ -595,6 +595,7 @@ standalone script under `impl/` with per-engine install notes.
 - **Work in progress; add date when ready** v7.1
   - Minor: add favicon (#111)
   - Minor: remove prepackaged `settings.yaml` and `chatrooms.yaml` (#113)
+  - Minor: `personas.yaml` -> `personas.yaml.example` and untrack `personas.yaml` (#119)
 
 ## License
 

@@ -41,7 +41,8 @@ deactivate
 |--------|---------|
 | `settings.yaml` | LLM, TTS, STT endpoints and parameters, general chat parameters, MCP server list. `general.personas_directory` (default `Personas`) names the persona directory — **yaml-only**, no API/UI field. This file may not exist; code handles gracefully. |
 | `Personas/` (one directory per persona) | Persona definitions — the single source of truth. See **Persona storage** below |
-| `personas.yaml` | **Legacy only.** If present (and no `Personas/` dir), it is migrated to directories once at startup, then renamed to `personas.yaml.bak` and ignored forever |
+| `personas.yaml` | **Legacy only** (pre-directory user data). If present (and no `Personas/` dir), it is migrated to directories once at startup, then renamed to `personas.yaml.bak` and ignored forever. Takes precedence over the example template. Not tracked in git |
+| `personas.yaml.example` | **Tracked template** holding the two stock example personas (Alex, Luna). When no `Personas/` dir exists at startup, it is seeded into the directory — read-only: never renamed, modified, or deleted (no `.bak`) |
 | `chatrooms.yaml` | Chat room groupings (may not exist; code handles gracefully) |
 
 All three are loaded once at startup and cached as module-level globals in `app/config.py`.
@@ -68,12 +69,12 @@ Startup decision matrix in `app/config.py::load_personas()` (lazy-imports `perso
 
 | `personas.yaml` | `Personas/` dir | Behaviour |
 |-----------------|-----------------|-----------|
-| no | no | Create the (empty) dir, warn once; empty persona list |
-| no | yes | Scan |
-| yes | no | **Migrate** (see below) |
-| yes | yes | Skip the YAML with a warning (dir wins); both sources kept on disk |
+| yes | no | **Migrate** the legacy YAML (see below); the example template is ignored |
+| yes | yes | Skip the legacy YAML with a warning (dir wins); both files kept on disk |
+| no | no | **Seed** from the tracked `personas.yaml.example` (see below) — or, if that file was deleted, create the (empty) dir, warn, and start with an empty persona list |
+| no | yes | Scan; the example template (if present) is silently ignored — an existing-but-empty dir is NOT re-seeded, so deleting every persona does not resurrect the examples |
 
-**Migration** (`persona_store.migrate_from_legacy_yaml()`): converts the old schema to per-persona directories. Each persona gets a `prompt.md` (frontmatter + system prompt) and `language.txt`, and the files referenced by its `avatar_image` / `reference_audio` / `reference_audio_transcript` **paths** are copied in as `image<ext>` / `ref.wav` / `ref.txt`. Success → the YAML is renamed to `personas.yaml.bak` so it never re-migrates. **Fatal** error (malformed YAML, unwritable directory, disk full) → raise `PersonaMigrationError` with the YAML left **untouched** and the partially created `Personas/` directory removed best-effort, so the next startup retries cleanly. **Minor** error (a referenced file missing, unreadable, or the wrong format — e.g. a non-wav `reference_audio`) → logged, that file skipped, migration continues. The YAML is the source of truth until the rename succeeds.
+**Migration** (`persona_store.migrate_from_legacy_yaml()`): converts the old schema to per-persona directories. Each persona gets a `prompt.md` (frontmatter + system prompt) and `language.txt`, and the files referenced by its `avatar_image` / `reference_audio` / `reference_audio_transcript` **paths** are copied in as `image<ext>` / `ref.wav` / `ref.txt`. With `backup=True` (a user's legacy `personas.yaml`) success → the YAML is renamed to `personas.yaml.bak` so it never re-migrates. With `backup=False` (the tracked `personas.yaml.example` seed) the template is consumed **read-only**: never renamed, modified, or deleted, and it is used only when no `Personas/` directory exists at all. **Fatal** error (malformed YAML, unwritable directory, disk full) → raise `PersonaMigrationError` with the source file left **untouched** and the partially created `Personas/` directory removed best-effort, so the next startup retries cleanly. **Minor** error (a referenced file missing, unreadable, or the wrong format — e.g. a non-wav `reference_audio`) → logged, that file skipped, migration continues. The source file is the truth until the migration (or rename) completes.
 
 **Rename moves the directory (when safe).** A persona *name* change rewrites the `prompt.md` `name:` field AND renames the persona's directory to `sanitize_persona_dirname(new_name)` — unless the sanitized name is empty or the target directory already exists (two distinct names can sanitize to the same directory, e.g. `O'Brien` and `O*Brien`), in which case the directory is kept and the frontmatter `name:` field preserves the identity. The move happens after the field writes and is best-effort: a skipped or failed rename keeps the old directory and the save still succeeds (a plain save — no name change — never moves a directory). Deleting a persona deletes the directory. `GET /api/personas` returns personas in raw directory/creation order — sorting is a frontend concern (see **Persona list ordering**).
 
