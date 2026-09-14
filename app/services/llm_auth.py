@@ -1,6 +1,6 @@
 """LLM API key resolution (docs/feature_api_key.md).
 
-The key is deliberately NOT part of AppSettings: GET/PUT /api/settings 
+The key is deliberately NOT part of AppSettings: GET/PUT /api/settings
 round-trip the settings models — a key in the model would leak to disk
 and onto the API surface. It is resolved once per process, from (in priority order):
 
