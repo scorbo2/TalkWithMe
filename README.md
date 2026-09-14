@@ -48,8 +48,8 @@ Follow the development of this app on my YouTube channel:
 
 ```bash
 # Back up your settings and chatroom files:
-mv settings.yaml settings.yaml.keep 2>/dev/null
-mv chatrooms.yaml chatrooms.yaml.keep 2>/dev/null
+mv -i settings.yaml settings.yaml.keep 2>/dev/null
+mv -i chatrooms.yaml chatrooms.yaml.keep 2>/dev/null
 
 # These files are no longer tracked as of 7.1:
 git pull
