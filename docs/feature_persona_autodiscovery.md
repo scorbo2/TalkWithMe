@@ -272,7 +272,7 @@ If the sanitized persona name resolves to nothing (example: `***`), prevent crea
 - Remove the `testsetup.sh` and `restore.sh` scripts, or modify them to work with directories.
 - Mark `future_PersonaConfig.md` as obsolete - this feature doc supersedes it entirely.
 
-## 7.1 addendum: the example file is no longer tracked
+## 7.1 addendum: personas.yaml is no longer tracked
 
 The developer note above ("kept as-is") was superseded in 7.1: `personas.yaml` is
 no longer tracked in git (running the app from a checkout left a permanent
