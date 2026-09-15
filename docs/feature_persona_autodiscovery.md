@@ -272,4 +272,21 @@ If the sanitized persona name resolves to nothing (example: `***`), prevent crea
 - Remove the `testsetup.sh` and `restore.sh` scripts, or modify them to work with directories.
 - Mark `future_PersonaConfig.md` as obsolete - this feature doc supersedes it entirely.
 
+## 7.1 addendum: personas.yaml is no longer tracked
+
+The developer note above ("kept as-is") was superseded in 7.1: `personas.yaml` is
+no longer tracked in git (running the app from a checkout left a permanent
+`deleted: personas.yaml` in `git status`). The stock example personas now ship in a
+tracked `personas.yaml.example` template, which `load_personas()` seeds into the
+Personas directory when no directory exists at all — via the same
+`migrate_from_legacy_yaml()` with `backup=False`, i.e. the template is consumed
+**read-only** (never renamed, modified, or deleted, no `.bak`).
+
+The legacy `personas.yaml` migration (including the rename to `personas.yaml.bak`)
+remains in place for pre-7.1 user files and is checked *before* the template, so
+user data always wins. The seed gate is "directory does not exist", not "directory
+is empty": an existing-but-empty Personas directory is deliberately NOT re-seeded,
+so deleting every persona does not resurrect the stock examples on the next
+restart.
+
 

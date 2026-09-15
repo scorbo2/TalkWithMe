@@ -399,7 +399,8 @@ class TestGetPersonasDirectory:
 # ---------------------------------------------------------------------------
 
 class TestLoadPersonasDecisionMatrix:
-    """personas.yaml vs the Personas directory: which one wins, when?"""
+    """personas.yaml / personas.yaml.example vs the Personas directory:
+    which one wins, when?"""
 
     def test_legacy_yaml_only_is_migrated_once(self, tmp_project_root):
         (tmp_project_root / "personas.yaml").write_text(
@@ -438,6 +439,65 @@ class TestLoadPersonasDecisionMatrix:
         assert (tmp_project_root / "personas.yaml").exists()
         # And no partial directory is left behind.
         assert not (tmp_project_root / "Personas").exists()
+
+    def test_example_only_no_directory_seeds_examples_read_only(self, tmp_project_root):
+        (tmp_project_root / "personas.yaml.example").write_text(
+            "personas:\n  - name: Alex\n    system_prompt: p\n"
+        )
+        cfg = app_config.load_personas()
+        assert [p.name for p in cfg.personas] == ["Alex"]
+        assert (tmp_project_root / "Personas" / "Alex" / "prompt.md").exists()
+        # The example is a tracked template: seeded but never renamed or
+        # modified — no .bak, no deletion.
+        assert (tmp_project_root / "personas.yaml.example").exists()
+        assert not (tmp_project_root / "personas.yaml.example.bak").exists()
+
+    def test_example_ignored_silently_when_directory_populated(self, tmp_project_root, caplog):
+        (tmp_project_root / "personas.yaml.example").write_text(
+            "personas:\n  - name: Stale\n    system_prompt: p\n"
+        )
+        persona_dir = tmp_project_root / "Personas" / "Fresh"
+        persona_dir.mkdir(parents=True)
+        persona_dir.joinpath("prompt.md").write_text(
+            "---\ndescription: fresh\nrouter_hints: h\navatar_color: '#888888'\n"
+            "allow_tool_calls: false\n---\n\nYou are Fresh.\n"
+        )
+        with caplog.at_level(logging.WARNING):
+            cfg = app_config.load_personas()
+        assert [p.name for p in cfg.personas] == ["Fresh"]
+        # The example is install furniture, not user data: it is ignored
+        # WITHOUT the "IGNORED" warning that a stray legacy file gets.
+        assert (tmp_project_root / "personas.yaml.example").exists()
+        assert "IGNORED" not in caplog.text
+
+    def test_example_not_reseeded_into_existing_empty_directory(self, tmp_project_root):
+        # The seed gate is "directory does not exist", not "directory is
+        # empty": deleting every persona via the editor leaves an empty
+        # Personas/ dir, and the stock examples must not resurrect.
+        (tmp_project_root / "personas.yaml.example").write_text(
+            "personas:\n  - name: Alex\n    system_prompt: p\n"
+        )
+        (tmp_project_root / "Personas").mkdir()
+        cfg = app_config.load_personas()
+        assert cfg.personas == []
+        assert not (tmp_project_root / "Personas" / "Alex").exists()
+        assert (tmp_project_root / "personas.yaml.example").exists()
+
+    def test_legacy_yaml_wins_over_example_when_no_directory(self, tmp_project_root):
+        (tmp_project_root / "personas.yaml").write_text(
+            "personas:\n  - name: User\n    system_prompt: p\n"
+        )
+        (tmp_project_root / "personas.yaml.example").write_text(
+            "personas:\n  - name: Alex\n    system_prompt: p\n"
+        )
+        cfg = app_config.load_personas()
+        # User data beats the template: only the legacy persona is created.
+        assert [p.name for p in cfg.personas] == ["User"]
+        # The legacy file took the classic migration (rename to .bak)...
+        assert not (tmp_project_root / "personas.yaml").exists()
+        assert (tmp_project_root / "personas.yaml.bak").exists()
+        # ...while the template was left alone.
+        assert (tmp_project_root / "personas.yaml.example").exists()
 
 
 # ---------------------------------------------------------------------------

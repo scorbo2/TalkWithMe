@@ -42,7 +42,24 @@ Follow the development of this app on my YouTube channel:
     [Streamable HTTP transport](https://modelcontextprotocol.io/specification/2025-03-26/basic/transports/streamable-http).
     See [MCP tools](#mcp-tools-optional) for setup.
 
-## Quick Start
+## Quick Start - upgrading
+
+**If upgrading from an older version to 7.1 or higher, do this first**:
+
+```bash
+# Back up your settings and chatroom files:
+mv -i settings.yaml settings.yaml.keep 2>/dev/null
+mv -i chatrooms.yaml chatrooms.yaml.keep 2>/dev/null
+
+# These files are no longer tracked as of 7.1:
+git pull
+
+# Restore your settings and chatroom files:
+mv settings.yaml.keep settings.yaml 2>/dev/null
+mv chatrooms.yaml.keep chatrooms.yaml 2>/dev/null
+```
+
+## Quick start
 
 ```bash
 # Install dependencies
@@ -60,7 +77,7 @@ Most settings can be changed in the UI. Behind the scenes, configuration is stor
 
 - `settings.yaml` stores LLM, TTS, STT, and MCP server endpoints plus general chat parameters
 - `chatrooms.yaml` stores configured chat rooms (if any)
-- the `Personas/` directory stores all personas — one subdirectory per persona, each holding a `prompt.md` (frontmatter + system prompt), an optional `language.txt`, `ref.wav` + `ref.txt` (TTS voice reference), and an optional `image.<ext>` avatar. A legacy `personas.yaml`, if still present, is migrated to this layout automatically once on first startup (then renamed to `personas.yaml.bak` and ignored).
+- the `Personas/` directory stores all personas — one subdirectory per persona, each holding a `prompt.md` (frontmatter + system prompt), an optional `language.txt`, `ref.wav` + `ref.txt` (TTS voice reference), and an optional `image.<ext>` avatar. This directory does not exist on a fresh clone: on first startup, the two stock example personas (Alex and Luna) are created from the tracked `personas.yaml.example` template, which the app reads but never modifies. A legacy `personas.yaml` from an older version, if still present, is migrated to this layout automatically once on first startup (then renamed to `personas.yaml.bak` and ignored).
 
 ### Server settings
 
@@ -68,7 +85,9 @@ The UI offers a "Settings" control in the top right, which brings up the server 
 
 ![Server settings](screenshots/server_settings.png)
 
-The `settings.yaml` file on disk persists these settings:
+The `settings.yaml` file stores general application settings. This file does not exist
+on a fresh clone - default values are used on first run, and the file is created the
+first time you visit the Settings dialog and save. Here is an example of this file:
 
 ```yaml
 llm:
@@ -121,8 +140,8 @@ read on startup (restart the app after changes).
 
 TalkWithMe was built assuming a local LLM that needs no credentials. If your LLM is
 remote (OpenAI, Groq, a hosted server with auth, ...), you can optionally configure
-an API key. The key is deliberately **not** in `settings.yaml` (that file is tracked
-in git) — it is resolved once at startup from two sources, in priority order:
+an API key. The key is deliberately **not** in `settings.yaml` — it is resolved once
+at startup from two sources, in priority order:
 
 1. the `TALKWITHME_LLM_API_KEY` environment variable (the raw key value; wins over the file)
 2. an `llm_api_key` file in the project root (`llm_api_key = <your key>`)
@@ -161,6 +180,14 @@ the engine's own defaults apply. Point the base URL at a different engine and
 only that engine's parameters are shown and sent; the old engine's parameters
 are never transmitted to it (they remain harmlessly in `settings.yaml` until
 you delete them).
+
+After some experimenting you may have forgotten what the parameters used to
+be. The **Reset to defaults** button above the parameter list re-initializes
+every dynamic field exactly as a first connection would — sliders and
+dropdowns back at the engine's declared defaults, everything else blank
+("let the engine decide") — without touching the Base URL, timeout, or
+streaming settings. It changes nothing on the server until you click
+**Save**; closing the dialog without saving discards the reset.
 
 A legacy `settings.yaml` that still carries `num_steps`, `guidance_scale`,
 and/or `seed` directly under `tts:` loads fine: those keys are folded into
@@ -280,7 +307,9 @@ Here, you can:
 - **Create** a new chat room (names must be unique)
 - **Delete** a chat room (and its chat history)
 
-The `chatrooms.yaml` file persists these settings:
+The `chatrooms.yaml` file does not exist on first run. It defaults to an
+empty list (i.e. only the "default" chat room will be available), and is created
+automatically the first time you create a chat room. Here is an example of this file:
 
 ```yaml
 chat_rooms:
@@ -571,6 +600,11 @@ standalone script under `impl/` with per-engine install notes.
   - Add global system prompt option (#101)
   - Bug fix: cloning a persona should rename its directory (#102)
   - Bug fix: two chatroom deletion issues (#105)
+- **Work in progress; add date when ready** v7.1
+  - Minor: add favicon (#111)
+  - Minor: remove prepackaged `settings.yaml` and `chatrooms.yaml` (#113)
+  - Minor: `personas.yaml` -> `personas.yaml.example` and untrack `personas.yaml` (#119)
+  - Add "reset to defaults" button on TTS server settings (#121)
 
 ## License
 

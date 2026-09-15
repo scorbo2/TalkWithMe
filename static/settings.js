@@ -71,6 +71,11 @@ sfTtsCapRefreshBtn.addEventListener("click", () => {
     refreshTtsCapabilities(sfTtsBaseUrl.value.trim());
 });
 
+// "Reset to defaults" (plan M4.2): forget every customized dynamic TTS
+// parameter by re-rendering the section exactly as a first-time connection
+// would. Purely local until Save — see resetTtsParameters().
+sfTtsCapResetBtn.addEventListener("click", resetTtsParameters);
+
 /* ==========================================================================
    Modal lifecycle
    ========================================================================== */
@@ -87,6 +92,16 @@ async function openSettings() {
 
     // Server type is ephemeral — comes from health check, not settings
     updateTtsServerTypeField();
+
+    // Opening the dialog is a fresh connect: drop the previous session's
+    // in-memory dynamic state so the refresh below re-renders from the
+    // just-reloaded server values. Without the clear, a same-URL reopen
+    // would see a non-null prevDoc and re-apply whatever happened to be on
+    // screen — leaking unsaved edits (or a discarded "Reset to defaults")
+    // from a cancelled session into a new one, while the static fields
+    // above already follow the close-means-cancel rule.
+    ttsCapabilitiesDoc = null;
+    ttsCapabilitiesDocUrl = null;
 
     // Populate the dynamic TTS section from the live capabilities document
     // (plan M4). Runs after loadSettingsIntoForm on purpose: the saved
@@ -197,6 +212,41 @@ function renderTtsUnavailable(message) {
     ttsCapabilitiesDocUrl = null;
     renderTtsParameters(null, sfTtsParams, {});
     renderTtsInfo(null, sfTtsInfo, message);
+}
+
+/**
+ * Reset the dynamic parameter section to the engine's defaults (plan M4.2):
+ * re-render the CURRENT capabilities document from an EMPTY saved-values
+ * map — byte-for-byte the state a first-time connection renders (the
+ * null-saved-value branch of buildTtsWidget), so there is no separate
+ * "defaults" logic to drift out of sync with the renderer. Sliders and
+ * non-blank selects sit at the engine's declared defaults; every blankable
+ * field is blank, i.e. "let the engine decide".
+ *
+ * Saving after a reset then drops every saved customization: the blankable
+ * fields are omitted from the payload, and the always-sent widgets
+ * (checkboxes, sliders, selects with non-null defaults) go out at their
+ * engine defaults — functionally identical to sending nothing at all.
+ *
+ * Deliberately local until Save: the server's stored tts.parameters (and
+ * the ttsSavedParameters engine-switch cache) is not touched here, so a
+ * Cancel or reopen restores the saved values — exactly like any other
+ * discarded in-flight edit. With no renderable document (TTS off, no URL,
+ * unreachable server, or a version the app cannot render) there are no
+ * widgets on screen to reset, so the click is a no-op; the no-doc save
+ * pass-through then still guards against an accidental wipe.
+ */
+function resetTtsParameters() {
+    if (!ttsCapabilitiesDoc) return; // nothing rendered -> nothing to reset
+    if (selectTtsParams(ttsCapabilitiesDoc).error) {
+        return; // version gate / malformed doc: no inputs exist to reset
+    }
+    renderTtsParameters(ttsCapabilitiesDoc, sfTtsParams, {});
+    renderTtsInfo(
+        ttsCapabilitiesDoc,
+        sfTtsInfo,
+        "TTS parameters reset to the engine's defaults — click Save to apply.",
+    );
 }
 
 /* ==========================================================================

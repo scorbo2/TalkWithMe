@@ -5,7 +5,9 @@ Caches parsed config so we're not hitting disk on every request.
 
 Personas are stored as per-persona subdirectories (see
 app/services/persona_store.py). The legacy personas.yaml file is read
-only for the one-time startup migration — never for anything else.
+only for the one-time startup migration — never for anything else. The
+tracked personas.yaml.example template is likewise read-only: it seeds
+the two stock example personas when no Personas directory exists yet.
 """
 
 import logging
@@ -373,9 +375,20 @@ def load_personas() -> PersonasConfig:
       loudly; the directory wins and the YAML is left in place (it is
       IGNORED — not renamed, not deleted).
     * ``personas.yaml`` only -> one-time automatic migration into the
-      directory; the YAML is renamed to personas.yaml.bak on success.
-    * Neither -> log "No personas found!", create the (empty) directory,
-      and start with zero personas.
+      directory (an existing-but-empty directory counts as "only the
+      YAML" — it is user data being filled); the YAML is renamed to
+      personas.yaml.bak on success. Checked before the example so user
+      data always beats the template.
+    * No ``personas.yaml``, no Personas directory, and the tracked
+      ``personas.yaml.example`` present -> the stock example personas are
+      seeded from it. The example is consumed READ-ONLY: it is never
+      renamed, modified, or deleted (no .bak), and it is silently
+      ignored whenever the directory exists — even an existing-but-empty
+      one, so deleting every persona does not resurrect the examples on
+      the next restart.
+    * No ``personas.yaml`` and no Personas directory at all (the example
+      was deleted) -> log "No personas found!", create the (empty)
+      directory, and start with zero personas.
 
     Raises on fatal errors (uncreatable directory, failed migration):
     the app must not run while unsure where its personas live.
@@ -387,6 +400,7 @@ def load_personas() -> PersonasConfig:
 
     root = get_personas_directory()
     legacy_yaml = _PROJECT_ROOT / "personas.yaml"
+    example_yaml = _PROJECT_ROOT / "personas.yaml.example"
 
     if legacy_yaml.is_file():
         if _personas_directory_populated(root):
@@ -399,16 +413,26 @@ def load_personas() -> PersonasConfig:
         else:
             persona_store.migrate_from_legacy_yaml(legacy_yaml, root)
     elif not root.is_dir():
-        logger.error("No personas found!")
-        logger.error("Persona directory: %s", root)
-        try:
-            root.mkdir(parents=True)
-        except OSError as exc:
-            logger.error("Cannot create the Personas directory %s: %s — aborting startup.", root, exc)
-            raise persona_store.PersonaStorageError(
-                f"cannot create personas directory {root}: {exc}"
-            ) from exc
-        logger.info("Created empty Personas directory: %s", root)
+        # Note the stricter gate than the legacy branch above: the example
+        # only seeds when the directory is missing entirely, never into an
+        # existing-but-empty one (resurrection guard).
+        if example_yaml.is_file():
+            logger.info(
+                "No Personas directory; seeding example personas from %s",
+                example_yaml.name,
+            )
+            persona_store.migrate_from_legacy_yaml(example_yaml, root, backup=False)
+        else:
+            logger.error("No personas found!")
+            logger.error("Persona directory: %s", root)
+            try:
+                root.mkdir(parents=True)
+            except OSError as exc:
+                logger.error("Cannot create the Personas directory %s: %s — aborting startup.", root, exc)
+                raise persona_store.PersonaStorageError(
+                    f"cannot create personas directory {root}: {exc}"
+                ) from exc
+            logger.info("Created empty Personas directory: %s", root)
 
     _personas_cache = PersonasConfig(personas=persona_store.scan_personas_directory(root))
     return _personas_cache

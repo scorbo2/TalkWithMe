@@ -29,8 +29,19 @@
  *   - the modal wiring: the section renders from the live
  *     /api/tts/capabilities document (backend proxy), every "nothing to
  *     show" state explains itself, an engine switch refetches and says so,
- *     and a save with no document passes the saved parameters through
- *     instead of silently wiping them.
+ *     a save with no document passes the saved parameters through instead
+ *     of silently wiping them, and a reopen after a closed session
+ *     re-renders from the server's stored values (close means cancel —
+ *     unsaved edits do not leak across opens);
+ *   - the "Reset to defaults" button: re-renders the section from an EMPTY
+ *     saved-values map — the first-connect state — with no network traffic;
+ *     a no-op when no document is renderable (nothing to reset, and the
+ *     no-doc save pass-through must still protect the saved parameters);
+ *     local until Save (an unsaved reset is discarded on reopen, a
+ *     same-URL refresh keeps the reset state on screen), and a save after
+ *     a reset sends the always-sent widgets at their engine defaults while
+ *     every blankable field is omitted — the saved customization is
+ *     dropped, not hidden.
  *
  * How it works: the frontend scripts are browser globals (no ES modules),
  * so each test evaluates utils.js + state.js + tts-params.js + settings.js
@@ -1881,4 +1892,192 @@ test("capRefreshClick_unreachableUrl_showsNotReachable", async () => {
         h.elementById("sf-tts-info").children[0].textContent,
         "TTS server not reachable — parameter options unavailable",
     );
+});
+
+test("openSettings_afterUnsavedEditAndClose_restoresSavedValues_notOnScreenLeftovers", async () => {
+    // Opening the dialog is a fresh connect: close means cancel, so
+    // unsaved edits from a cancelled session must not leak into the next
+    // one — the section re-renders from the server's stored values (the
+    // same rule the static fields already follow via loadSettingsIntoForm).
+    // Before the open-time doc clear, a same-URL reopen re-applied whatever
+    // happened to be on screen, saved or not.
+    const h = createSettingsHarness(); // saved parameters: {num_steps: 16}
+    await h.sandbox.openSettings();
+
+    // WHEN the user edits a slider, closes without saving, and reopens:
+    rowByName(h.elementById("sf-tts-params"), "num_steps").widgetEl.value = "48";
+    h.sandbox.closeSettings();
+    await h.sandbox.openSettings();
+
+    // THEN the SAVED value is on screen, not the discarded in-flight edit:
+    assert.equal(
+        rowByName(h.elementById("sf-tts-params"), "num_steps").widgetEl.value,
+        "16",
+        "close = cancel: unsaved edits must not survive the reopen",
+    );
+});
+
+/* ==========================================================================
+    settings.js — "Reset to defaults" (plan M4.2)
+    ========================================================================== */
+
+test("capResetClick_docLoaded_reinitializesWidgetsToFirstConnectState_noFetch", async () => {
+    // The feature request: the user tweaked the parameters, saved, and now
+    // wants the engine's own defaults back — without remembering what they
+    // were. The saved value {num_steps: 16} is on screen; the doc default
+    // is 32.
+    const h = createSettingsHarness();
+    await h.sandbox.openSettings();
+    const container = h.elementById("sf-tts-params");
+    assert.equal(rowByName(container, "num_steps").widgetEl.value, "16");
+
+    // WHEN the user clicks "Reset to defaults":
+    h.elementById("sf-tts-cap-reset").dispatch("click", {});
+
+    // THEN the widgets show the FIRST-CONNECT state, not the saved values:
+    // sliders/selects at the engine's declared defaults, the blankable
+    // seed input empty ("let the engine decide"), the denoise checkbox at
+    // its doc default:
+    assert.equal(rowByName(container, "num_steps").widgetEl.value, "32");
+    assert.equal(rowByName(container, "guidance_scale").widgetEl.value, "2");
+    assert.equal(rowByName(container, "seed").widgetEl.value, "");
+    assert.equal(rowByName(container, "denoise").widgetEl.checked, true);
+    // AND the reset is purely local: no network traffic, the loaded doc is
+    // untouched, and the static TTS fields (explicitly out of scope) keep
+    // their values:
+    assert.equal(capabilitiesCalls(h).length, 1, "reset must not refetch capabilities");
+    assert.equal(h.get("ttsCapabilitiesDoc"), h.fetchStub.state.capabilities);
+    assert.equal(h.elementById("sf-tts-base-url").value, "http://localhost:8000");
+    assert.equal(h.elementById("sf-tts-timeout").value, 120);
+    assert.equal(h.elementById("sf-tts-streaming").checked, true);
+    // AND the action is disclosed with a transient note (same mechanism as
+    // the engine-switch note):
+    const lines = findClass(h.elementById("sf-tts-info"), "tts-info-line");
+    assert.equal(lines.length, 1);
+    assert.equal(
+        lines[0].textContent,
+        "TTS parameters reset to the engine's defaults — click Save to apply.",
+    );
+});
+
+test("capResetClick_thenSave_sendsDocDefaults_dropsSavedCustomizations", async () => {
+    // The point of the feature end to end: after Reset, a plain Save must
+    // DROP the saved customization, not just hide it. Blankable fields are
+    // omitted; the always-sent widgets go out at the engine's declared
+    // defaults (omnivoice: num_steps 32, guidance_scale 2, denoise true) —
+    // functionally identical to sending nothing, identical to what a
+    // first-connect save would have produced.
+    const h = createSettingsHarness(); // saved parameters: {num_steps: 16}
+    await h.sandbox.openSettings();
+
+    // WHEN the user clicks Reset and then Save, without touching anything:
+    h.elementById("sf-tts-cap-reset").dispatch("click", {});
+    h.elementById("settings-form").dispatch("submit", { preventDefault() {} });
+    await settle();
+
+    // THEN the PUT carries the first-connect payload — the saved 16 is
+    // gone, seed is absent (blank = not sent):
+    const call = putCall(h);
+    assert.ok(call, "expected a PUT /api/settings");
+    assert.deepEqual(fromVm(call.body.tts.parameters), {
+        num_steps: 32,
+        guidance_scale: 2,
+        denoise: true,
+    });
+    // ...and the backend persisted exactly that (the harness PUT mirrors
+    // the real endpoint), so a reopen would show the defaults:
+    assert.deepEqual(fromVm(h.fetchStub.state.settings.tts.parameters), {
+        num_steps: 32,
+        guidance_scale: 2,
+        denoise: true,
+    });
+});
+
+test("capResetClick_noCapabilitiesDoc_noop_savedParametersStillPassThrough", async () => {
+    // With no document loaded (server unreachable) there is nothing on
+    // screen to reset: the click must be a no-op — and, critically, the
+    // no-doc save pass-through must still protect the saved parameters. A
+    // reset that silently armed a wipe on the next save would be the
+    // data-loss class this modal has been burned by before.
+    const h = createSettingsHarness();
+    h.fetchStub.state.capabilitiesStatus = 503;
+    await h.sandbox.openSettings();
+    assert.equal(h.get("ttsCapabilitiesDoc"), null);
+    const statusLine = h.elementById("sf-tts-info").children[0].textContent;
+
+    // WHEN the user clicks Reset (nothing happens), then saves:
+    h.elementById("sf-tts-cap-reset").dispatch("click", {});
+    h.elementById("settings-form").dispatch("submit", { preventDefault() {} });
+    await settle();
+
+    // THEN the section is untouched (same single status line, no reset
+    // note) and the saved parameters passed through, not wiped:
+    assert.equal(h.elementById("sf-tts-info").children.length, 1);
+    assert.equal(h.elementById("sf-tts-info").children[0].textContent, statusLine);
+    assert.deepEqual(fromVm(putCall(h).body.tts.parameters), { num_steps: 16 });
+});
+
+test("capResetClick_versionGatedDoc_noop_noResetNote", async () => {
+    // A schema this app cannot render (T10 gate) has no widgets — the
+    // reset must not claim it did anything (no note, no re-render churn):
+    const h = createSettingsHarness({
+        capabilities: { ...loadFixture("omnivoice"), schema_version: 3 },
+    });
+    await h.sandbox.openSettings();
+    assert.equal(rows(h.elementById("sf-tts-params")).length, 0, "v3 renders no widgets");
+
+    // WHEN the user clicks Reset:
+    h.elementById("sf-tts-cap-reset").dispatch("click", {});
+
+    // THEN nothing happens: no reset note, no extra traffic:
+    const lines = findClass(h.elementById("sf-tts-info"), "tts-info-line");
+    assert.ok(
+        !lines.some((l) => /reset/i.test(l.textContent)),
+        `no reset note may appear for an unrenderable doc: ${lines.map((l) => l.textContent).join(" | ")}`,
+    );
+    assert.equal(capabilitiesCalls(h).length, 1, "reset must not refetch capabilities");
+});
+
+test("capResetClick_thenSameUrlRefresh_keepsResetState", async () => {
+    // A same-engine refetch (reconnect after a hiccup) re-applies what is
+    // ON SCREEN — not the saved values — so after a reset it must keep the
+    // default state, not pull the saved customization back onto the form:
+    const h = createSettingsHarness(); // saved parameters: {num_steps: 16}
+    await h.sandbox.openSettings();
+
+    // WHEN the user resets, then clicks Refresh on the SAME url:
+    h.elementById("sf-tts-cap-reset").dispatch("click", {});
+    h.fetchStub.state.capabilitiesByUrl.set("http://localhost:8000", {
+        doc: loadFixture("omnivoice"),
+    });
+    h.elementById("sf-tts-cap-refresh").dispatch("click", {});
+    await settle();
+
+    // THEN the on-screen (reset) state survives the refetch:
+    assert.equal(
+        rowByName(h.elementById("sf-tts-params"), "num_steps").widgetEl.value,
+        "32",
+        "same-URL refetch re-applies the on-screen state, not the saved value",
+    );
+});
+
+test("capResetClick_notSaved_reopenRestoresSavedValues", async () => {
+    // Reset is a local, pre-Save action: closing without saving must leave
+    // the server's stored values intact — the next open shows them again,
+    // exactly like any other discarded in-flight edit:
+    const h = createSettingsHarness(); // saved parameters: {num_steps: 16}
+    await h.sandbox.openSettings();
+
+    // WHEN the user resets, closes without saving, and reopens:
+    h.elementById("sf-tts-cap-reset").dispatch("click", {});
+    h.sandbox.closeSettings();
+    await h.sandbox.openSettings();
+
+    // THEN the saved value is back on screen and no PUT ever went out:
+    assert.equal(
+        rowByName(h.elementById("sf-tts-params"), "num_steps").widgetEl.value,
+        "16",
+        "an unsaved reset must not clobber the saved value",
+    );
+    assert.equal(putCall(h), undefined, "no save happened");
 });

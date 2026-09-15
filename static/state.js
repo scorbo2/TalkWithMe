@@ -139,6 +139,11 @@ const sfTtsBaseUrl = document.getElementById("sf-tts-base-url");
 // currently in the field (which may be an unsaved edit) and re-render the
 // dynamic parameter section in place — no save + reopen required.
 const sfTtsCapRefreshBtn = document.getElementById("sf-tts-cap-refresh");
+// "Reset to defaults" button above the dynamic parameter list (plan M4.2):
+// re-renders the section from an EMPTY saved-values map — the first-connect
+// state — so every widget shows the engine's declared default (or blank =
+// "let the engine decide"). Local until Save; a no-op with no doc loaded.
+const sfTtsCapResetBtn = document.getElementById("sf-tts-cap-reset");
 // Dynamic TTS section (TTS generification, plan M4): containers filled by
 // renderTtsInfo() / renderTtsParameters() from the engine's /capabilities doc.
 const sfTtsInfo = document.getElementById("sf-tts-info");

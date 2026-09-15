@@ -3,14 +3,19 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>TalkWithMe v7.0</title>
+    <title>TalkWithMe v7.1</title>
     <link rel="stylesheet" href="/static/style.css">
+    <link rel="apple-touch-icon" sizes="180x180" href="/static/apple-touch-icon.png">
+    <link rel="icon" href="/static/favicon.ico">
+    <link rel="icon" type="image/png" sizes="32x32" href="/static/favicon-32x32.png">
+    <link rel="icon" type="image/png" sizes="16x16" href="/static/favicon-16x16.png">
+    <link rel="manifest" href="/static/site.webmanifest">
 </head>
 <body>
     <div id="app">
         <!-- Top bar -->
         <header id="topbar">
-            <h1>TalkWithMe v7.0</h1>
+            <h1>TalkWithMe v7.1</h1>
             <div class="topbar-actions">
                 <label for="theme-select" class="theme-label">Theme</label>
                 <select id="theme-select" title="Choose color theme">
@@ -330,6 +335,16 @@
                                  engine info + parameter widgets are rendered here
                                  from the connected engine's /capabilities doc. -->
                             <div id="sf-tts-info" class="tts-info"></div>
+                            <!-- "Reset to defaults" acts on the parameter list below
+                                 (the Refresh button on the Base URL row acts on the
+                                 URL). type=button: must never submit the form. -->
+                            <div class="tts-params-actions">
+                                <button id="sf-tts-cap-reset" type="button"
+                                        class="btn-secondary btn-small"
+                                        title="Reset all dynamic TTS parameters to the engine's defaults (click Save to apply)">
+                                    Reset to defaults
+                                </button>
+                            </div>
                             <div id="sf-tts-params" class="tts-params"></div>
                             <div class="form-row">
                                 <label for="sf-tts-timeout">Timeout <span class="field-hint">(5–300s)</span></label>

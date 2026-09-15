@@ -1,9 +1,8 @@
 """LLM API key resolution (docs/feature_api_key.md).
 
-The key is deliberately NOT part of AppSettings: settings.yaml is tracked
-in git, and GET/PUT /api/settings round-trip the settings models — a key
-in the model would leak to disk and onto the API surface. It is resolved
-once per process, from (in priority order):
+The key is deliberately NOT part of AppSettings: GET/PUT /api/settings
+round-trip the settings models — a key in the model would leak to disk
+and onto the API surface. It is resolved once per process, from (in priority order):
 
 1. the ``TALKWITHME_LLM_API_KEY`` environment variable (used verbatim,
    apart from surrounding whitespace — real keys never contain any, so

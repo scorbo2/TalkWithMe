@@ -86,7 +86,7 @@ async def lifespan(app: FastAPI):
     app_config.load_chatrooms()
 
     # Resolve the LLM API key once (env var, then llm_api_key file). It is
-    # deliberately not part of settings.yaml (that file is tracked in git)
+    # deliberately not part of settings.yaml
     # and is not reloadable at runtime — a restart is required (docs/
     # feature_api_key.md). Also warn when the LLM URL is plain http.
     llm_auth.load_llm_api_key()
