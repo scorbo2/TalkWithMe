@@ -1430,6 +1430,18 @@ html, body {
     white-space: nowrap;
 }
 
+/* "Reset to defaults" action row above the dynamic parameter list: it acts
+   on the list below (the Refresh button acts on the Base URL, so it stays
+   on that row). Left-aligned — it is the section's action, not a field. */
+.tts-params-actions {
+    display: flex;
+}
+
+.tts-params-actions button {
+    flex-shrink: 0;
+    white-space: nowrap;
+}
+
 /* ==========================================================================
    Chat Rooms Editor Modal
    ========================================================================== */

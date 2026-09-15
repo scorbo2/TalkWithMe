@@ -181,6 +181,14 @@ only that engine's parameters are shown and sent; the old engine's parameters
 are never transmitted to it (they remain harmlessly in `settings.yaml` until
 you delete them).
 
+After some experimenting you may have forgotten what the parameters used to
+be. The **Reset to defaults** button above the parameter list re-initializes
+every dynamic field exactly as a first connection would — sliders and
+dropdowns back at the engine's declared defaults, everything else blank
+("let the engine decide") — without touching the Base URL, timeout, or
+streaming settings. It changes nothing on the server until you click
+**Save**; closing the dialog without saving discards the reset.
+
 A legacy `settings.yaml` that still carries `num_steps`, `guidance_scale`,
 and/or `seed` directly under `tts:` loads fine: those keys are folded into
 `parameters` at startup and rewritten in the new shape on the next settings
@@ -596,6 +604,7 @@ standalone script under `impl/` with per-engine install notes.
   - Minor: add favicon (#111)
   - Minor: remove prepackaged `settings.yaml` and `chatrooms.yaml` (#113)
   - Minor: `personas.yaml` -> `personas.yaml.example` and untrack `personas.yaml` (#119)
+  - Add "reset to defaults" button on TTS server settings (#121)
 
 ## License
 

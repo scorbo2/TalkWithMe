@@ -335,6 +335,16 @@
                                  engine info + parameter widgets are rendered here
                                  from the connected engine's /capabilities doc. -->
                             <div id="sf-tts-info" class="tts-info"></div>
+                            <!-- "Reset to defaults" acts on the parameter list below
+                                 (the Refresh button on the Base URL row acts on the
+                                 URL). type=button: must never submit the form. -->
+                            <div class="tts-params-actions">
+                                <button id="sf-tts-cap-reset" type="button"
+                                        class="btn-secondary btn-small"
+                                        title="Reset all dynamic TTS parameters to the engine's defaults (click Save to apply)">
+                                    Reset to defaults
+                                </button>
+                            </div>
                             <div id="sf-tts-params" class="tts-params"></div>
                             <div class="form-row">
                                 <label for="sf-tts-timeout">Timeout <span class="field-hint">(5–300s)</span></label>
