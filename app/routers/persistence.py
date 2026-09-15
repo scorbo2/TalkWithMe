@@ -71,6 +71,37 @@ def upload_audio(
         raise HTTPException(status_code=500, detail=f"Failed to save audio: {exc}")
 
 
+@router.get("/audio/{room_name}/all")
+def room_audio_files(room_name: str):
+    """Return all messages for a room with audio info, ordered by sequence.
+
+    Used by the "Play All" button to replay an entire conversation.
+    Returns a list of {message_id, has_audio, filename} dicts in history order.
+    Messages without audio are included so the frontend can find the correct
+    starting point when shift+clicking a message that has no TTS audio.
+    """
+    _require_valid_room_name(room_name)
+    history = load_history(room_name)
+    audio_files = []
+    for msg in history:
+        audio_list = msg.get("audio", [])
+        if audio_list:
+            for filename in audio_list:
+                if _is_plain_filename(filename):
+                    audio_files.append({
+                        "message_id": msg.get("id", ""),
+                        "has_audio": True,
+                        "filename": filename,
+                    })
+        else:
+            audio_files.append({
+                "message_id": msg.get("id", ""),
+                "has_audio": False,
+                "filename": None,
+            })
+    return audio_files
+
+
 @router.get("/audio/{room_name}/{filename}")
 def serve_audio(room_name: str, filename: str):
     """Serve a persisted audio file for playback.

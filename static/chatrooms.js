@@ -181,6 +181,10 @@ function setupChatRoomEventListeners() {
  * persisted history for the new room, and updates the persona list.
  */
 async function switchChatRoom(roomName) {
+    // Stop any ongoing audio before switching
+    stopAllPlayback();
+    stopAllTTS();
+
     currentChatRoom = roomName;
 
     // Clear chat panel momentarily

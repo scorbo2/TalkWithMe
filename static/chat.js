@@ -313,6 +313,15 @@ function appendUserBubble(text, messageId) {
     addDeleteButtonToRow(row, messageId);
     messagesEl.appendChild(row);
     scrollToBottom();
+
+    // Shift+Click to play audio from this message onward
+    row.addEventListener("click", (e) => {
+        if (e.shiftKey) {
+            e.preventDefault();
+            const roomName = window.currentChatRoom || currentChatRoom;
+            playAllAudioFrom(roomName, messageId);
+        }
+    });
 }
 
 function createAssistantBubble(whoHint) {
@@ -348,6 +357,16 @@ function createAssistantBubble(whoHint) {
     // The message ID is not known until the "start" event; the click
     // handler falls back to row.dataset.messageId at click time.
     addDeleteButtonToRow(row, null, true);
+
+    // Shift+Click to play audio from this message onward
+    row.addEventListener("click", (e) => {
+        if (e.shiftKey) {
+            e.preventDefault();
+            const roomName = window.currentChatRoom || currentChatRoom;
+            const msgId = row.dataset.messageId;
+            if (msgId) playAllAudioFrom(roomName, msgId);
+        }
+    });
 
     return row;
 }
@@ -592,6 +611,14 @@ function appendPersistedUserBubble(msg, roomName) {
         row.dataset.messageId = msg.id;
     }
 
+    // Shift+Click to play audio from this message onward
+    row.addEventListener("click", (e) => {
+        if (e.shiftKey) {
+            e.preventDefault();
+            playAllAudioFrom(roomName, msg.id);
+        }
+    });
+
     // Wrapper keeps bubble + audio stacked vertically.
     const wrapper = document.createElement("div");
     wrapper.className = "user-message-content";
@@ -620,6 +647,15 @@ function appendPersistedUserBubble(msg, roomName) {
     row.appendChild(wrapper);
     addDeleteButtonToRow(row, msg.id);
     messagesEl.appendChild(row);
+    scrollToBottom();
+
+    // Shift+Click to play audio from this message onward
+    row.addEventListener("click", (e) => {
+        if (e.shiftKey) {
+            e.preventDefault();
+            playAllAudioFrom(roomName, msg.id);
+        }
+    });
 }
 
 function appendPersistedAssistantBubble(msg, roomName) {
@@ -628,6 +664,14 @@ function appendPersistedAssistantBubble(msg, roomName) {
     if (msg.id) {
         row.dataset.messageId = msg.id;
     }
+
+    // Shift+Click to play audio from this message onward
+    row.addEventListener("click", (e) => {
+        if (e.shiftKey) {
+            e.preventDefault();
+            playAllAudioFrom(roomName, msg.id);
+        }
+    });
 
     // Find persona info for avatar
     const persona = personas.find(p => p.name === msg.sender);

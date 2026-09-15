@@ -126,6 +126,12 @@ function setupEventListeners() {
 
     newChatBtn.addEventListener("click", newChat);
     ttsToggleBtn.addEventListener("click", toggleTTS);
+    document.getElementById("btn-play-all").addEventListener("click", () => {
+        playAllAudio(currentChatRoom);
+    });
+    document.getElementById("btn-stop-all").addEventListener("click", () => {
+        stopAllPlayback();
+    });
     micBtn.addEventListener("click", toggleMicrophone);
     themeSelectEl.addEventListener("change", () => {
         applyTheme(themeSelectEl.value, true);
@@ -145,6 +151,10 @@ function setupEventListeners() {
 
 async function newChat() {
     try {
+        // Stop any ongoing TTS/playback audio before clearing
+        stopAllPlayback();
+        stopAllTTS();
+
         // POST /api/session/new clears both the in-memory session AND
         // the persisted files for the current room.
         await fetch("/api/session/new", { method: "POST" });

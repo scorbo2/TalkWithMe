@@ -140,7 +140,7 @@ async function processAudioBufferQueue() {
     const buffer = audioBufferQueue.shift();
     try {
         await playAudio(buffer);
-        await new Promise(resolve => setTimeout(resolve, 80)); // brief inter-sentence gap
+        await new Promise(resolve => setTimeout(resolve, 250)); // inter-sentence gap
     } catch (err) {
         console.warn("Audio buffer playback error:", err);
     } finally {
@@ -216,6 +216,231 @@ function playAudio(buffer) {
         source.connect(audioCtx.destination);
         source.onended = resolve;
         source.start();
+    });
+}
+
+/* ==========================================================================
+   Play All — replay entire conversation audio
+   ========================================================================== */
+
+let playAllAbort = null;  // AbortController for stopping playback
+let playAllActive = false;  // Is playback currently running?
+
+function updatePlayAllUI() {
+    const playBtn = document.getElementById("btn-play-all");
+    const stopBtn = document.getElementById("btn-stop-all");
+    if (playBtn && stopBtn) {
+        playBtn.style.display = playAllActive ? "none" : "inline-block";
+        stopBtn.style.display = playAllActive ? "inline-block" : "none";
+    }
+}
+
+async function playAllAudio(roomName) {
+    // Stop any current playback — close old AudioContext to kill buffered audio
+    if (playAllAbort) {
+        playAllAbort.abort();
+    }
+    if (audioCtx) {
+        try { audioCtx.close(); } catch (_) {}
+        audioCtx = null;
+    }
+    const myAbort = new AbortController();
+    playAllAbort = myAbort;
+    const signal = myAbort.signal;
+
+    // Pause TTS streaming while playing all
+    const wasTtsEnabled = ttsEnabled;
+    ttsEnabled = false;
+    playAllActive = true;
+    updatePlayAllUI();
+
+    try {
+        const roomName = window.currentChatRoom || currentChatRoom;
+        const resp = await fetch(`/api/persist/audio/${encodeURIComponent(roomName)}/all`);
+        if (!resp.ok) {
+            console.warn("Failed to load room audio list:", resp.status);
+            return;
+        }
+        const items = await resp.json();
+        if (!items.length) {
+            console.log("No audio files in this room");
+            return;
+        }
+
+        // Initialize AudioContext if needed
+        if (!audioCtx) {
+            audioCtx = new (window.AudioContext || window.webkitAudioContext())();
+        }
+
+        for (const item of items) {
+            if (signal.aborted) break;
+
+            if (!item.has_audio) continue;
+            try {
+                const audioResp = await fetch(
+                    `/api/persist/audio/${encodeURIComponent(roomName)}/${encodeURIComponent(item.filename)}`
+                );
+                if (!audioResp.ok) continue;
+
+                const blob = await audioResp.blob();
+                const arrayBuffer = await blob.arrayBuffer();
+                const decoded = await audioCtx.decodeAudioData(arrayBuffer);
+
+                if (signal.aborted) break;
+                await playAudio(decoded);
+                await new Promise(resolve => setTimeout(resolve, 200)); // gap between messages
+            } catch (err) {
+                if (err.name === 'AbortError') break;
+                console.warn("Play all: failed to play", item.filename, err);
+            }
+        }
+    } catch (err) {
+        console.warn("Play all failed:", err);
+    } finally {
+        // If a new shift+click already replaced us, don't touch its state
+        if (playAllAbort === myAbort) {
+            playAllAbort = null;
+            playAllActive = false;
+            updatePlayAllUI();
+            ttsEnabled = wasTtsEnabled;
+            clearMessageHighlight();
+        }
+    }
+}
+
+function stopAllPlayback() {
+    if (playAllAbort) {
+        playAllAbort.abort();
+        playAllAbort = null;
+    }
+    if (audioCtx) {
+        try { audioCtx.close(); } catch (_) {}
+        audioCtx = null;
+    }
+    playAllActive = false;
+    updatePlayAllUI();
+    clearMessageHighlight();
+}
+
+function stopAllTTS() {
+    // Clear the TTS request and audio queues
+    ttsRequestQueue.length = 0;
+    audioBufferQueue.length = 0;
+    audioQueue.length = 0;
+    isPlayingAudio = false;
+    isFetchingTTS = false;
+    isPlayingAudioBuffer = false;
+    sentenceBuffer = "";
+    // Stop any currently playing AudioContext source
+    if (audioCtx) {
+        audioCtx.close();
+        audioCtx = null;
+    }
+}
+
+async function playAllAudioFrom(roomName, startMessageId) {
+    // Stop any current playback — close old AudioContext to kill buffered audio
+    if (playAllAbort) {
+        playAllAbort.abort();
+    }
+    if (audioCtx) {
+        try { audioCtx.close(); } catch (_) {}
+        audioCtx = null;
+    }
+    const myAbort = new AbortController();
+    playAllAbort = myAbort;
+    const signal = myAbort.signal;
+
+    // Highlight immediately — before any async work
+    highlightMessage(startMessageId);
+
+    // Pause TTS streaming while playing all
+    const wasTtsEnabled = ttsEnabled;
+    ttsEnabled = false;
+    playAllActive = true;
+    updatePlayAllUI();
+
+    try {
+        const resp = await fetch(`/api/persist/audio/${encodeURIComponent(roomName)}/all`);
+        if (!resp.ok) {
+            console.warn("Failed to load room audio list:", resp.status);
+            return;
+        }
+        const items = await resp.json();
+        if (!items.length) {
+            console.log("No audio files in this room");
+            return;
+        }
+
+        // Find the starting index — start from the clicked message,
+        // then find the next one that actually has audio
+        let startIndex = 0;
+        if (startMessageId) {
+            const msgIndex = items.findIndex(item => item.message_id === startMessageId);
+            if (msgIndex !== -1) {
+                startIndex = items.findIndex((item, i) => i >= msgIndex && item.has_audio);
+                if (startIndex === -1) {
+                    // No audio after this message, play from beginning
+                    startIndex = 0;
+                }
+            }
+        }
+
+        // Initialize AudioContext if needed
+        if (!audioCtx) {
+            audioCtx = new (window.AudioContext || window.webkitAudioContext())();
+        }
+
+        for (let i = startIndex; i < items.length; i++) {
+            if (signal.aborted) break;
+
+            const item = items[i];
+            if (!item.has_audio) continue;  // skip messages without TTS audio
+            try {
+                const audioResp = await fetch(
+                    `/api/persist/audio/${encodeURIComponent(roomName)}/${encodeURIComponent(item.filename)}`
+                );
+                if (!audioResp.ok) continue;
+
+                const blob = await audioResp.blob();
+                const arrayBuffer = await blob.arrayBuffer();
+                const decoded = await audioCtx.decodeAudioData(arrayBuffer);
+
+                if (signal.aborted) break;
+                await playAudio(decoded);
+                await new Promise(resolve => setTimeout(resolve, 200));
+            } catch (err) {
+                if (err.name === 'AbortError') break;
+                console.warn("Play all: failed to play", item.filename, err);
+            }
+        }
+    } catch (err) {
+        console.warn("Play all failed:", err);
+    } finally {
+        // If a new shift+click already replaced us, don't touch its state
+        if (playAllAbort === myAbort) {
+            playAllAbort = null;
+            playAllActive = false;
+            updatePlayAllUI();
+            ttsEnabled = wasTtsEnabled;
+            clearMessageHighlight();
+        }
+    }
+}
+
+function highlightMessage(messageId) {
+    clearMessageHighlight();
+    if (!messageId) return;
+    const row = document.querySelector(`.message-row[data-message-id="${messageId}"]`);
+    if (row) {
+        row.classList.add("playback-start");
+        row.scrollIntoView({ behavior: "smooth", block: "center" });
+    }
+}
+
+function clearMessageHighlight() {
+    document.querySelectorAll(".message-row.playback-start").forEach(row => {
+        row.classList.remove("playback-start");
     });
 }
 

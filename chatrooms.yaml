@@ -1,1 +1,34 @@
-chat_rooms: []
+chat_rooms:
+- name: echo-test
+  persona_names:
+  - Waldemar
+  - Alex
+  - Luna
+  - Picard
+  echo_chamber: false
+- name: Proba
+  persona_names: []
+  echo_chamber: false
+- name: Captain and me
+  persona_names:
+  - Picard
+  echo_chamber: false
+- name: Next generation
+  persona_names:
+  - Picard
+  - Worf
+  - Troi
+  - Data
+  - Riker
+  - Geordi
+  echo_chamber: false
+- name: Learning room
+  persona_names:
+  - Data_2
+  - Dr. Beverly Crusher_2
+  - Geordi_2
+  - Picard_2
+  - Riker_2
+  - Troi_2
+  - Worf_2
+  echo_chamber: false

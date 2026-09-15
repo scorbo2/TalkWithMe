@@ -446,17 +446,33 @@ html, body {
     align-items: flex-end;
     gap: 8px;
     max-width: 80%;
+    user-select: none;
+    -webkit-user-select: none;
 }
 
 .message-row.user {
     align-self: flex-end;
     flex-direction: row-reverse;
+    cursor: pointer;
 }
 
 .message-row.assistant {
     align-self: flex-start;
     align-items: flex-start; /* Top-align avatar with bubble, not bottom */
     gap: 12px;               /* Wider gap to match the larger avatar */
+    cursor: pointer;
+}
+
+.message-row.playback-start {
+    outline: 2px solid var(--accent, #4a9eff);
+    outline-offset: 4px;
+    border-radius: 8px;
+    animation: pulse-highlight 1.5s ease-in-out infinite;
+}
+
+@keyframes pulse-highlight {
+    0%, 100% { outline-color: var(--accent, #4a9eff); }
+    50% { outline-color: transparent; }
 }
 
 .bubble-avatar {

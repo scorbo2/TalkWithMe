@@ -8,6 +8,7 @@ STT routing lives in its own module: app.routers.stt
 """
 
 import logging
+import re
 from typing import Optional
 
 from fastapi import APIRouter, Query
@@ -137,8 +138,12 @@ async def tts_proxy(req: TTSRequest):
     if not audio_b64 or not transcript:
         return JSONResponse(status_code=503, content={"detail": "TTS reference files unavailable"})
 
+    # Sanitize markdown that TTS would read literally (* $ _ ` # > -)
+    text = re.sub(r'[*_$`#>-]', '', req.text)
+    text = re.sub(r'\s+', ' ', text).strip()
+
     result = await synthesize(
-        text=req.text,
+        text=text,
         reference_text=transcript,
         audio_base64=audio_b64,
         language=persona.reference_audio_language,
