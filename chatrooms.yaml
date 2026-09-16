@@ -32,3 +32,9 @@ chat_rooms:
   - Troi_2
   - Worf_2
   echo_chamber: false
+- name: brblj
+  persona_names: []
+  echo_chamber: false
+- name: '1'
+  persona_names: []
+  echo_chamber: false
