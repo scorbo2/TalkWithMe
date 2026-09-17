@@ -36,5 +36,12 @@ chat_rooms:
   persona_names: []
   echo_chamber: false
 - name: '1'
-  persona_names: []
+  persona_names:
+  - Data_2
+  - Dr Beverly Crusher_2
+  - Geordi_2
+  - Picard_2
+  - Riker_2
+  - Troi_2
+  - Worf_2
   echo_chamber: false
