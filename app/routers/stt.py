@@ -10,9 +10,9 @@ import logging
 from fastapi import APIRouter
 from fastapi.responses import JSONResponse
 
-from app.config import get_settings
+from app.config import get_settings, resolve_stt_language_policy
 from app.models import STTRequest, STTResponse, STTHealthResponse
-from app.services.stt_client import check_stt_health, transcribe_audio
+from app.services.stt_client import check_stt_health, transcribe_with_policy
 
 logger = logging.getLogger(__name__)
 router = APIRouter(tags=["stt"])
@@ -47,7 +47,8 @@ async def stt_proxy(req: STTRequest):
 
     try:
         mime_type = req.audio_mime_type or "audio/webm"
-        result = await transcribe_audio(audio_bytes, mime_type=mime_type)
+        policy = resolve_stt_language_policy(req.chat_room)
+        result = await transcribe_with_policy(audio_bytes, mime_type, policy)
     except Exception:
         return JSONResponse(status_code=502, content={"detail": "Unable to process STT data"})
 

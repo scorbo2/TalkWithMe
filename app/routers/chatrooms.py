@@ -14,6 +14,7 @@ from app import persistence
 from app.config import (
     ChatRoom,
     ChatRoomsConfig,
+    STTLanguagePolicy,
     get_chatrooms,
     get_personas,
     is_valid_room_name,
@@ -24,6 +25,8 @@ from app.models import (
     ChatRoomCreateRequest,
     ChatRoomResponse,
     EchoChamberRequest,
+    STTLanguagePolicyRequest,
+    STTLanguagePolicyResponse,
 )
 from app.session import session
 
@@ -34,7 +37,16 @@ DEFAULT_ROOM = "default"
 
 
 def _to_response(room: ChatRoom) -> ChatRoomResponse:
-    return ChatRoomResponse(name=room.name, persona_names=list(room.persona_names), echo_chamber=room.echo_chamber)
+    return ChatRoomResponse(
+        name=room.name,
+        persona_names=list(room.persona_names),
+        echo_chamber=room.echo_chamber,
+        stt_language_policy=(
+            STTLanguagePolicyResponse(**room.stt_language_policy.model_dump())
+            if room.stt_language_policy is not None
+            else None
+        ),
+    )
 
 
 @router.get("", response_model=List[ChatRoomResponse])
@@ -174,7 +186,7 @@ def assign_personas(name: str, req: AssignPersonasRequest):
         if pname not in updated_names:
             updated_names.append(pname)
 
-    updated_room = ChatRoom(name=room.name, persona_names=updated_names, echo_chamber=room.echo_chamber)
+    updated_room = room.model_copy(update={"persona_names": updated_names})
     updated_rooms = [updated_room if r.name.lower() == room.name.lower() else r for r in config.chat_rooms]
     save_chatrooms(ChatRoomsConfig(chat_rooms=updated_rooms))
     return _to_response(updated_room)
@@ -195,7 +207,7 @@ def remove_persona_from_room(name: str, persona_name: str):
         raise HTTPException(status_code=404, detail=f"Chat room '{name}' not found.")
 
     updated_names = [p for p in room.persona_names if p != persona_name]
-    updated_room = ChatRoom(name=room.name, persona_names=updated_names, echo_chamber=room.echo_chamber)
+    updated_room = room.model_copy(update={"persona_names": updated_names})
     updated_rooms = [updated_room if r.name.lower() == room.name.lower() else r for r in config.chat_rooms]
     save_chatrooms(ChatRoomsConfig(chat_rooms=updated_rooms))
     return _to_response(updated_room)
@@ -213,11 +225,48 @@ def set_echo_chamber(name: str, req: EchoChamberRequest):
     room = next((r for r in config.chat_rooms if r.name.lower() == name.lower()), None)
     if not room:
         raise HTTPException(status_code=404, detail=f"Chat room '{name}' not found.")
-    updated_room = ChatRoom(
-        name=room.name,
-        persona_names=list(room.persona_names),
-        echo_chamber=req.echo_chamber,
-    )
+    updated_room = room.model_copy(update={"echo_chamber": req.echo_chamber})
+    updated_rooms = [updated_room if r.name.lower() == room.name.lower() else r for r in config.chat_rooms]
+    save_chatrooms(ChatRoomsConfig(chat_rooms=updated_rooms))
+    return _to_response(updated_room)
+
+
+@router.put("/{name}/stt-language-policy", response_model=ChatRoomResponse)
+def set_stt_language_policy(name: str, req: STTLanguagePolicyRequest):
+    """Set a room-level STT language policy override. Cannot modify the 'default' room.
+
+    Replaces any existing override wholesale (no field-by-field merging) —
+    the same full-replacement stance as the global stt: settings section.
+    """
+    if name.lower() == DEFAULT_ROOM:
+        raise HTTPException(
+            status_code=400,
+            detail=f"The '{DEFAULT_ROOM}' chat room cannot be modified.",
+        )
+    config = get_chatrooms()
+    room = next((r for r in config.chat_rooms if r.name.lower() == name.lower()), None)
+    if not room:
+        raise HTTPException(status_code=404, detail=f"Chat room '{name}' not found.")
+    policy = STTLanguagePolicy(**req.model_dump())
+    updated_room = room.model_copy(update={"stt_language_policy": policy})
+    updated_rooms = [updated_room if r.name.lower() == room.name.lower() else r for r in config.chat_rooms]
+    save_chatrooms(ChatRoomsConfig(chat_rooms=updated_rooms))
+    return _to_response(updated_room)
+
+
+@router.delete("/{name}/stt-language-policy", response_model=ChatRoomResponse)
+def clear_stt_language_policy(name: str):
+    """Clear a room's STT language policy override (revert to inheriting global). Cannot modify the 'default' room."""
+    if name.lower() == DEFAULT_ROOM:
+        raise HTTPException(
+            status_code=400,
+            detail=f"The '{DEFAULT_ROOM}' chat room cannot be modified.",
+        )
+    config = get_chatrooms()
+    room = next((r for r in config.chat_rooms if r.name.lower() == name.lower()), None)
+    if not room:
+        raise HTTPException(status_code=404, detail=f"Chat room '{name}' not found.")
+    updated_room = room.model_copy(update={"stt_language_policy": None})
     updated_rooms = [updated_room if r.name.lower() == room.name.lower() else r for r in config.chat_rooms]
     save_chatrooms(ChatRoomsConfig(chat_rooms=updated_rooms))
     return _to_response(updated_room)

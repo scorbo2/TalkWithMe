@@ -21,7 +21,7 @@ from tests.factories import (
     make_settings,
     make_unexpected_field_422,
 )
-from app.config import STTConfig, TTSConfig
+from app.config import STTConfig, STTLanguagePolicy, TTSConfig
 
 
 def _run(coro):
@@ -1115,6 +1115,212 @@ class TestTranscribeAudio:
         _active_stt(monkeypatch)
         _patch_http(monkeypatch, lambda method, url, **kw: json_response(500, {}))
         assert _run(stt_client.transcribe_audio(b"x")) is None
+
+    def test_no_language_omits_the_field(self, monkeypatch):
+        # Backward compatibility: the default (no language argument) must
+        # send exactly {"response_format": "json"} — no "language" key at
+        # all — so Whisper auto-detects exactly as it did before this
+        # parameter existed.
+        _active_stt(monkeypatch)
+        seen = {}
+        _patch_http(monkeypatch, lambda method, url, **kw: (
+            seen.__setitem__("data", kw.get("data")), json_response(200, {"text": "ok"}))[1])
+
+        _run(stt_client.transcribe_audio(b"x"))
+
+        assert seen["data"] == {"response_format": "json"}
+        assert "language" not in seen["data"]
+
+    def test_language_argument_is_sent_as_form_field(self, monkeypatch):
+        _active_stt(monkeypatch)
+        seen = {}
+        _patch_http(monkeypatch, lambda method, url, **kw: (
+            seen.__setitem__("data", kw.get("data")), json_response(200, {"text": "ciao"}))[1])
+
+        _run(stt_client.transcribe_audio(b"x", language="it"))
+
+        assert seen["data"] == {"response_format": "json", "language": "it"}
+
+
+# ---------------------------------------------------------------------------
+# STT language policy (two-pass primary_fallback, fixed, auto)
+# ---------------------------------------------------------------------------
+
+class TestSelectPrimaryFallbackLanguage:
+    """Table straight from the real-world observed detections."""
+
+    POLICY = STTLanguagePolicy(
+        mode="primary_fallback", primary_language="it", fallback_language="en", fallback_threshold=0.80,
+    )
+
+    @pytest.mark.parametrize("detected,prob,expected", [
+        ("en", 0.961561, "en"),
+        ("en", 0.820641, "en"),
+        ("en", 0.79, "it"),          # just under threshold -> primary
+        ("it", 0.915885, "it"),
+        ("it", 0.447923, "it"),
+        ("pt", 0.249793, "it"),      # wrong language entirely -> primary
+        ("la", 0.243851, "it"),
+        ("it", 0.801477, "it"),      # confidently detected PRIMARY, not fallback -> primary
+    ])
+    def test_selection_table(self, detected, prob, expected):
+        assert stt_client._select_primary_fallback_language(self.POLICY, detected, prob) == expected
+
+    def test_missing_probability_defaults_to_primary(self):
+        # A first-pass response lacking language_probability must not be
+        # treated as a confident fallback detection.
+        assert stt_client._select_primary_fallback_language(self.POLICY, "en", None) == "it"
+
+    def test_fallback_at_exact_threshold_wins(self):
+        assert stt_client._select_primary_fallback_language(self.POLICY, "en", 0.80) == "en"
+
+
+class TestTranscribeWithPolicy:
+    def _policy(self, **kw):
+        return STTLanguagePolicy(**kw)
+
+    def test_auto_mode_single_pass_no_language_field(self, monkeypatch):
+        _active_stt(monkeypatch)
+        calls = []
+
+        def responder(method, url, **kw):
+            calls.append(kw.get("data"))
+            return json_response(200, {"text": "hello", "language": "en", "language_probability": 0.9})
+
+        _patch_http(monkeypatch, responder)
+        result = _run(stt_client.transcribe_with_policy(b"audio", "audio/webm", self._policy(mode="auto")))
+
+        assert result == {"text": "hello", "language": "en", "language_probability": 0.9}
+        assert len(calls) == 1
+        assert "language" not in calls[0]
+
+    def test_fixed_mode_single_pass_sends_configured_language(self, monkeypatch):
+        _active_stt(monkeypatch)
+        calls = []
+
+        def responder(method, url, **kw):
+            calls.append(kw.get("data"))
+            return json_response(200, {"text": "ciao", "language": "it", "language_probability": 0.99})
+
+        _patch_http(monkeypatch, responder)
+        policy = self._policy(mode="fixed", primary_language="it")
+        result = _run(stt_client.transcribe_with_policy(b"audio", "audio/webm", policy))
+
+        assert result == {"text": "ciao", "language": "it", "language_probability": 0.99}
+        assert len(calls) == 1
+        assert calls[0]["language"] == "it"
+
+    def test_primary_fallback_two_passes_same_audio_bytes(self, monkeypatch):
+        # Second pass must reuse the EXACT same audio bytes as the first —
+        # relabeling the first transcription is not enough, a fresh decode
+        # under the forced language is required.
+        _active_stt(monkeypatch)
+        audio_bytes_seen = []
+        data_seen = []
+
+        def responder(method, url, **kw):
+            audio_bytes_seen.append(kw["files"]["file"][1])
+            data_seen.append(kw.get("data"))
+            if len(data_seen) == 1:
+                return json_response(200, {"text": "Eu vou estar em silencio",
+                                            "language": "pt", "language_probability": 0.25})
+            return json_response(200, {"text": "Voglio stare in silenzio",
+                                        "language": "it", "language_probability": 0.6})
+
+        _patch_http(monkeypatch, responder)
+        policy = self._policy(mode="primary_fallback", primary_language="it",
+                               fallback_language="en", fallback_threshold=0.80)
+        result = _run(stt_client.transcribe_with_policy(b"same-audio", "audio/webm", policy))
+
+        assert audio_bytes_seen == [b"same-audio", b"same-audio"]
+        assert "language" not in data_seen[0]
+        assert data_seen[1]["language"] == "it"
+        assert result["text"] == "Voglio stare in silenzio"
+        assert result["language"] == "it"  # forced choice, authoritative over the response body
+
+    @pytest.mark.parametrize("detected,prob,forced_language", [
+        ("en", 0.961561, "en"),
+        ("en", 0.820641, "en"),
+        ("en", 0.243851, "it"),
+        ("it", 0.915885, "it"),
+        ("it", 0.447923, "it"),
+        ("pt", 0.249793, "it"),
+        ("la", 0.243851, "it"),
+        ("it", 0.801477, "it"),
+    ])
+    def test_primary_fallback_table_forces_expected_second_pass_language(
+        self, monkeypatch, detected, prob, forced_language
+    ):
+        _active_stt(monkeypatch)
+        data_seen = []
+
+        def responder(method, url, **kw):
+            data_seen.append(kw.get("data"))
+            if len(data_seen) == 1:
+                return json_response(200, {"text": "first pass", "language": detected,
+                                            "language_probability": prob})
+            return json_response(200, {"text": "second pass", "language": forced_language,
+                                        "language_probability": 0.9})
+
+        _patch_http(monkeypatch, responder)
+        policy = self._policy(mode="primary_fallback", primary_language="it",
+                               fallback_language="en", fallback_threshold=0.80)
+        result = _run(stt_client.transcribe_with_policy(b"audio", "audio/webm", policy))
+
+        assert data_seen[1]["language"] == forced_language
+        assert result["language"] == forced_language
+
+    def test_primary_fallback_missing_probability_defaults_to_primary(self, monkeypatch):
+        _active_stt(monkeypatch)
+        data_seen = []
+
+        def responder(method, url, **kw):
+            data_seen.append(kw.get("data"))
+            if len(data_seen) == 1:
+                return json_response(200, {"text": "first", "language": "en", "language_probability": None})
+            return json_response(200, {"text": "second", "language": "it"})
+
+        _patch_http(monkeypatch, responder)
+        policy = self._policy(mode="primary_fallback", primary_language="it",
+                               fallback_language="en", fallback_threshold=0.80)
+        result = _run(stt_client.transcribe_with_policy(b"audio", "audio/webm", policy))
+
+        assert data_seen[1]["language"] == "it"
+        assert result["language"] == "it"
+
+    def test_primary_fallback_first_pass_failure_returns_none_without_second_pass(self, monkeypatch):
+        _active_stt(monkeypatch)
+        calls = []
+
+        def responder(method, url, **kw):
+            calls.append(1)
+            return json_response(500, {})
+
+        _patch_http(monkeypatch, responder)
+        policy = self._policy(mode="primary_fallback", primary_language="it",
+                               fallback_language="en", fallback_threshold=0.80)
+        result = _run(stt_client.transcribe_with_policy(b"audio", "audio/webm", policy))
+
+        assert result is None
+        assert len(calls) == 1  # no second pass attempted
+
+    def test_primary_fallback_second_pass_failure_returns_none(self, monkeypatch):
+        _active_stt(monkeypatch)
+        calls = []
+
+        def responder(method, url, **kw):
+            calls.append(1)
+            if len(calls) == 1:
+                return json_response(200, {"text": "first", "language": "en", "language_probability": 0.9})
+            return json_response(500, {})
+
+        _patch_http(monkeypatch, responder)
+        policy = self._policy(mode="primary_fallback", primary_language="it",
+                               fallback_language="en", fallback_threshold=0.80)
+        result = _run(stt_client.transcribe_with_policy(b"audio", "audio/webm", policy))
+
+        assert result is None
+        assert len(calls) == 2
 
 
 # ---------------------------------------------------------------------------

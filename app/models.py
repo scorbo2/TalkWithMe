@@ -2,9 +2,14 @@
 
 from typing import Any, Dict, List, Optional, Literal
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 
-from app.config import DEFAULT_MEMORY_SIZE, MAX_MEMORY_SIZE, is_valid_room_name
+from app.config import (
+    DEFAULT_MEMORY_SIZE,
+    MAX_MEMORY_SIZE,
+    is_valid_room_name,
+    stt_language_policy_error,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -66,6 +71,19 @@ class STTRequest(BaseModel):
         default="audio/webm",
         description="MIME type of the recorded audio (e.g. audio/webm, audio/ogg)",
     )
+    chat_room: str = Field(
+        default="default",
+        description="The chat room this recording belongs to (resolves the STT language policy)",
+    )
+
+    @field_validator("chat_room")
+    @classmethod
+    def _validate_chat_room(cls, value: str) -> str:
+        if not is_valid_room_name(value):
+            raise ValueError(
+                "Room name may only contain letters, numbers, spaces, hyphens, and underscores."
+            )
+        return value
 
 
 # ---------------------------------------------------------------------------
@@ -204,10 +222,30 @@ class TTSSettingsRequest(BaseModel):
 
 
 class STTSettingsRequest(BaseModel):
-    """STT configuration from the settings editor."""
+    """STT configuration from the settings editor.
+
+    The language-policy fields are a full replacement, same as the rest of
+    this section: "auto" mode with no primary/fallback language is the
+    default and reproduces the pre-policy behavior exactly (no `language`
+    field ever sent to the STT backend). `mode` is named to match the
+    per-room override (STTLanguagePolicyRequest below) and the underlying
+    STTLanguagePolicy config model — one name for one concept everywhere
+    a language policy is read or written.
+    """
     enabled: bool = True
     base_url: str = Field(default="", min_length=0)
     timeout: float = Field(..., ge=5, le=300)
+    mode: Literal["auto", "fixed", "primary_fallback"] = "auto"
+    primary_language: Optional[str] = None
+    fallback_language: Optional[str] = None
+    fallback_threshold: float = Field(default=0.80, ge=0.0, le=1.0)
+
+    @model_validator(mode="after")
+    def _validate_language_policy(self) -> "STTSettingsRequest":
+        error = stt_language_policy_error(self.mode, self.primary_language, self.fallback_language)
+        if error:
+            raise ValueError(error)
+        return self
 
 
 class GeneralSettingsRequest(BaseModel):
@@ -260,6 +298,10 @@ class STTSettingsResponse(BaseModel):
     enabled: bool
     base_url: Optional[str] = None
     timeout: float
+    mode: Literal["auto", "fixed", "primary_fallback"] = "auto"
+    primary_language: Optional[str] = None
+    fallback_language: Optional[str] = None
+    fallback_threshold: float = 0.80
 
 
 class GeneralSettingsResponse(BaseModel):
@@ -302,11 +344,36 @@ class ChatMessage(BaseModel):
 # Chat Room models
 # ---------------------------------------------------------------------------
 
+class STTLanguagePolicyResponse(BaseModel):
+    """A resolved or room-set STT language policy, for the frontend."""
+    mode: Literal["auto", "fixed", "primary_fallback"] = "auto"
+    primary_language: Optional[str] = None
+    fallback_language: Optional[str] = None
+    fallback_threshold: float = 0.80
+
+
+class STTLanguagePolicyRequest(BaseModel):
+    """Set a chat room's STT language policy override."""
+    mode: Literal["auto", "fixed", "primary_fallback"] = "auto"
+    primary_language: Optional[str] = None
+    fallback_language: Optional[str] = None
+    fallback_threshold: float = Field(default=0.80, ge=0.0, le=1.0)
+
+    @model_validator(mode="after")
+    def _validate_language_policy(self) -> "STTLanguagePolicyRequest":
+        error = stt_language_policy_error(self.mode, self.primary_language, self.fallback_language)
+        if error:
+            raise ValueError(error)
+        return self
+
+
 class ChatRoomResponse(BaseModel):
     """A chat room returned to the frontend."""
     name: str
     persona_names: List[str] = Field(default_factory=list)
     echo_chamber: bool = False
+    # None = no room override; the global stt.language_policy applies.
+    stt_language_policy: Optional[STTLanguagePolicyResponse] = None
 
 
 class ChatRoomCreateRequest(BaseModel):

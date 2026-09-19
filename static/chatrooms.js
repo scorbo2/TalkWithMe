@@ -100,6 +100,81 @@ function applyChatRoomFilter() {
     const echoEnabled = roomInfo ? roomInfo.echo_chamber : false;
     echoChamberToggle.checked = echoEnabled;
     echoChamberToggle.disabled = !isActiveRoom;
+
+    // Update the per-room STT language override controls from the room's
+    // stt_language_policy (null = inheriting the global default).
+    const policy = roomInfo ? roomInfo.stt_language_policy : null;
+    roomSttMode.value = policy ? policy.mode : "";
+    roomSttPrimaryLanguage.value = policy ? (policy.primary_language || "") : "";
+    roomSttFallbackLanguage.value = policy ? (policy.fallback_language || "") : "";
+    roomSttFallbackThreshold.value = policy ? (policy.fallback_threshold ?? 0.80) : 0.80;
+    updateRoomSttControlAvailability();
+    updateRoomSttFieldsVisibility();
+}
+
+/**
+ * Show only the room-STT-override fields relevant to the selected mode
+ * (mirrors the global settings form's updateSttLanguageModeFieldsState).
+ */
+function updateRoomSttFieldsVisibility() {
+    const mode = roomSttMode.value;
+    roomSttPrimaryRow.classList.toggle("hidden", mode === "" || mode === "auto");
+    roomSttFallbackRow.classList.toggle("hidden", mode !== "primary_fallback");
+}
+
+/**
+ * Disable the per-room STT language controls when there's nothing for them
+ * to do: the "default" room (never overridable) or STT not usable globally
+ * (disabled in settings, or unreachable — sttAvailable, set by
+ * checkSTTHealth() in app.js, already reuses that same flag for the mic
+ * button). Only `.disabled` changes here — the room's saved override is
+ * never read from the server again or altered, and disabling via JS does
+ * not fire a "change" event, so no PUT/DELETE request is sent.
+ */
+function updateRoomSttControlAvailability() {
+    const disabled = currentChatRoom === "default" || !sttAvailable;
+    roomSttMode.disabled = disabled;
+    roomSttPrimaryLanguage.disabled = disabled;
+    roomSttFallbackLanguage.disabled = disabled;
+    roomSttFallbackThreshold.disabled = disabled;
+}
+
+/**
+ * Persist the room's STT language override: DELETE when reverting to
+ * "Use global default", otherwise PUT the full policy (full replacement,
+ * same as the global stt: settings section).
+ */
+async function updateRoomSttPolicy() {
+    if (currentChatRoom === "default") return;
+    const mode = roomSttMode.value;
+
+    try {
+        let resp;
+        if (mode === "") {
+            resp = await fetch(`/api/chatrooms/${encodeURIComponent(currentChatRoom)}/stt-language-policy`, {
+                method: "DELETE",
+            });
+        } else {
+            resp = await fetch(`/api/chatrooms/${encodeURIComponent(currentChatRoom)}/stt-language-policy`, {
+                method: "PUT",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({
+                    mode,
+                    primary_language: roomSttPrimaryLanguage.value.trim() || null,
+                    fallback_language: roomSttFallbackLanguage.value.trim() || null,
+                    fallback_threshold: parseFloat(roomSttFallbackThreshold.value) || 0.80,
+                }),
+            });
+        }
+        if (!resp.ok) {
+            console.error("Failed to update room STT language policy:", resp.status);
+            return;
+        }
+        // Reload so allChatRooms (and thus roomInfo above) reflects the save.
+        await loadChatRooms();
+    } catch (err) {
+        console.error("Update room STT language policy error:", err);
+    }
 }
 
 /**
@@ -135,6 +210,15 @@ function setupChatRoomEventListeners() {
     echoChamberToggle.addEventListener("change", () => {
         updateEchoChamber(currentChatRoom, echoChamberToggle.checked);
     });
+
+    // Per-room STT language override
+    roomSttMode.addEventListener("change", () => {
+        updateRoomSttFieldsVisibility();
+        updateRoomSttPolicy();
+    });
+    roomSttPrimaryLanguage.addEventListener("change", updateRoomSttPolicy);
+    roomSttFallbackLanguage.addEventListener("change", updateRoomSttPolicy);
+    roomSttFallbackThreshold.addEventListener("change", updateRoomSttPolicy);
 
     // "Add persona" button in sidebar
     btnAddPersona.addEventListener("click", openPersonaPicker);

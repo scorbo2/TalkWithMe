@@ -54,6 +54,7 @@ sfTtsEnabled.addEventListener("change", () => {
 sfSttEnabled.addEventListener("change", () => {
     updateSttFieldsState();
 });
+sfSttLanguageMode.addEventListener("change", updateSttLanguageModeFieldsState);
 
 // The dynamic parameter section is tied to the TTS server, not the form:
 // switching the Base URL means switching engines, so PROBE the new URL
@@ -295,7 +296,12 @@ function populateSettingsForm(data) {
     sfSttEnabled.checked = data.stt.enabled;
     sfSttBaseUrl.value = data.stt.base_url || "";
     sfSttTimeout.value = data.stt.timeout ?? 30;
+    sfSttLanguageMode.value = data.stt.mode || "auto";
+    sfSttPrimaryLanguage.value = data.stt.primary_language || "";
+    sfSttFallbackLanguage.value = data.stt.fallback_language || "";
+    sfSttFallbackThreshold.value = data.stt.fallback_threshold ?? 0.80;
     updateSttFieldsState();
+    updateSttLanguageModeFieldsState();
 }
 
 function updateTtsFieldsState() {
@@ -312,6 +318,15 @@ function updateSttFieldsState() {
     } else {
         sfSttFields.classList.add("disabled");
     }
+}
+
+// Show only the language-policy fields relevant to the selected mode:
+// "auto" needs none, "fixed" needs just the primary language, and
+// "primary_fallback" needs all three.
+function updateSttLanguageModeFieldsState() {
+    const mode = sfSttLanguageMode.value;
+    sfSttPrimaryLanguageRow.classList.toggle("hidden", mode === "auto");
+    sfSttFallbackFields.classList.toggle("hidden", mode !== "primary_fallback");
 }
 
 // Display the TTS server type from the latest health check, truncated to 12 chars.
@@ -361,6 +376,11 @@ function collectSettingsFromForm() {
             enabled: sfSttEnabled.checked,
             base_url: sfSttBaseUrl.value.trim(),
             timeout: parseFloat(sfSttTimeout.value),
+            mode: sfSttLanguageMode.value,
+            primary_language: sfSttPrimaryLanguage.value.trim() || null,
+            fallback_language: sfSttFallbackLanguage.value.trim() || null,
+            fallback_threshold: isNaN(parseFloat(sfSttFallbackThreshold.value))
+                ? 0.80 : parseFloat(sfSttFallbackThreshold.value),
         },
     };
 }
@@ -395,6 +415,17 @@ function validateSettings(data) {
         if (!data.stt.base_url) return "STT Base URL is required when STT is enabled.";
         if (isNaN(data.stt.timeout) || data.stt.timeout < 5 || data.stt.timeout > 300) {
             return "STT Timeout must be between 5 and 300 seconds.";
+        }
+        if (data.stt.mode === "fixed" && !data.stt.primary_language) {
+            return "STT primary language is required for Fixed language mode.";
+        }
+        if (data.stt.mode === "primary_fallback") {
+            if (!data.stt.primary_language || !data.stt.fallback_language) {
+                return "STT primary and fallback languages are required for Primary + fallback mode.";
+            }
+            if (isNaN(data.stt.fallback_threshold) || data.stt.fallback_threshold < 0 || data.stt.fallback_threshold > 1) {
+                return "STT fallback confidence threshold must be between 0 and 1.";
+            }
         }
     }
 

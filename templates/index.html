@@ -53,6 +53,27 @@
                     </label>
                 </div>
 
+                <div id="room-stt-wrapper">
+                    <div class="field-label-row">
+                        <label for="room-stt-mode">STT language</label>
+                        <button type="button" class="help-icon" aria-label="More info" aria-describedby="room-stt-help-text">i</button>
+                        <span id="room-stt-help-text" class="help-tooltip" role="tooltip">Controls this room's speech-recognition language. Global default inherits the server setting. In Primary + fallback, the fallback language is used only when detected with high confidence — otherwise the primary is used.</span>
+                    </div>
+                    <select id="room-stt-mode" title="Override the global STT language policy for this room">
+                        <option value="">Use global default</option>
+                        <option value="auto">Auto-detect</option>
+                        <option value="fixed">Fixed language</option>
+                        <option value="primary_fallback">Primary + fallback</option>
+                    </select>
+                    <div id="room-stt-primary-row" class="hidden">
+                        <input id="room-stt-primary-language" type="text" maxlength="8" placeholder="Primary (e.g. it)">
+                    </div>
+                    <div id="room-stt-fallback-row" class="hidden">
+                        <input id="room-stt-fallback-language" type="text" maxlength="8" placeholder="Fallback (e.g. en)">
+                        <input id="room-stt-fallback-threshold" type="number" min="0" max="1" step="0.01" placeholder="Threshold">
+                    </div>
+                </div>
+
                 <h3>Who should answer?</h3>
                 <div id="who-chooser">
                     <label class="chooser-option">
@@ -380,6 +401,33 @@
                             <div class="form-row">
                                 <label for="sf-stt-timeout">Timeout <span class="field-hint">(5–300s)</span></label>
                                 <input id="sf-stt-timeout" type="number" min="5" max="300">
+                            </div>
+                            <div class="form-row">
+                                <div class="field-label-row">
+                                    <label for="sf-stt-language-mode">Language mode</label>
+                                    <button type="button" class="help-icon" aria-label="More info" aria-describedby="sf-stt-help-text">i</button>
+                                    <span id="sf-stt-help-text" class="help-tooltip" role="tooltip">Controls how speech recognition chooses a language. Auto lets the STT backend detect the language. Fixed always uses one language. Primary + fallback prefers the primary language unless the fallback language is detected with high confidence.</span>
+                                </div>
+                                <select id="sf-stt-language-mode">
+                                    <option value="auto">Auto-detect</option>
+                                    <option value="fixed">Fixed language</option>
+                                    <option value="primary_fallback">Primary + fallback</option>
+                                </select>
+                                <span class="field-hint">Default global policy; a chat room may override it.</span>
+                            </div>
+                            <div id="sf-stt-primary-language-row" class="form-row hidden">
+                                <label for="sf-stt-primary-language">Primary language <span class="field-hint">(e.g. it)</span></label>
+                                <input id="sf-stt-primary-language" type="text" maxlength="8">
+                            </div>
+                            <div id="sf-stt-fallback-fields" class="hidden">
+                                <div class="form-row">
+                                    <label for="sf-stt-fallback-language">Fallback language <span class="field-hint">(e.g. en)</span></label>
+                                    <input id="sf-stt-fallback-language" type="text" maxlength="8">
+                                </div>
+                                <div class="form-row">
+                                    <label for="sf-stt-fallback-threshold">Fallback confidence threshold <span class="field-hint">(0–1)</span></label>
+                                    <input id="sf-stt-fallback-threshold" type="number" min="0" max="1" step="0.01">
+                                </div>
                             </div>
                         </div>
                     </fieldset>

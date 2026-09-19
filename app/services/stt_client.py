@@ -11,7 +11,7 @@ from typing import Optional
 
 import httpx
 
-from app.config import get_settings
+from app.config import STTLanguagePolicy, get_settings
 
 logger = logging.getLogger(__name__)
 
@@ -46,10 +46,16 @@ async def check_stt_health() -> bool:
         return False
 
 
-async def transcribe_audio(audio_bytes: bytes, mime_type: str = "audio/webm") -> Optional[dict]:
+async def transcribe_audio(
+    audio_bytes: bytes, mime_type: str = "audio/webm", language: Optional[str] = None
+) -> Optional[dict]:
     """Call the STT server's /v1/audio/transcriptions endpoint.
 
     Sends raw audio as multipart form data with response_format=json.
+    `language`, when given, is forwarded as the `language` form field,
+    telling Whisper to skip auto-detection and transcribe in that language.
+    Omitted (None) means "let the backend auto-detect" — the field is left
+    off the request entirely, exactly as before this parameter existed.
     Returns dict with keys: text, language, language_probability.
     Returns None on any failure.
     """
@@ -72,6 +78,8 @@ async def transcribe_audio(audio_bytes: bytes, mime_type: str = "audio/webm") ->
     data = {
         "response_format": "json",
     }
+    if language:
+        data["language"] = language
 
     try:
         async with httpx.AsyncClient(timeout=settings.stt.timeout) as client:
@@ -95,3 +103,65 @@ async def transcribe_audio(audio_bytes: bytes, mime_type: str = "audio/webm") ->
     except Exception as exc:
         logger.warning("STT transcribe failed: %s", exc)
     return None
+
+
+def _select_primary_fallback_language(
+    policy: STTLanguagePolicy, detected_language: str, language_probability: Optional[float]
+) -> str:
+    """Pick the forced language for the second pass of "primary_fallback" mode.
+
+    The fallback language wins only on a clearly-confident detection of it;
+    everything else (a different language, a weak/uncertain detection, or
+    no probability reported at all) defaults to the primary language. This
+    is deliberate: short language-learner utterances routinely get
+    misdetected as an unrelated third language at low confidence (e.g.
+    imperfect Italian heard as Portuguese or Latin), and the real question
+    the policy answers is "is this clearly the fallback? if not, assume
+    the primary" — not "what did Whisper guess?".
+    """
+    if (
+        detected_language == policy.fallback_language
+        and language_probability is not None
+        and language_probability >= policy.fallback_threshold
+    ):
+        return policy.fallback_language
+    return policy.primary_language
+
+
+async def transcribe_with_policy(
+    audio_bytes: bytes, mime_type: str, policy: STTLanguagePolicy
+) -> Optional[dict]:
+    """Transcribe audio_bytes according to an STTLanguagePolicy.
+
+    - "auto": a single auto-detecting pass (today's behavior, unchanged).
+    - "fixed": a single pass forced to policy.primary_language.
+    - "primary_fallback": an auto-detecting first pass to see what
+      language was actually spoken, then a forced second pass on the SAME
+      audio bytes with either the primary or fallback language selected
+      by _select_primary_fallback_language. The second pass exists
+      because relabeling the first pass's text would not fix a sentence
+      Whisper already decoded in the wrong language.
+
+    Returns None if the underlying transcribe_audio call(s) fail (network
+    error, inactive STT, etc.) — no special handling for a backend that
+    ignores or rejects the `language` field beyond that.
+    """
+    if policy.mode == "auto":
+        return await transcribe_audio(audio_bytes, mime_type)
+    if policy.mode == "fixed":
+        return await transcribe_audio(audio_bytes, mime_type, language=policy.primary_language)
+
+    # primary_fallback
+    first_pass = await transcribe_audio(audio_bytes, mime_type)
+    if first_pass is None:
+        return None
+    selected_language = _select_primary_fallback_language(
+        policy, first_pass["language"], first_pass["language_probability"]
+    )
+    second_pass = await transcribe_audio(audio_bytes, mime_type, language=selected_language)
+    if second_pass is None:
+        return None
+    # The forced language is authoritative regardless of what the backend
+    # echoes back for it.
+    second_pass["language"] = selected_language
+    return second_pass

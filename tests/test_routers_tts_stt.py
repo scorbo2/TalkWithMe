@@ -13,7 +13,7 @@ import app.config as app_config
 import app.routers.stt as stt_router
 import app.routers.tts as tts_router
 import app.services.tts_client as tts_client
-from app.config import Persona, PersonasConfig
+from app.config import ChatRoom, ChatRoomsConfig, Persona, PersonasConfig
 from tests.factories import (
     FakeAsyncClient,
     json_response,
@@ -21,7 +21,7 @@ from tests.factories import (
     make_personas,
     make_settings,
 )
-from app.config import STTConfig, TTSConfig
+from app.config import STTConfig, STTLanguagePolicy, TTSConfig
 
 
 def _active_tts_settings(monkeypatch, **tts_kwargs):
@@ -397,10 +397,10 @@ class TestSTTProxy:
     def test_transcription_failure_502(self, client, monkeypatch):
         _active_stt_settings(monkeypatch)
 
-        async def failing_transcribe(audio_bytes, mime_type="audio/webm"):
+        async def failing_transcribe(audio_bytes, mime_type, policy):
             return None
 
-        monkeypatch.setattr(stt_router, "transcribe_audio", failing_transcribe)
+        monkeypatch.setattr(stt_router, "transcribe_with_policy", failing_transcribe)
 
         resp = client.post("/api/stt", json={"audio_base64": base64.b64encode(b"xx").decode()})
         assert resp.status_code == 502
@@ -409,13 +409,13 @@ class TestSTTProxy:
         _active_stt_settings(monkeypatch)
         seen = {}
 
-        async def fake_transcribe(audio_bytes, mime_type="audio/webm"):
+        async def fake_transcribe(audio_bytes, mime_type, policy):
             seen["audio_bytes"] = audio_bytes
             seen["mime_type"] = mime_type
             return {"text": "hello world", "language": "en",
                     "language_probability": 0.9}
 
-        monkeypatch.setattr(stt_router, "transcribe_audio", fake_transcribe)
+        monkeypatch.setattr(stt_router, "transcribe_with_policy", fake_transcribe)
 
         resp = client.post("/api/stt", json={
             "audio_base64": base64.b64encode(b"raw-audio").decode(),
@@ -427,6 +427,41 @@ class TestSTTProxy:
                                "language_probability": 0.9}
         assert seen["audio_bytes"] == b"raw-audio"
         assert seen["mime_type"] == "audio/ogg"
+
+    def test_room_resolves_room_override_policy(self, client, monkeypatch):
+        # A room-level override must reach transcribe_with_policy, not just
+        # the global default (STT is inactive-by-default in the fixture
+        # config, so this also implicitly proves the room lookup runs
+        # before the transcribe call).
+        _active_stt_settings(monkeypatch)
+        room_policy = STTLanguagePolicy(mode="fixed", primary_language="it")
+        monkeypatch.setattr(
+            app_config, "_chatrooms_cache",
+            ChatRoomsConfig(chat_rooms=[ChatRoom(name="Italian Practice", stt_language_policy=room_policy)]),
+        )
+        seen = {}
+
+        async def fake_transcribe(audio_bytes, mime_type, policy):
+            seen["policy"] = policy
+            return {"text": "ciao", "language": "it", "language_probability": 0.9}
+
+        monkeypatch.setattr(stt_router, "transcribe_with_policy", fake_transcribe)
+
+        resp = client.post("/api/stt", json={
+            "audio_base64": base64.b64encode(b"raw-audio").decode(),
+            "chat_room": "Italian Practice",
+        })
+
+        assert resp.status_code == 200
+        assert seen["policy"] == room_policy
+
+    def test_invalid_chat_room_422(self, client, monkeypatch):
+        _active_stt_settings(monkeypatch)
+        resp = client.post("/api/stt", json={
+            "audio_base64": base64.b64encode(b"xx").decode(),
+            "chat_room": "../etc",
+        })
+        assert resp.status_code == 422
 
 
 async def _coro(value):

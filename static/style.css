@@ -317,6 +317,48 @@ html, body {
     opacity: 0.5;
 }
 
+/* Per-room STT language override (mirrors #chat-room-selector's styling) */
+#room-stt-wrapper {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    padding: 0 10px;
+}
+
+#room-stt-wrapper label {
+    font-size: 0.8rem;
+    color: var(--text-muted);
+}
+
+#room-stt-wrapper select,
+#room-stt-wrapper input {
+    background: var(--bg-tertiary);
+    color: var(--text-primary);
+    border: 1px solid var(--border-color);
+    border-radius: 6px;
+    padding: 6px 8px;
+    font-size: 0.85rem;
+    width: 100%;
+    outline: none;
+    transition: border-color 0.15s;
+}
+
+#room-stt-wrapper select:disabled,
+#room-stt-wrapper input:disabled {
+    cursor: not-allowed;
+    opacity: 0.5;
+}
+
+#room-stt-fallback-row {
+    display: flex;
+    gap: 6px;
+}
+
+#room-stt-fallback-row input {
+    width: auto;
+    flex: 1;
+}
+
 /* Persona list */
 #persona-list {
     display: flex;
@@ -941,6 +983,87 @@ html, body {
 .field-hint {
     font-size: 0.72rem;
     color: var(--text-muted);
+}
+
+/* Contextual help icon + tooltip: a small "(i)" button next to a label
+   that reveals a short explanation on hover or keyboard focus, instead of
+   permanent on-screen text. Pure CSS (no JS): the tooltip is an adjacent
+   sibling of the trigger button, shown via :hover/:focus on that button.
+   `.field-label-row` is the positioning anchor — it wraps only the label
+   + icon (not the whole form row), and is left-aligned within its parent,
+   so the tooltip (anchored to ITS left edge) stays within the parent's
+   bounds even in the narrow sidebar. It opens ABOVE the label row (not
+   below) so it never covers the very select/inputs it explains — the
+   nearby field above may get briefly covered instead, which is harmless
+   (pointer-events: none lets clicks pass through regardless, and it
+   closes the instant focus/hover moves on). opacity (not visibility/
+   display) hides it, so the aria-describedby text stays in the
+   accessibility tree for screen readers regardless of hover/focus state. */
+.field-label-row {
+    position: relative;
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+}
+
+.help-icon {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 15px;
+    height: 15px;
+    padding: 0;
+    border: 1px solid var(--text-muted);
+    border-radius: 50%;
+    background: transparent;
+    color: var(--text-muted);
+    font: italic 700 0.68rem Georgia, "Times New Roman", serif;
+    line-height: 1;
+    /* .settings-fields.disabled sets pointer-events: none when the STT
+       toggle is off, which would otherwise be inherited here too — but a
+       user deciding whether to turn STT on is exactly who needs to read
+       this. Explicitly re-enabling keeps just the icon (not the disabled
+       fields around it) clickable/hoverable while the section is off. */
+    pointer-events: auto;
+    cursor: help;
+}
+
+.help-icon:hover,
+.help-icon:focus-visible {
+    border-color: var(--accent);
+    color: var(--accent);
+}
+
+.help-icon:focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: 2px;
+}
+
+.help-tooltip {
+    position: absolute;
+    bottom: calc(100% + 6px);
+    left: 0;
+    z-index: 30;
+    width: max-content;
+    max-width: min(240px, 70vw);
+    padding: 8px 10px;
+    border: 1px solid var(--border-color);
+    border-radius: 6px;
+    background: var(--bg-tertiary);
+    color: var(--text-secondary);
+    font-size: 0.75rem;
+    font-weight: 400;
+    line-height: 1.4;
+    text-align: left;
+    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.25);
+    opacity: 0;
+    pointer-events: none;
+    transition: opacity 0.12s ease;
+}
+
+.help-icon:hover + .help-tooltip,
+.help-icon:focus + .help-tooltip {
+    opacity: 1;
 }
 
 /* Persona editor — file fields (avatar image, reference audio) */

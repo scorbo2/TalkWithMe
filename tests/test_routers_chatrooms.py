@@ -37,7 +37,10 @@ class TestCreateChatroom:
     def test_create_empty_room(self, client):
         resp = client.post("/api/chatrooms", json={"name": "Enterprise"})
         assert resp.status_code == 201
-        assert resp.json() == {"name": "Enterprise", "persona_names": [], "echo_chamber": False}
+        assert resp.json() == {
+            "name": "Enterprise", "persona_names": [], "echo_chamber": False,
+            "stt_language_policy": None,
+        }
         assert [r["name"] for r in client.get("/api/chatrooms").json()] == ["TNG", "Enterprise"]
 
     def test_create_reserved_default_rejected(self, client):
@@ -285,3 +288,118 @@ class TestEchoChamber:
     def test_echo_chamber_unknown_room_404(self, client):
         resp = client.put("/api/chatrooms/NoSuchRoom/echo-chamber", json={"echo_chamber": True})
         assert resp.status_code == 404
+
+
+# ---------------------------------------------------------------------------
+# STT language policy override
+# ---------------------------------------------------------------------------
+
+class TestSTTLanguagePolicy:
+    def test_room_has_no_override_by_default(self, client):
+        resp = client.get("/api/chatrooms/TNG")
+        assert resp.json()["stt_language_policy"] is None
+
+    def test_set_policy_returns_it_in_response(self, client):
+        resp = client.put("/api/chatrooms/TNG/stt-language-policy", json={
+            "mode": "primary_fallback", "primary_language": "it",
+            "fallback_language": "en", "fallback_threshold": 0.8,
+        })
+        assert resp.status_code == 200
+        assert resp.json()["stt_language_policy"] == {
+            "mode": "primary_fallback", "primary_language": "it",
+            "fallback_language": "en", "fallback_threshold": 0.8,
+        }
+
+    # -- required-field validation (fixed / primary_fallback) --------------
+
+    def test_fixed_mode_without_primary_language_rejected_422(self, client):
+        resp = client.put("/api/chatrooms/TNG/stt-language-policy", json={"mode": "fixed"})
+        assert resp.status_code == 422
+        assert "primary_language" in resp.text
+
+    def test_primary_fallback_without_fallback_language_rejected_422(self, client):
+        resp = client.put("/api/chatrooms/TNG/stt-language-policy", json={
+            "mode": "primary_fallback", "primary_language": "it",
+        })
+        assert resp.status_code == 422
+        assert "fallback_language" in resp.text
+
+    def test_primary_fallback_without_primary_language_rejected_422(self, client):
+        resp = client.put("/api/chatrooms/TNG/stt-language-policy", json={
+            "mode": "primary_fallback", "fallback_language": "en",
+        })
+        assert resp.status_code == 422
+        assert "primary_language" in resp.text
+
+    def test_primary_fallback_equal_languages_rejected_422(self, client):
+        resp = client.put("/api/chatrooms/TNG/stt-language-policy", json={
+            "mode": "primary_fallback", "primary_language": "it", "fallback_language": "it",
+        })
+        assert resp.status_code == 422
+        assert "must differ" in resp.text
+
+    def test_auto_mode_without_any_language_is_valid(self, client):
+        resp = client.put("/api/chatrooms/TNG/stt-language-policy", json={"mode": "auto"})
+        assert resp.status_code == 200
+
+    def test_rejected_policy_does_not_overwrite_existing_override(self, client):
+        # An invalid PUT must not touch the room's currently saved policy.
+        client.put("/api/chatrooms/TNG/stt-language-policy",
+                   json={"mode": "fixed", "primary_language": "it"})
+        resp = client.put("/api/chatrooms/TNG/stt-language-policy", json={"mode": "fixed"})
+        assert resp.status_code == 422
+
+        room = client.get("/api/chatrooms/TNG").json()
+        assert room["stt_language_policy"] == {
+            "mode": "fixed", "primary_language": "it",
+            "fallback_language": None, "fallback_threshold": 0.80,
+        }
+
+    def test_set_policy_persists_and_is_visible_on_get(self, client):
+        client.put("/api/chatrooms/TNG/stt-language-policy", json={
+            "mode": "fixed", "primary_language": "it",
+        })
+        resp = client.get("/api/chatrooms/TNG")
+        assert resp.json()["stt_language_policy"]["mode"] == "fixed"
+        assert resp.json()["stt_language_policy"]["primary_language"] == "it"
+
+    def test_clear_policy_reverts_to_none(self, client):
+        client.put("/api/chatrooms/TNG/stt-language-policy", json={"mode": "fixed", "primary_language": "it"})
+        resp = client.delete("/api/chatrooms/TNG/stt-language-policy")
+        assert resp.status_code == 200
+        assert resp.json()["stt_language_policy"] is None
+
+    def test_default_room_rejected_on_set(self, client):
+        resp = client.put("/api/chatrooms/default/stt-language-policy",
+                          json={"mode": "fixed", "primary_language": "it"})
+        assert resp.status_code == 400
+
+    def test_default_room_rejected_on_clear(self, client):
+        resp = client.delete("/api/chatrooms/default/stt-language-policy")
+        assert resp.status_code == 400
+
+    def test_unknown_room_404_on_set(self, client):
+        resp = client.put("/api/chatrooms/NoSuchRoom/stt-language-policy",
+                          json={"mode": "fixed", "primary_language": "it"})
+        assert resp.status_code == 404
+
+    def test_unknown_room_404_on_clear(self, client):
+        resp = client.delete("/api/chatrooms/NoSuchRoom/stt-language-policy")
+        assert resp.status_code == 404
+
+    def test_policy_survives_persona_assignment(self, client):
+        # A previous bug: reconstructing ChatRoom by hand in assign_personas
+        # dropped any field it didn't explicitly carry over.
+        client.put("/api/chatrooms/TNG/stt-language-policy", json={"mode": "fixed", "primary_language": "it"})
+        resp = client.put("/api/chatrooms/TNG/personas", json={"persona_names": ["Alex"]})
+        assert resp.json()["stt_language_policy"]["mode"] == "fixed"
+
+    def test_policy_survives_persona_removal(self, client):
+        client.put("/api/chatrooms/TNG/stt-language-policy", json={"mode": "fixed", "primary_language": "it"})
+        resp = client.delete("/api/chatrooms/TNG/personas/Alex")
+        assert resp.json()["stt_language_policy"]["mode"] == "fixed"
+
+    def test_policy_survives_echo_chamber_toggle(self, client):
+        client.put("/api/chatrooms/TNG/stt-language-policy", json={"mode": "fixed", "primary_language": "it"})
+        resp = client.put("/api/chatrooms/TNG/echo-chamber", json={"echo_chamber": True})
+        assert resp.json()["stt_language_policy"]["mode"] == "fixed"

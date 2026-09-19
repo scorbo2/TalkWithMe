@@ -20,7 +20,9 @@ from app.config import (
     Persona,
     PersonasConfig,
     STTConfig,
+    STTLanguagePolicy,
     TTSConfig,
+    stt_language_policy_error,
 )
 from tests.factories import make_chatrooms, make_personas, make_settings
 
@@ -249,6 +251,162 @@ class TestSTTConfigIsActive:
         cfg = STTConfig(enabled=True, base_url="///")
         assert cfg.base_url is None
         assert cfg.is_active is False
+
+
+# ---------------------------------------------------------------------------
+# STT language policy (backward compatibility + resolution)
+# ---------------------------------------------------------------------------
+
+class TestSTTLanguagePolicyDefaults:
+    def test_stt_config_defaults_to_auto_mode_language_policy(self):
+        # An STTConfig with no language_policy configured at all (e.g. a
+        # settings.yaml predating this feature) must behave exactly like
+        # today: "auto" mode, no primary/fallback language.
+        cfg = STTConfig()
+        assert cfg.language_policy == STTLanguagePolicy()
+        assert cfg.language_policy.mode == "auto"
+        assert cfg.language_policy.primary_language is None
+        assert cfg.language_policy.fallback_language is None
+        assert cfg.language_policy.fallback_threshold == 0.80
+
+    def test_chat_room_defaults_to_no_stt_override(self):
+        assert ChatRoom(name="Room").stt_language_policy is None
+
+    def test_load_settings_without_language_policy_key_yields_auto(self, tmp_path):
+        # A hand-edited/legacy settings.yaml with an stt: section but no
+        # language_policy key must not crash and must default to "auto".
+        path = tmp_path / "settings.yaml"
+        path.write_text(
+            "stt:\n  enabled: true\n  base_url: http://stt.local:6600\n  timeout: 30\n",
+            encoding="utf-8",
+        )
+        settings = app_config.load_settings(path)
+        assert settings.stt.language_policy == STTLanguagePolicy()
+
+
+class TestSTTLanguagePolicyRequiredLanguageValidation:
+    """The mode/language combo is validated at construction time (settings
+    save, room save, or raw YAML load) rather than silently degrading to
+    "auto" at transcription time — see stt_language_policy_error and
+    STTLanguagePolicy._validate_required_languages in app/config.py."""
+
+    def test_auto_mode_needs_no_languages(self):
+        assert STTLanguagePolicy(mode="auto").primary_language is None
+
+    def test_fixed_mode_with_primary_language_is_valid(self):
+        assert STTLanguagePolicy(mode="fixed", primary_language="it").primary_language == "it"
+
+    def test_fixed_mode_without_primary_language_rejected(self):
+        with pytest.raises(ValidationError, match='"fixed" requires primary_language'):
+            STTLanguagePolicy(mode="fixed")
+
+    def test_fixed_mode_with_blank_primary_language_rejected(self):
+        with pytest.raises(ValidationError, match='"fixed" requires primary_language'):
+            STTLanguagePolicy(mode="fixed", primary_language="")
+
+    def test_primary_fallback_with_both_languages_is_valid(self):
+        policy = STTLanguagePolicy(mode="primary_fallback", primary_language="it", fallback_language="en")
+        assert (policy.primary_language, policy.fallback_language) == ("it", "en")
+
+    def test_primary_fallback_without_fallback_language_rejected(self):
+        with pytest.raises(ValidationError, match="requires both"):
+            STTLanguagePolicy(mode="primary_fallback", primary_language="it")
+
+    def test_primary_fallback_without_primary_language_rejected(self):
+        with pytest.raises(ValidationError, match="requires both"):
+            STTLanguagePolicy(mode="primary_fallback", fallback_language="en")
+
+    def test_primary_fallback_without_either_language_rejected(self):
+        with pytest.raises(ValidationError, match="requires both"):
+            STTLanguagePolicy(mode="primary_fallback")
+
+    def test_primary_fallback_equal_languages_rejected(self):
+        with pytest.raises(ValidationError, match="must differ"):
+            STTLanguagePolicy(mode="primary_fallback", primary_language="it", fallback_language="it")
+
+    def test_fixed_mode_ignores_fallback_language_equality(self):
+        # The equal-languages rule is specific to primary_fallback: fixed
+        # mode never reads fallback_language, so an equal (or any) value
+        # there is harmless and must not be rejected.
+        policy = STTLanguagePolicy(mode="fixed", primary_language="it", fallback_language="it")
+        assert policy.mode == "fixed"
+
+
+class TestSttLanguagePolicyErrorHelper:
+    """Direct tests of the pure helper (no pydantic involved) shared by
+    STTLanguagePolicy, STTSettingsRequest, and STTLanguagePolicyRequest."""
+
+    def test_auto_mode_never_errors(self):
+        assert stt_language_policy_error("auto", None, None) is None
+
+    def test_fixed_without_primary_errors(self):
+        assert stt_language_policy_error("fixed", None, None) is not None
+
+    def test_fixed_with_primary_is_fine(self):
+        assert stt_language_policy_error("fixed", "it", None) is None
+
+    def test_primary_fallback_missing_one_errors(self):
+        assert stt_language_policy_error("primary_fallback", "it", None) is not None
+        assert stt_language_policy_error("primary_fallback", None, "en") is not None
+
+    def test_primary_fallback_equal_errors(self):
+        assert stt_language_policy_error("primary_fallback", "it", "it") is not None
+
+    def test_primary_fallback_distinct_is_fine(self):
+        assert stt_language_policy_error("primary_fallback", "it", "en") is None
+
+
+class TestResolveSTTLanguagePolicy:
+    def test_no_room_and_no_global_policy_returns_auto(self, monkeypatch):
+        monkeypatch.setattr(app_config, "_settings_cache", make_settings())
+        monkeypatch.setattr(app_config, "_chatrooms_cache", ChatRoomsConfig(chat_rooms=[]))
+        assert app_config.resolve_stt_language_policy("default") == STTLanguagePolicy()
+
+    def test_room_override_wins_over_global(self, monkeypatch):
+        global_policy = STTLanguagePolicy(mode="fixed", primary_language="en")
+        room_policy = STTLanguagePolicy(
+            mode="primary_fallback", primary_language="it",
+            fallback_language="en", fallback_threshold=0.80,
+        )
+        monkeypatch.setattr(
+            app_config, "_settings_cache",
+            make_settings(stt=STTConfig(enabled=True, base_url="http://stt:1", language_policy=global_policy)),
+        )
+        monkeypatch.setattr(
+            app_config, "_chatrooms_cache",
+            ChatRoomsConfig(chat_rooms=[ChatRoom(name="Italian Practice", stt_language_policy=room_policy)]),
+        )
+        assert app_config.resolve_stt_language_policy("Italian Practice") == room_policy
+
+    def test_room_without_override_falls_back_to_global(self, monkeypatch):
+        global_policy = STTLanguagePolicy(mode="fixed", primary_language="de")
+        monkeypatch.setattr(
+            app_config, "_settings_cache",
+            make_settings(stt=STTConfig(enabled=True, base_url="http://stt:1", language_policy=global_policy)),
+        )
+        monkeypatch.setattr(
+            app_config, "_chatrooms_cache",
+            ChatRoomsConfig(chat_rooms=[ChatRoom(name="No Override")]),
+        )
+        assert app_config.resolve_stt_language_policy("No Override") == global_policy
+
+    def test_room_lookup_is_case_insensitive(self, monkeypatch):
+        room_policy = STTLanguagePolicy(mode="fixed", primary_language="it")
+        monkeypatch.setattr(app_config, "_settings_cache", make_settings())
+        monkeypatch.setattr(
+            app_config, "_chatrooms_cache",
+            ChatRoomsConfig(chat_rooms=[ChatRoom(name="Italian Practice", stt_language_policy=room_policy)]),
+        )
+        assert app_config.resolve_stt_language_policy("italian practice") == room_policy
+
+    def test_unknown_room_falls_back_to_global(self, monkeypatch):
+        global_policy = STTLanguagePolicy(mode="fixed", primary_language="fr")
+        monkeypatch.setattr(
+            app_config, "_settings_cache",
+            make_settings(stt=STTConfig(enabled=True, base_url="http://stt:1", language_policy=global_policy)),
+        )
+        monkeypatch.setattr(app_config, "_chatrooms_cache", ChatRoomsConfig(chat_rooms=[]))
+        assert app_config.resolve_stt_language_policy("no-such-room") == global_policy
 
 
 # ---------------------------------------------------------------------------
@@ -623,6 +781,23 @@ class TestSaveLoadRoundTrip:
         app_config.save_chatrooms(cfg, path)
         reloaded = app_config.load_chatrooms(path)
         assert [r.name for r in reloaded.chat_rooms] == ["TNG"]
+
+    def test_save_chatrooms_round_trip_preserves_stt_language_policy(self, tmp_path):
+        path = tmp_path / "chatrooms.yaml"
+        policy = STTLanguagePolicy(
+            mode="primary_fallback", primary_language="it",
+            fallback_language="en", fallback_threshold=0.75,
+        )
+        cfg = ChatRoomsConfig(chat_rooms=[ChatRoom(name="Italian Practice", stt_language_policy=policy)])
+        app_config.save_chatrooms(cfg, path)
+        reloaded = app_config.load_chatrooms(path)
+        assert reloaded.chat_rooms[0].stt_language_policy == policy
+
+    def test_save_chatrooms_round_trip_no_override_stays_none(self, tmp_path):
+        path = tmp_path / "chatrooms.yaml"
+        app_config.save_chatrooms(make_chatrooms(), path)
+        reloaded = app_config.load_chatrooms(path)
+        assert reloaded.chat_rooms[0].stt_language_policy is None
 
 
 # ---------------------------------------------------------------------------

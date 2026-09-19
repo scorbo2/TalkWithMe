@@ -437,6 +437,96 @@ class TestUpdateTTSParameters:
         assert tts_client.cached_capabilities() == (TTS_BASE, doc)
 
 
+class TestSTTLanguagePolicySettings:
+    """Global stt: language policy fields — full-replacement, same as the
+    rest of the tts/stt sections. "auto" mode with no languages set is the
+    default and must reproduce pre-policy behavior (GET returns it even
+    when the client never mentions the new fields)."""
+
+    def test_get_settings_defaults_to_auto_mode(self, client):
+        body = client.get("/api/settings").json()
+        assert body["stt"]["mode"] == "auto"
+        assert body["stt"]["primary_language"] is None
+        assert body["stt"]["fallback_language"] is None
+        assert body["stt"]["fallback_threshold"] == 0.80
+
+    def test_update_without_language_fields_keeps_auto_default(self, client):
+        # base_update()'s stt: section has no language fields at all — the
+        # Servers dialog payload shape before this feature existed.
+        resp = client.put("/api/settings", json=base_update())
+        assert resp.status_code == 200
+        assert resp.json()["stt"]["mode"] == "auto"
+
+    def test_fixed_mode_round_trip(self, client):
+        resp = client.put("/api/settings", json=base_update(
+            stt={"enabled": True, "base_url": "http://stt.local:6600", "timeout": 30.0,
+                 "mode": "fixed", "primary_language": "it"}))
+
+        assert resp.status_code == 200
+        assert resp.json()["stt"]["mode"] == "fixed"
+        assert resp.json()["stt"]["primary_language"] == "it"
+        # Persisted to settings.yaml (redirected to tmp by the fixture):
+        reloaded = client.get("/api/settings").json()
+        assert reloaded["stt"]["mode"] == "fixed"
+        assert reloaded["stt"]["primary_language"] == "it"
+
+    def test_primary_fallback_mode_round_trip(self, client):
+        resp = client.put("/api/settings", json=base_update(
+            stt={"enabled": True, "base_url": "http://stt.local:6600", "timeout": 30.0,
+                 "mode": "primary_fallback", "primary_language": "it",
+                 "fallback_language": "en", "fallback_threshold": 0.75}))
+
+        assert resp.status_code == 200
+        body = resp.json()["stt"]
+        assert body["mode"] == "primary_fallback"
+        assert body["primary_language"] == "it"
+        assert body["fallback_language"] == "en"
+        assert body["fallback_threshold"] == 0.75
+
+    def test_invalid_threshold_rejected_422(self, client):
+        resp = client.put("/api/settings", json=base_update(
+            stt={"enabled": True, "base_url": "http://stt.local:6600", "timeout": 30.0,
+                 "mode": "fixed", "primary_language": "it", "fallback_threshold": 1.5}))
+        assert resp.status_code == 422
+
+    # -- required-field validation (fixed / primary_fallback) --------------
+
+    def test_fixed_mode_without_primary_language_rejected_422(self, client):
+        resp = client.put("/api/settings", json=base_update(
+            stt={"enabled": True, "base_url": "http://stt.local:6600", "timeout": 30.0,
+                 "mode": "fixed"}))
+        assert resp.status_code == 422
+        assert "primary_language" in resp.text
+
+    def test_primary_fallback_without_fallback_language_rejected_422(self, client):
+        resp = client.put("/api/settings", json=base_update(
+            stt={"enabled": True, "base_url": "http://stt.local:6600", "timeout": 30.0,
+                 "mode": "primary_fallback", "primary_language": "it"}))
+        assert resp.status_code == 422
+        assert "fallback_language" in resp.text
+
+    def test_primary_fallback_without_primary_language_rejected_422(self, client):
+        resp = client.put("/api/settings", json=base_update(
+            stt={"enabled": True, "base_url": "http://stt.local:6600", "timeout": 30.0,
+                 "mode": "primary_fallback", "fallback_language": "en"}))
+        assert resp.status_code == 422
+        assert "primary_language" in resp.text
+
+    def test_primary_fallback_equal_languages_rejected_422(self, client):
+        resp = client.put("/api/settings", json=base_update(
+            stt={"enabled": True, "base_url": "http://stt.local:6600", "timeout": 30.0,
+                 "mode": "primary_fallback", "primary_language": "it", "fallback_language": "it"}))
+        assert resp.status_code == 422
+        assert "must differ" in resp.text
+
+    def test_auto_mode_without_any_language_is_valid(self, client):
+        # "auto" needs nothing — the pre-policy default stays reachable.
+        resp = client.put("/api/settings", json=base_update(
+            stt={"enabled": True, "base_url": "http://stt.local:6600", "timeout": 30.0,
+                 "mode": "auto"}))
+        assert resp.status_code == 200
+
+
 class TestApiKeyIsolation:
     """The LLM API key (docs/feature_api_key.md) is resolved outside
     AppSettings — it must never appear in the settings API, in

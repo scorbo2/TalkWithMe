@@ -61,7 +61,11 @@ async function toggleMicrophone() {
             const resp = await fetch("/api/stt", {
                 method: "POST",
                 headers: { "Content-Type": "application/json" },
-                body: JSON.stringify({ audio_base64, audio_mime_type: audioMimeType }),
+                body: JSON.stringify({
+                    audio_base64,
+                    audio_mime_type: audioMimeType,
+                    chat_room: currentChatRoom,
+                }),
             });
 
             if (!resp.ok) {

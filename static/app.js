@@ -97,10 +97,12 @@ async function checkSTTHealth() {
         const data = await resp.json();
         sttAvailable = data.available;
         updateMicButtonUI();
+        updateRoomSttControlAvailability();
     } catch (err) {
         console.warn("STT health check failed:", err);
         sttAvailable = false;
         updateMicButtonUI();
+        updateRoomSttControlAvailability();
     }
 }
 

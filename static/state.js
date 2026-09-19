@@ -73,6 +73,14 @@ const chatRoomDropdown = document.getElementById("chat-room-dropdown");
 const echoChamberToggle = document.getElementById("echo-chamber-toggle");
 const btnAddPersona = document.getElementById("btn-add-persona");
 
+// Per-room STT language override (used by chatrooms.js)
+const roomSttMode = document.getElementById("room-stt-mode");
+const roomSttPrimaryRow = document.getElementById("room-stt-primary-row");
+const roomSttPrimaryLanguage = document.getElementById("room-stt-primary-language");
+const roomSttFallbackRow = document.getElementById("room-stt-fallback-row");
+const roomSttFallbackLanguage = document.getElementById("room-stt-fallback-language");
+const roomSttFallbackThreshold = document.getElementById("room-stt-fallback-threshold");
+
 // Persona Editor (used by persona.js)
 const personaEditorOverlay = document.getElementById("persona-editor-overlay");
 const peListView = document.getElementById("pe-list-view");
@@ -157,6 +165,12 @@ const sfSttEnabled = document.getElementById("sf-stt-enabled");
 const sfSttFields = document.getElementById("sf-stt-fields");
 const sfSttBaseUrl = document.getElementById("sf-stt-base-url");
 const sfSttTimeout = document.getElementById("sf-stt-timeout");
+const sfSttLanguageMode = document.getElementById("sf-stt-language-mode");
+const sfSttPrimaryLanguageRow = document.getElementById("sf-stt-primary-language-row");
+const sfSttPrimaryLanguage = document.getElementById("sf-stt-primary-language");
+const sfSttFallbackFields = document.getElementById("sf-stt-fallback-fields");
+const sfSttFallbackLanguage = document.getElementById("sf-stt-fallback-language");
+const sfSttFallbackThreshold = document.getElementById("sf-stt-fallback-threshold");
 
 // General Settings Modal (used by gen-settings.js)
 const genSettingsOverlay = document.getElementById("gen-settings-overlay");

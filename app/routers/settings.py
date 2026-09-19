@@ -6,7 +6,7 @@ from typing import Optional
 from fastapi import APIRouter, HTTPException
 
 from app import config as app_config
-from app.config import AppSettings, LLMSettings, STTConfig, TTSConfig
+from app.config import AppSettings, LLMSettings, STTConfig, STTLanguagePolicy, TTSConfig
 from app.models import (
     GeneralSettingsResponse,
     LLMSettingsResponse,
@@ -41,6 +41,10 @@ def _to_response(cfg: AppSettings) -> SettingsResponse:
             enabled=cfg.stt.enabled,
             base_url=cfg.stt.base_url,
             timeout=cfg.stt.timeout,
+            mode=cfg.stt.language_policy.mode,
+            primary_language=cfg.stt.language_policy.primary_language,
+            fallback_language=cfg.stt.language_policy.fallback_language,
+            fallback_threshold=cfg.stt.language_policy.fallback_threshold,
         ),
         general=GeneralSettingsResponse(
             persona_name_mentions=cfg.general.persona_name_mentions,
@@ -135,6 +139,12 @@ def update_settings(req: SettingsUpdateRequest):
             enabled=req.stt.enabled,
             base_url=stt_base,
             timeout=req.stt.timeout,
+            language_policy=STTLanguagePolicy(
+                mode=req.stt.mode,
+                primary_language=req.stt.primary_language,
+                fallback_language=req.stt.fallback_language,
+                fallback_threshold=req.stt.fallback_threshold,
+            ),
         ),
         general=updated_general,
         mcp=current.mcp,

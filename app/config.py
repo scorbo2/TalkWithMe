@@ -13,7 +13,7 @@ the two stock example personas when no Personas directory exists yet.
 import logging
 import re
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Literal, Optional
 
 import yaml
 from pydantic import BaseModel, Field, model_validator
@@ -146,11 +146,82 @@ class TTSConfig(BaseModel):
         return self.enabled and bool(self.base_url)
 
 
+def stt_language_policy_error(
+    mode: str, primary_language: Optional[str], fallback_language: Optional[str]
+) -> Optional[str]:
+    """Cross-field validation for an STT language policy's mode/language combo.
+
+    A pure helper (no pydantic dependency) shared by every place that can
+    construct a policy — the core STTLanguagePolicy model below (guards
+    hand-edited YAML and any direct construction), and the API request
+    models in app/models.py (STTSettingsRequest for the global settings
+    save, STTLanguagePolicyRequest for the per-room override save) — so
+    the same rule is enforced everywhere instead of only at whichever
+    entry point someone remembered to check. Returns None when the combo
+    is fine, else a message naming the problem.
+
+    "auto" needs nothing. "fixed" needs a primary_language to force.
+    "primary_fallback" needs both a primary and a fallback, and they must
+    actually differ — an equal pair would just be "fixed" with an extra
+    (silently wasted) network round trip on every transcription.
+    """
+    if mode == "fixed" and not primary_language:
+        return 'STT language policy: mode "fixed" requires primary_language.'
+    if mode == "primary_fallback":
+        if not primary_language or not fallback_language:
+            return (
+                'STT language policy: mode "primary_fallback" requires both '
+                "primary_language and fallback_language."
+            )
+        if primary_language == fallback_language:
+            return (
+                "STT language policy: primary_language and fallback_language "
+                "must differ in primary_fallback mode."
+            )
+    return None
+
+
+class STTLanguagePolicy(BaseModel):
+    """Which language(s) to force on the STT backend, if any.
+
+    - "auto": no `language` field is sent; Whisper auto-detects (today's
+      behavior, and the default — an all-defaults STTLanguagePolicy is a
+      no-op).
+    - "fixed": always send `language=primary_language`.
+    - "primary_fallback": first pass with no language, then a forced
+      second pass with either `fallback_language` (when the first pass
+      detected it at >= fallback_threshold confidence) or
+      `primary_language` otherwise. Built for language-learning rooms
+      where weak/wrong auto-detections (e.g. short imperfect Italian
+      misheard as Portuguese or Latin) must not become the transcription
+      language — only a clearly-confident fallback-language detection
+      overrides the primary.
+    """
+    mode: Literal["auto", "fixed", "primary_fallback"] = "auto"
+    primary_language: Optional[str] = None
+    fallback_language: Optional[str] = None
+    fallback_threshold: float = Field(default=0.80, ge=0.0, le=1.0)
+
+    @model_validator(mode="after")
+    def _validate_required_languages(self) -> "STTLanguagePolicy":
+        # Fail at construction time (settings save, room save, or config
+        # load — mirrors MCPServerConfig's URL-scheme check) rather than
+        # silently degrading at transcription time: without this,
+        # stt_client.transcribe_with_policy sends no `language` field at
+        # all when a required one is missing, turning "fixed" into an
+        # unannounced "auto".
+        error = stt_language_policy_error(self.mode, self.primary_language, self.fallback_language)
+        if error:
+            raise ValueError(error)
+        return self
+
+
 class STTConfig(BaseModel):
     """Speech-to-text configuration, independent of TTS."""
     enabled: bool = True
     base_url: Optional[str] = None
     timeout: float = 30.0
+    language_policy: STTLanguagePolicy = Field(default_factory=STTLanguagePolicy)
 
     @model_validator(mode="after")
     def _normalize_base_url(self) -> "STTConfig":
@@ -319,6 +390,10 @@ class ChatRoom(BaseModel):
     name: str
     persona_names: List[str] = Field(default_factory=list)
     echo_chamber: bool = False
+    # None = inherit the global stt.language_policy wholesale (see
+    # resolve_stt_language_policy below). A room policy, when present,
+    # replaces the global one entirely — no field-by-field merging.
+    stt_language_policy: Optional[STTLanguagePolicy] = None
 
 
 class ChatRoomsConfig(BaseModel):
@@ -521,6 +596,24 @@ def save_chatrooms(config: ChatRoomsConfig, path: Optional[Path] = None) -> None
     with open(target, "w") as f:
         yaml.dump(raw, f, default_flow_style=False, allow_unicode=True, sort_keys=False)
     _chatrooms_cache = config
+
+
+def resolve_stt_language_policy(room_name: str) -> STTLanguagePolicy:
+    """Resolve the effective STT language policy for a chat room.
+
+    A room's own `stt_language_policy` (when set) wins outright; otherwise
+    the global `stt.language_policy` applies. Case-insensitive room lookup
+    matches every other chat-room endpoint. An unknown room name (already
+    deleted, or "default", which is never a ChatRoomsConfig entry) simply
+    falls through to the global policy.
+    """
+    room = next(
+        (r for r in get_chatrooms().chat_rooms if r.name.lower() == room_name.lower()),
+        None,
+    )
+    if room is not None and room.stt_language_policy is not None:
+        return room.stt_language_policy
+    return get_settings().stt.language_policy
 
 
 def reload_all():
