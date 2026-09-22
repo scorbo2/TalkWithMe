@@ -27,6 +27,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 from app.models import ChatMessage
+from app.services.mime import mime_to_extension
 
 logger = logging.getLogger(__name__)
 
@@ -64,14 +65,14 @@ def _history_path(room_name: str) -> Path:
 
 
 def _audio_file_extension(mime_type: Optional[str]) -> str:
-    """Derive a file extension from a MIME type, falling back to '.bin'."""
-    if not mime_type:
-        return ".bin"
-    # "audio/webm" -> ".webm", "audio/ogg" -> ".ogg", etc.
-    ext = mime_type.split("/")[-1].split("+")[0]
-    if ext:
-        return f".{ext}"
-    return ".bin"
+    """Derive a file extension from a MIME type, falling back to '.bin'.
+
+    Delegates the derivation to the shared app.services.mime helper (the
+    single source of truth for MIME -> extension; see its module docstring
+    for why this must never touch the OS mime database). This wrapper only
+    adds the leading dot that on-disk audio filenames require.
+    """
+    return f".{mime_to_extension(mime_type)}"
 
 
 def _audio_filename(message_id: str, index: int, mime_type: Optional[str] = None) -> str:
