@@ -6,6 +6,43 @@ function updateMicButtonUI() {
     micBtn.disabled = !sttAvailable;
 }
 
+/**
+ * Request the microphone stream, preferring a mono track.
+ *
+ * Why mono first: some browsers (observed on Firefox/Linux) expose
+ * multichannel USB interfaces — e.g. the 12-channel Audient iD14 under
+ * PipeWire — as a 12-channel input track. MediaRecorder dutifully records
+ * all 12 channels, and the STT backend's 12ch→mono resample averages the
+ * voice into ~1/12 of its amplitude (≈ −22 dB), below the voice-activity
+ * threshold: the recording is produced but transcribes to nothing.
+ *
+ * The channelCount constraint is only honored by some UAs (Firefox: yes,
+ * Chromium: no) — where it is ignored this is a plain no-op, so the worst
+ * case is today's behavior. It is deliberately a *soft* constraint (no
+ * `exact`): `exact: 1` would make the request a hard requirement and let
+ * getUserMedia fail with OverconstrainedError on devices that cannot
+ * produce mono, which would brick the mic outright.
+ *
+ * If the constrained call throws anyway (a non-conformant UA or a device
+ * quirk), retry once without the constraint so the user still gets capture
+ * — just the old, possibly-broken-on-multichannel behavior.
+ * NotAllowedError is rethrown as-is: the denial is cached, so a retry is
+ * guaranteed to fail and might only re-prompt for nothing.
+ */
+async function requestMicrophoneStream() {
+    try {
+        return await navigator.mediaDevices.getUserMedia({ audio: { channelCount: 1 } });
+    } catch (err) {
+        if (err && err.name === "NotAllowedError") {
+            throw err;
+        }
+        console.warn(
+            "Constrained microphone request failed; retrying without channelCount:", err
+        );
+        return await navigator.mediaDevices.getUserMedia({ audio: true });
+    }
+}
+
 async function toggleMicrophone() {
     if (mediaRecorder && mediaRecorder.state === "recording") {
         micBtn.disabled = true; // prevent re-entry until onstop finishes
@@ -15,7 +52,7 @@ async function toggleMicrophone() {
 
     let stream;
     try {
-        stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+        stream = await requestMicrophoneStream();
     } catch (err) {
         console.error("Microphone access denied:", err);
         appendErrorBubble("Microphone access was denied.");
