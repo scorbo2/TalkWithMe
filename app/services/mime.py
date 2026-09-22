@@ -39,12 +39,17 @@ def mime_to_extension(mime_type: Optional[str]) -> str:
       6. Apply a small alias table (e.g. ``mpeg`` -> ``mp3``).
       7. Empty result -> ``'bin'``.
     """
-    base = (mime_type or "").split(";", 1)[0].strip()
+    base = (mime_type or "").split(";", 1)[0].strip().lower()
     if "/" not in base:
         return "bin"
-    subtype = base.split("/")[-1]
+
+    subtype = base.rsplit("/", 1)[-1]
     subtype = subtype.split("+", 1)[0]
     if subtype.startswith("x-"):
         subtype = subtype[2:]
     subtype = _SUBTYPE_ALIASES.get(subtype, subtype)
-    return subtype or "bin"
+
+    # MIME types are untrusted input (they arrive from client requests); ensure the
+    # extension is safe to interpolate into filenames across platforms.
+    safe = "".join(ch for ch in subtype if ("a" <= ch <= "z") or ("0" <= ch <= "9") or ch in "_-" )
+    return safe or "bin"
