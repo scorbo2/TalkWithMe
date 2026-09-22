@@ -24,6 +24,7 @@ class TestMimeToExtension:
         # answers per platform: .weba for audio/webm on macOS, nothing on
         # most Linux boxes, .oga for audio/ogg on some).
         ("audio/webm", "webm"),
+        ("audio/we\\bm", "webm"),  # malformed subtype: strip Windows path separator
         ("audio/ogg", "ogg"),
         ("audio/wav", "wav"),
         ("audio/x-wav", "wav"),       # vendor "x-" prefix is not an extension
