@@ -320,6 +320,50 @@ class TestPersonaSelection:
 
 
 # ---------------------------------------------------------------------------
+# Responder planning (_plan_responders — pure function, no endpoint)
+# ---------------------------------------------------------------------------
+
+class TestPlanResponders:
+    def test_single_reply_plans_only_the_first_persona(self):
+        plan = chat_router._plan_responders(["Alex", "Luna"], "Alex", 1)
+
+        assert plan == ["Alex"]
+
+    def test_cap_larger_than_pool_plans_every_eligible_exactly_once(self):
+        plan = chat_router._plan_responders(["Alex", "Luna"], "Luna", 12)
+
+        assert plan[0] == "Luna"  # the configured pick keeps slot 0
+        assert sorted(plan) == ["Alex", "Luna"]
+
+    def test_planned_personas_are_always_distinct_and_eligible(self):
+        # Invariant sweep over pools/counts: the plan must only ever
+        # contain eligible, non-repeating names, with `first` in slot 0
+        # and its length capped at min(count, pool size).
+        pool = ["Alex", "Luna", "Cmdr", "Bella"]
+        for first in pool:
+            for count in range(1, 10):
+                plan = chat_router._plan_responders(pool, first, count)
+
+                assert plan[0] == first
+                assert len(plan) == min(count, len(pool))
+                assert len(set(plan)) == len(plan)  # no repeats
+                assert set(plan) <= set(pool)       # never an outsider
+
+    def test_zero_or_negative_count_plans_nothing(self):
+        assert chat_router._plan_responders(["Alex"], "Alex", 0) == []
+        assert chat_router._plan_responders(["Alex"], "Alex", -3) == []
+
+    def test_first_outside_pool_stays_slot_zero_and_well_formed(self):
+        # Defensive: _pick_persona() guarantees `first` is eligible, but
+        # the plan must stay well-formed if a future caller breaks that
+        # contract (no crash, no duplicate of `first`).
+        plan = chat_router._plan_responders(["Alex", "Luna"], "Nobody", 2)
+
+        assert plan[0] == "Nobody"
+        assert plan[1] in ("Alex", "Luna")
+
+
+# ---------------------------------------------------------------------------
 # Multi-persona replies
 # ---------------------------------------------------------------------------
 
@@ -377,7 +421,7 @@ class TestEchoChamber:
     def test_echoes_user_message_verbatim_without_llm(self, client, monkeypatch):
         _patch_chatrooms(monkeypatch,
                           [ChatRoom(name="Echo", persona_names=["Alex"], echo_chamber=True)])
-        _patch_general(monkeypatch, max_persona_replies=4)  # must be overridden to 1
+        _patch_general(monkeypatch, max_persona_replies=4)
 
         def fail(*a, **kw):
             raise AssertionError("echo chamber must bypass the LLM entirely")
@@ -390,7 +434,9 @@ class TestEchoChamber:
         assert [t["token"] for t in tokens] == ["hello there"]
         done = sse_events_by_type(events, "done")[0]
         assert done["text"] == "hello there"
-        # Exactly one persona responds, even though max_persona_replies is 4.
+        # Only one echo because the room has only one persona — the count
+        # is capped at the eligible count, not at 1 (see the tests below
+        # for multi-persona echo rooms).
         assert [e["persona"] for e in sse_events_by_type(events, "start")] == ["Alex"]
 
     def test_echo_enabled_on_default_room_bypasses_llm(self, client, monkeypatch):
@@ -400,7 +446,9 @@ class TestEchoChamber:
         config = make_chatrooms()
         config.default_echo_chamber = True
         monkeypatch.setattr(app_config, "_chatrooms_cache", config)
-        _patch_general(monkeypatch, max_persona_replies=4)  # must be overridden to 1
+        # max_persona_replies=1 keeps this test focused on the flag — the
+        # reply-COUNT behavior of the echo chamber has its own tests below.
+        _patch_general(monkeypatch, max_persona_replies=1)
 
         def fail(*a, **kw):
             raise AssertionError("echo chamber must bypass the LLM entirely")
@@ -413,8 +461,65 @@ class TestEchoChamber:
         assert [t["token"] for t in tokens] == ["hello there"]
         done = sse_events_by_type(events, "done")[0]
         assert done["text"] == "hello there"
-        # Exactly one persona responds, even though max_persona_replies is 4.
         assert [e["persona"] for e in sse_events_by_type(events, "start")] == ["Alex"]
+
+    def test_echo_respects_max_persona_replies(self, client, monkeypatch):
+        # The echo chamber no longer caps replies at 1: with two personas
+        # in the room and max_persona_replies=2, BOTH echo the message
+        # verbatim — the explicit pick first, then the remaining pool.
+        _patch_chatrooms(monkeypatch,
+                          [ChatRoom(name="Echo", persona_names=["Alex", "Luna"],
+                                    echo_chamber=True)])
+        _patch_general(monkeypatch, max_persona_replies=2)
+
+        def fail(*a, **kw):
+            raise AssertionError("echo chamber must bypass the LLM entirely")
+
+        monkeypatch.setattr(chat_router, "stream_chat", fail)
+
+        events = _chat(client, who_answers="Alex", chat_room="Echo")
+
+        starts = sse_events_by_type(events, "start")
+        assert [e["persona"] for e in starts] == ["Alex", "Luna"]
+        # Every reply is the user's message, verbatim, with no LLM tokens.
+        assert [t["token"] for t in sse_events_by_type(events, "token")] == \
+            ["hello there", "hello there"]
+        assert [e["text"] for e in sse_events_by_type(events, "done")] == \
+            ["hello there", "hello there"]
+        # Each echo gets its own assistant message id.
+        assert len({e["message_id"] for e in starts}) == 2
+
+    def test_echo_capped_at_eligible_count_without_repeats(self, client, monkeypatch):
+        # max_persona_replies above the room's persona count must not
+        # duplicate personas: three personas in the room, max=12, and each
+        # persona echoes exactly once.
+        personas_config = make_personas()
+        personas_config.personas.append(
+            Persona(name="Cmdr", system_prompt="You are Cmdr.",
+                    router_hints="commands"))
+        _patch_personas(monkeypatch, personas_config)
+        _patch_chatrooms(monkeypatch,
+                          [ChatRoom(name="Echo",
+                                    persona_names=["Alex", "Luna", "Cmdr"],
+                                    echo_chamber=True)])
+        _patch_general(monkeypatch, max_persona_replies=12)
+
+        def fail(*a, **kw):
+            raise AssertionError("echo chamber must bypass the LLM entirely")
+
+        monkeypatch.setattr(chat_router, "stream_chat", fail)
+
+        events = _chat(client, who_answers="Alex", chat_room="Echo")
+
+        starts = sse_events_by_type(events, "start")
+        # Alex first (explicit pick); the other two come from the remaining
+        # pool in random order — each exactly once.
+        assert starts[0]["persona"] == "Alex"
+        assert sorted(e["persona"] for e in starts) == ["Alex", "Cmdr", "Luna"]
+        assert [t["token"] for t in sse_events_by_type(events, "token")] == \
+            ["hello there"] * 3
+        assert [e["text"] for e in sse_events_by_type(events, "done")] == \
+            ["hello there"] * 3
 
     def test_default_room_with_flag_off_streams_from_llm(self, client, monkeypatch):
         # Regression guard: a config with the flag explicitly False (how

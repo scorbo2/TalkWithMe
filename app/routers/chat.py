@@ -134,6 +134,28 @@ async def _pick_persona(who_answers: str, user_message: str, chat_room: str) -> 
 
 
 # ---------------------------------------------------------------------------
+# Responder planning — how many (and which) personas answer one message
+# ---------------------------------------------------------------------------
+
+def _plan_responders(eligible: list[str], first: str, count: int) -> list[str]:
+    """Plan the ordered responder sequence for one user message.
+
+    Slot 0 is always `first` (picked per the configured selection
+    strategy); each subsequent slot is a randomly ordered, non-repeating
+    pick from the remaining eligible personas. The plan stops at `count`
+    entries or when the room runs out of personas, whichever comes first
+    (`count <= 0` yields an empty plan). Pure apart from the RNG, so the
+    selection strategy is unit-testable without the SSE endpoint.
+    """
+    if count <= 0:
+        return []
+    plan = [first]
+    remaining = [name for name in eligible if name not in plan]
+    plan.extend(random.sample(remaining, min(count - 1, len(remaining))))
+    return plan
+
+
+# ---------------------------------------------------------------------------
 # Memory injection (docs/feature_persona_memory.md)
 # ---------------------------------------------------------------------------
 
@@ -236,33 +258,27 @@ async def _chat_stream(req: ChatRequest) -> AsyncIterator[str]:
     # room record — room_echo_enabled() knows about that).
     echo_enabled = room_echo_enabled(get_chatrooms(), req.chat_room)
 
-    # Echo chamber overrides max_replies — only one persona echoes the user.
-    # Multiple identical echoes from different personas would be pointless noise.
+    # Echo chamber: the LLM is bypassed for EVERY planned echo, so no
+    # tool calls (add_memory included) can happen. The echo count follows
+    # max_persona_replies (see _plan_responders) — this is what lets a
+    # voice-tester hear every persona in the room speak the same line.
     if echo_enabled:
-        max_replies = 1
         logger.debug(
-            "Persona memory: room '%s' has the echo chamber enabled — the LLM is "
-            "bypassed entirely, so NO tool calls (add_memory included) can happen",
-            req.chat_room,
+            "Echo chamber: room '%s' — the LLM is bypassed entirely for all "
+            "%d echo(es), so NO tool calls (add_memory included) can happen",
+            req.chat_room, max_replies,
         )
 
-    replied_personas: list[str] = []
+    # Plan the full responder sequence up front (first persona from the
+    # configured selection strategy, then random non-repeating picks from
+    # the remaining eligible personas until the cap or the room runs out).
+    responders = _plan_responders(eligible, first_persona_name, max_replies)
 
-    for reply_idx in range(max_replies):
-        if reply_idx == 0:
-            persona_name = first_persona_name
-        else:
-            remaining = [n for n in eligible if n not in replied_personas]
-            if not remaining:
-                break
-            persona_name = random.choice(remaining)
-
+    for persona_name in responders:
         persona = next((p for p in config.personas if p.name == persona_name), None)
         if not persona:
             yield f'data: {json.dumps({"type": "error", "message": f"Persona {persona_name} not found"})}\n\n'
             return
-
-        replied_personas.append(persona_name)
 
         # Diagnostic trail (DEBUG): the three inputs the add_memory feature
         # gates on, exactly as the runtime sees them (post-cache, post-parse).
