@@ -134,12 +134,23 @@ async def _iter_completion_chunks(payload: dict) -> AsyncGenerator[dict, None]:
                             chunk,
                         )
                     continue
-                if not chunk["choices"]:
+                choices = chunk.get("choices")
+                if not isinstance(choices, list):
+                    logger.warning(
+                        "Malformed SSE chunk from LLM ('choices' not a list): %r", chunk
+                    )
+                    continue
+                if not choices:
                     logger.warning(
                         "Malformed SSE chunk from LLM (empty 'choices'): %r", chunk
                     )
                     continue
-                yield chunk["choices"][0]
+                if not isinstance(choices[0], dict):
+                    logger.warning(
+                        "Malformed SSE chunk from LLM ('choices[0]' not an object): %r", chunk
+                    )
+                    continue
+                yield choices[0]
 
 
 async def stream_chat(
