@@ -339,7 +339,7 @@ class TestMultiPersonaReplies:
         assert len({e["message_id"] for e in starts}) == 2
 
     def test_replies_capped_at_eligible_count(self, client, monkeypatch):
-        _patch_general(monkeypatch, max_persona_replies=4)
+        _patch_general(monkeypatch, max_persona_replies=12)
         _patch_chatrooms(monkeypatch, [ChatRoom(name="Solo", persona_names=["Luna"])])
         _stub_stream(monkeypatch, ["hi"])
 

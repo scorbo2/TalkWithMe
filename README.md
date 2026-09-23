@@ -372,7 +372,7 @@ For lowest lag time, consider OmniVoice as the TTS server. It is considerably fa
 
 ## Persona-to-persona chat
 
-By default, only one AI persona in the current chat room will answer your prompt. You can make it feel more like a group chat by turning up the `max_persona_replies` option in `settings.yaml` (or by visiting the settings dialog). You can choose any number between 1 and 4. The given number of AI personas will answer your prompt (or reply to the persona who responded before them). Your personas may argue amongst themselves, depending on their respective system prompts!
+By default, only one AI persona in the current chat room will answer your prompt. You can make it feel more like a group chat by turning up the `max_persona_replies` option in `settings.yaml` (or by visiting the settings dialog). You can choose any number between 1 and 12. The given number of AI personas will answer your prompt (or reply to the persona who responded before them). Your personas may argue amongst themselves, depending on their respective system prompts!
 
 ## MCP tools (optional)
 
@@ -615,6 +615,7 @@ standalone script under `impl/` with per-engine install notes.
 - **Work in progress - release date goes here when ready** v7.2
   - Enable "echo chamber" option in default chat room (#125)
   - Bug fix: persona rename/delete no longer resets "echo chamber" across chatrooms (#125)
+  - Increase `max_persona_replies` limit from 4 to 12 (#130)
 
 ## License
 

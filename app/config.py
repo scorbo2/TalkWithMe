@@ -34,6 +34,17 @@ rejected, never truncated — the LLM can reformulate a shorter one."""
 
 
 # ---------------------------------------------------------------------------
+# General settings limits
+# ---------------------------------------------------------------------------
+
+MAX_PERSONA_REPLIES = 12
+"""Hard cap for general.max_persona_replies. Referenced by GeneralConfig
+here and by GeneralSettingsRequest in models.py, so a future cap change is
+a one-line job (the old hard-coded 4 lived in both models plus the
+frontend, and all four had to move in lockstep)."""
+
+
+# ---------------------------------------------------------------------------
 # Settings
 # ---------------------------------------------------------------------------
 
@@ -167,7 +178,7 @@ class STTConfig(BaseModel):
 class GeneralConfig(BaseModel):
     """Application-wide feature flags and preferences."""
     persona_name_mentions: bool = True
-    max_persona_replies: int = Field(default=1, ge=1, le=4)
+    max_persona_replies: int = Field(default=1, ge=1, le=MAX_PERSONA_REPLIES)
     max_turns_for_context: int = Field(default=6, ge=1, le=50, description="Max history turns sent to the LLM")
     show_tool_calls: bool = True
     # Global kill-switch for the persona memory feature (docs/
