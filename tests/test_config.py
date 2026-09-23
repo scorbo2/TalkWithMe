@@ -256,12 +256,12 @@ class TestSTTConfigIsActive:
 # ---------------------------------------------------------------------------
 
 class TestGeneralConfigBounds:
-    @pytest.mark.parametrize("value", [0, 5, -1])
+    @pytest.mark.parametrize("value", [0, 13, -1])
     def test_general_config_max_persona_replies_out_of_range_rejected(self, value):
         with pytest.raises(ValidationError):
             GeneralConfig(max_persona_replies=value)
 
-    @pytest.mark.parametrize("value", [1, 4])
+    @pytest.mark.parametrize("value", [1, 12])
     def test_general_config_max_persona_replies_in_range_accepted(self, value):
         assert GeneralConfig(max_persona_replies=value).max_persona_replies == value
 

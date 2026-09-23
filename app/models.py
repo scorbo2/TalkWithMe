@@ -4,7 +4,7 @@ from typing import Any, Dict, List, Optional, Literal
 
 from pydantic import BaseModel, Field, field_validator
 
-from app.config import DEFAULT_MEMORY_SIZE, MAX_MEMORY_SIZE, is_valid_room_name
+from app.config import DEFAULT_MEMORY_SIZE, MAX_MEMORY_SIZE, MAX_PERSONA_REPLIES, is_valid_room_name
 
 
 # ---------------------------------------------------------------------------
@@ -220,7 +220,7 @@ class GeneralSettingsRequest(BaseModel):
     to wipe out show_tool_calls on every save.
     """
     persona_name_mentions: Optional[bool] = None
-    max_persona_replies: Optional[int] = Field(default=None, ge=1, le=4)
+    max_persona_replies: Optional[int] = Field(default=None, ge=1, le=MAX_PERSONA_REPLIES)
     max_turns_for_context: Optional[int] = Field(default=None, ge=1, le=50)
     show_tool_calls: Optional[bool] = None
     enable_persona_memories: Optional[bool] = None

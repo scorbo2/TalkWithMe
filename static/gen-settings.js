@@ -6,6 +6,15 @@
  */
 
 /* ==========================================================================
+   Constants
+   ========================================================================== */
+
+// Upper bound for Max Persona Replies. The server enforces the same value
+// (MAX_PERSONA_REPLIES in app/config.py) — keep the two in sync; the
+// max= attribute and (1–12) hint in templates/index.html carry it too.
+const MAX_PERSONA_REPLIES = 12;
+
+/* ==========================================================================
    Event listeners
    ========================================================================== */
 
@@ -77,8 +86,8 @@ async function submitGenSettings(e) {
     genSettingsError.classList.add("hidden");
 
     const maxReplies = parseInt(gsfMaxPersonaReplies.value, 10);
-    if (isNaN(maxReplies) || maxReplies < 1 || maxReplies > 4) {
-        return showGenSettingsError("Max Persona Replies must be between 1 and 4.");
+    if (isNaN(maxReplies) || maxReplies < 1 || maxReplies > MAX_PERSONA_REPLIES) {
+        return showGenSettingsError(`Max Persona Replies must be between 1 and ${MAX_PERSONA_REPLIES}.`);
     }
 
     const maxTurns = parseInt(gsfMaxTurnsForContext.value, 10);
