@@ -6,7 +6,7 @@ import pytest
 
 from app import persistence
 from app.models import ChatMessage
-from app.session import SessionManager
+from app.session import _ANTI_MIMICRY_NOTE, SessionManager
 
 
 @pytest.fixture
@@ -134,7 +134,12 @@ class TestBuildLLMMessages:
 
         messages = manager.build_llm_messages("You are Alex.", "Alex")
 
-        assert messages[0] == {"role": "system", "content": "You are Alex."}
+        # Another persona spoke, so the anti-mimicry note is appended to the
+        # system prompt (see _ANTI_MIMICRY_NOTE).
+        assert messages[0] == {
+            "role": "system",
+            "content": "You are Alex.\n\n" + _ANTI_MIMICRY_NOTE,
+        }
         assert messages[1] == {"role": "user", "content": "what do you think?"}
         # Another persona's line becomes a user message, prefixed with the name.
         assert messages[2] == {
@@ -144,6 +149,48 @@ class TestBuildLLMMessages:
         # The responding persona keeps the assistant role.
         assert messages[3] == {"role": "assistant", "content": "I agree with Luna."}
         assert messages[4] == {"role": "user", "content": "thanks"}
+
+    def test_build_llm_messages_appends_anti_mimicry_note_when_other_persona_spoke(self, manager):
+        # GIVEN history in which another persona has spoken:
+        manager.add_user_message_no_persist("hello")
+        manager.add_assistant_message_no_persist("hi there", "Luna")
+
+        # WHEN the LLM messages are built for Alex,
+        messages = manager.build_llm_messages("You are Alex.", "Alex")
+
+        # THEN the system prompt carries the anti-mimicry note, intact and
+        # after the persona prompt: small models parrot the "[Name]:" prefix
+        # of the most recent prefixed message into their own replies, and
+        # the app would persist that prefix into the history, where it
+        # compounds turn after turn.
+        assert messages[0]["role"] == "system"
+        assert messages[0]["content"] == "You are Alex.\n\n" + _ANTI_MIMICRY_NOTE
+
+    def test_build_llm_messages_no_anti_mimicry_note_when_only_responder_spoke(self, manager):
+        # GIVEN history containing only the responding persona's own lines:
+        manager.add_user_message_no_persist("hello")
+        manager.add_assistant_message_no_persist("hi there", "Alex")
+
+        # WHEN the LLM messages are built for Alex,
+        messages = manager.build_llm_messages("You are Alex.", "Alex")
+
+        # THEN the system prompt is untouched — the note only costs tokens
+        # when the "[Name]:" format is actually in the context:
+        assert messages[0] == {"role": "system", "content": "You are Alex."}
+
+    def test_build_llm_messages_note_gated_on_sliced_history(self, manager):
+        # GIVEN an other-persona line that falls OUTSIDE the max-turns slice:
+        manager.add_assistant_message_no_persist("old line", "Luna")
+        for i in range(4):
+            manager.add_user_message_no_persist(f"turn {i}")
+
+        # WHEN the messages are built with a slice that excludes it,
+        messages = manager.build_llm_messages("You are Alex.", "Alex", max_turns_for_context=3)
+
+        # THEN the note is not appended — the "[Name]:" format is not in the
+        # slice the model sees:
+        assert messages[0] == {"role": "system", "content": "You are Alex."}
+        assert len(messages) == 4  # system + 3 sliced user turns
 
     def test_build_llm_messages_max_turns_keeps_only_last_entries(self, manager):
         for i in range(10):

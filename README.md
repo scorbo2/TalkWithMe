@@ -380,6 +380,30 @@ If you want your personas to be able to *do* things — fetch a web page, query 
 
 Be careful connecting MCP servers, especially if you are connecting to a remote LLM. You are giving the LLM the ability to execute arbitrary tools, which might be a privacy or security concern.
 
+### Compatibility note
+
+Some models — especially very small ones — cannot reliably follow the
+tool-calling protocol; `Llama-3.2-1B-Instruct` is a confirmed example.
+If you run one of these models, keep **"Allow tool calls"** off on your
+personas. (Side effect: the persona can no longer save *new* memories —
+ones it saved earlier are still used normally.)
+
+If "Allow tool calls" is on and you see any of the following, it is
+almost certainly the model, not an app bug:
+
+- A persona "replying" in raw JSON that mentions `add_memory` — often
+  repeated verbatim by the personas that answer after it.
+- Tool-call chips repeating the same memory over and over while the
+  model never answers your actual question.
+- Empty replies.
+- In the server log: `LLM server error mid-stream: ... peg-native
+  format ...` (or, on versions before the #128 fix, the cryptic
+  `Malformed SSE chunk from LLM: 'choices'`).
+
+The app now logs the server's own error message and re-sends an aborted
+request once — but it cannot teach a model the protocol. If your model
+shows these symptoms, turn tool calls off (or switch to a larger model!)
+
 ## Persona memories
 
 Every time you select "New Chat" in a given chat room, the chat history of that room is wiped. But, your personas have access to a new feature (added in V6) to allow them to persist certain memories across chat sessions, and across chat rooms. To enable this for a persona, the following conditions must be met:
@@ -622,6 +646,7 @@ standalone script under `impl/` with per-engine install notes.
   - Bug fix: persona rename/delete no longer resets "echo chamber" across chatrooms (#125)
   - Increase `max_persona_replies` limit from 4 to 12 (#130)
   - Allow "echo chamber" to respect `max_persona_replies` (#131)
+  - Fix handling of in-band LLM failures (#128)
 
 ## License
 

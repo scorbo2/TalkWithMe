@@ -147,6 +147,132 @@ class TestStreamChat:
         with pytest.raises(Exception, match="HTTP 500"):
             _collect(llm.stream_chat([{"role": "user", "content": "hi"}]))
 
+    def test_stream_chat_inband_server_error_logged_with_its_message(self, monkeypatch, caplog):
+        """llama.cpp signals a mid-stream failure (e.g. its tool-call parser
+        rejecting the model's output) as an in-band error object — valid JSON,
+        no 'choices' key, HTTP still 200. The log must carry the server's own
+        message, not the old cryptic "Malformed SSE chunk ... 'choices'"."""
+        # GIVEN a stream that receives an in-band error object mid-flight:
+        lines = [
+            sse_line({"choices": [{"delta": {"role": "assistant"}}]}),
+            sse_line({"error": {
+                "code": 500,
+                "message": "The model produced output that does not match "
+                           "the expected peg-native format",
+                "type": "server_error",
+            }}),
+            token_line("hi"),
+            finish_line("stop"),
+        ]
+        patch_llm_client(monkeypatch, FakeLLMClient(lines))
+
+        # WHEN the stream is consumed,
+        with caplog.at_level(logging.WARNING):
+            tokens = _collect(llm.stream_chat([{"role": "user", "content": "hi"}]))
+
+        # THEN the remaining tokens still arrive and the server's own error
+        # message (not a bare KeyError) is in the log:
+        assert tokens == ["hi"]
+        assert "LLM server error mid-stream" in caplog.text
+        assert "peg-native format" in caplog.text
+        assert "Malformed SSE chunk from LLM: 'choices'" not in caplog.text
+
+    def test_stream_chat_chunk_without_choices_or_error_is_malformed(self, monkeypatch, caplog):
+        """A non-dict JSON value (previously an uncaught TypeError) and a dict
+        without either key are logged as malformed, not fatal."""
+        lines = [
+            sse_line({"foo": "bar"}),
+            "data: 42",
+            token_line("ok"),
+            finish_line("stop"),
+        ]
+        patch_llm_client(monkeypatch, FakeLLMClient(lines))
+
+        with caplog.at_level(logging.WARNING):
+            tokens = _collect(llm.stream_chat([{"role": "user", "content": "hi"}]))
+
+        assert tokens == ["ok"]
+        assert caplog.text.count("no 'choices' key") == 2
+
+    def test_stream_chat_retries_once_when_stream_aborts_before_any_content(self, monkeypatch, caplog):
+        # GIVEN the first stream ends with an in-band error (no content, no
+        # finish_reason) and the second completes normally:
+        aborted = [
+            sse_line({"choices": [{"delta": {"role": "assistant"}}]}),
+            sse_line({"error": {"code": 500, "message": "boom", "type": "server_error"}}),
+        ]
+        clean = [token_line("hi"), finish_line("stop")]
+
+        class RetryClient(FakeLLMClient):
+            def stream(self, method, url, json=None):
+                self.payloads.append(json)
+                lines = aborted if len(self.payloads) == 1 else clean
+                return FakeStreamResponse(lines)
+
+        client = RetryClient([])
+        patch_llm_client(monkeypatch, client)
+
+        # WHEN the chat stream is consumed,
+        with caplog.at_level(logging.WARNING):
+            tokens = _collect(llm.stream_chat([{"role": "user", "content": "hi"}]))
+
+        # THEN the request was sent exactly twice (one retry) with an
+        # identical payload, and the caller only ever sees the retry's tokens:
+        assert len(client.payloads) == 2
+        assert client.payloads[0] == client.payloads[1]
+        assert tokens == ["hi"]
+        assert "retrying once" in caplog.text
+
+    def test_stream_chat_does_not_retry_when_content_already_streamed(self, monkeypatch):
+        # GIVEN a stream that delivers tokens and then dies mid-stream:
+        lines = [
+            token_line("Hel"),
+            sse_line({"error": {"code": 500, "message": "boom", "type": "server_error"}}),
+        ]
+        client = FakeLLMClient(lines)
+        patch_llm_client(monkeypatch, client)
+
+        # WHEN the stream is consumed,
+        tokens = _collect(llm.stream_chat([{"role": "user", "content": "hi"}]))
+
+        # THEN the partial reply is returned as-is — re-sending would
+        # duplicate tokens the caller has already consumed:
+        assert len(client.payloads) == 1
+        assert tokens == ["Hel"]
+
+    def test_stream_chat_does_not_retry_a_clean_empty_stop(self, monkeypatch):
+        # GIVEN a stream that ends in a legitimate empty completion
+        # (finish_reason present, no content):
+        client = FakeLLMClient([finish_line("stop")])
+        patch_llm_client(monkeypatch, client)
+
+        # WHEN the chat stream is consumed,
+        tokens = _collect(llm.stream_chat([{"role": "user", "content": "hi"}]))
+
+        # THEN it is never retried — a healthy stop is not an abort:
+        assert tokens == []
+        assert len(client.payloads) == 1
+
+    def test_stream_chat_raises_when_both_attempts_abort(self, monkeypatch):
+        # GIVEN a server that aborts every stream (in-band error, no
+        # content, no finish_reason):
+        aborted = [
+            sse_line({"choices": [{"delta": {"role": "assistant"}}]}),
+            sse_line({"error": {"code": 500, "message": "boom", "type": "server_error"}}),
+        ]
+        client = FakeLLMClient(aborted)
+        patch_llm_client(monkeypatch, client)
+
+        # WHEN the chat stream is consumed,
+        with pytest.raises(llm.LLMStreamAborted):
+            _collect(llm.stream_chat([{"role": "user", "content": "hi"}]))
+
+        # THEN exactly one retry happened (no retry storm) and the caller
+        # sees the exception, not a silent empty reply the chat router
+        # would persist into history:
+        assert len(client.payloads) == 2
+        assert client.payloads[0] == client.payloads[1]
+
 
 # ---------------------------------------------------------------------------
 # chat_completion — non-streaming router call
@@ -646,3 +772,113 @@ class TestStreamChatWithTools:
             m for m in client.payloads[1]["messages"] if m.get("role") == "tool"
         )
         assert tool_result_msg["content"] == "The memory was saved successfully."
+
+    def test_aborted_round_retried_once_then_tool_loop_proceeds(self, monkeypatch):
+        """Round 1 dies mid-stream (in-band error, nothing yielded). The
+        same conversation is re-sent once; the retry's tool call then drives
+        the loop normally."""
+        from app.services import mcp_client, tool_registry
+        from tests.factories import make_mcp_server
+
+        tool_registry._server_map["get_time"] = make_mcp_server()
+
+        async def fake_call_tool(server_cfg, tool_name, arguments):
+            return "It is noon."
+
+        monkeypatch.setattr(mcp_client, "call_tool", fake_call_tool)
+
+        aborted = [
+            sse_line({"choices": [{"delta": {"role": "assistant"}}]}),
+            sse_line({"error": {"code": 500, "message": "boom", "type": "server_error"}}),
+        ]
+        tool_call = [
+            tool_call_delta_line(0, id="c1", type="function",
+                                 function={"name": "get_time",
+                                           "arguments": '{"zone": "utc"}'}),
+            finish_line("tool_calls"),
+        ]
+        final_text = [token_line("ok"), finish_line("stop")]
+        sequences = [aborted, tool_call, final_text]
+
+        class RetryClient(FakeLLMClient):
+            def stream(self, method, url, json=None):
+                self.payloads.append(json)
+                index = min(len(self.payloads) - 1, len(sequences) - 1)
+                return FakeStreamResponse(sequences[index])
+
+        client = RetryClient([])
+        patch_llm_client(monkeypatch, client)
+
+        events = _collect(
+            llm.stream_chat_with_tools(
+                [{"role": "user", "content": "time?"}],
+                [{"type": "function", "function": {"name": "get_time"}}],
+                _tool_persona(),
+            )
+        )
+
+        assert [e["type"] for e in events] == ["tool_call", "token"]
+        # Three requests: the aborted attempt, its identical retry, and the
+        # round after the tool result was fed back.
+        assert len(client.payloads) == 3
+        assert client.payloads[1]["messages"] == client.payloads[0]["messages"]
+        assert "tools" in client.payloads[0] and "tools" in client.payloads[1]
+
+    def test_persistently_aborted_round_retried_exactly_once_then_raises(self, monkeypatch):
+        # GIVEN a server that aborts every attempt (no content, no tool
+        # calls, no finish_reason):
+        aborted = [
+            sse_line({"choices": [{"delta": {"role": "assistant"}}]}),
+            sse_line({"error": {"code": 500, "message": "boom", "type": "server_error"}}),
+        ]
+        client = FakeLLMClient(aborted)
+        patch_llm_client(monkeypatch, client)
+
+        # WHEN the loop runs,
+        with pytest.raises(llm.LLMStreamAborted):
+            _collect(
+                llm.stream_chat_with_tools([{"role": "user", "content": "hi"}], [], _tool_persona())
+            )
+
+        # THEN the round is retried exactly once (no retry storm) and the
+        # abort is RAISED, not returned as an empty plain-text reply —
+        # the chat router turns the exception into a visible error event
+        # and skips persistence, so the double abort can never surface as
+        # a silently persisted empty row in history:
+        assert len(client.payloads) == 2
+        assert client.payloads[0] == client.payloads[1]
+
+    def test_aborted_round_with_partial_tool_call_is_not_retried(self, monkeypatch):
+        """A round that died AFTER tool-call deltas started has in-flight
+        state; retrying it would risk double-execution. It keeps the
+        existing truncation-refusal handling instead."""
+        from app.config import MCPConfig
+
+        monkeypatch.setattr(
+            app_config, "_settings_cache",
+            make_settings(mcp=MCPConfig(max_tool_iterations=1)),
+        )
+
+        # The same aborted lines serve every request — if a retry happened
+        # this test would need a third sequence to absorb it.
+        aborted = [
+            tool_call_delta_line(0, id="c1", type="function",
+                                 function={"name": "get_time",
+                                           "arguments": '{"zone": "ut'}),
+            # stream ends here: no finish_reason — the server aborted mid-call
+        ]
+        client = FakeLLMClient(aborted)
+        patch_llm_client(monkeypatch, client)
+
+        events = _collect(
+            llm.stream_chat_with_tools([{"role": "user", "content": "time?"}], [], _tool_persona())
+        )
+
+        # Round 0: refused (invalid JSON, no max_tokens hint — the abort
+        # carries no finish_reason), NOT retried. The final tool-less round
+        # drops the call without executing it.
+        assert len(client.payloads) == 2
+        assert [e["type"] for e in events] == ["tool_call"]
+        assert events[0]["failed"] is True
+        assert "not valid JSON" in events[0]["result"]
+        assert "max_tokens" not in events[0]["result"]
