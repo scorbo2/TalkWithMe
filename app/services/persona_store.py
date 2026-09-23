@@ -567,7 +567,8 @@ def append_memory(persona_dir: Path, memory: object, memory_size: int) -> str:
     here would kill the persona's whole reply stream.
 
     Check order: enabled -> has content -> per-memory char limit ->
-    configured byte limit -> append (with oldest-first purge as needed).
+    configured byte limit -> exact duplicate -> append (with oldest-first
+    purge as needed).
     """
     if memory_size <= 0:
         # Memory is disabled: also delete a stale file so re-enabling the
@@ -603,6 +604,17 @@ def append_memory(persona_dir: Path, memory: object, memory_size: int) -> str:
         )
 
     lines = _memory_lines(read_memories(persona_dir))
+    if cleaned in lines:
+        # Exact duplicate (post-normalization — the file stores the same
+        # stripped, newline-flattened form, so this is the exact
+        # comparison the stored data supports). The tool spec's "do not
+        # add a redundant memory" rule is prompt text, and small models
+        # ignore prompt text: observed live, Llama-3.2-1B repeats the same
+        # add_memory call every round until the iteration cap. This is
+        # the deterministic floor. A no-op success string, deliberately
+        # NOT "Error: ..." — a red failure chip would invite the model to
+        # retry, the opposite of what we want.
+        return "The memory was already saved; there is nothing new to remember."
     lines.append(cleaned)
     # Purge oldest-first until the file is under the limit, but never drop
     # the memory just added (the newest line). A memory that alone exceeds

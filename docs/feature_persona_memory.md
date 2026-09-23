@@ -102,6 +102,12 @@ which already exists.
 
 Possible tool response messages:
 - On success: "The memory was saved successfully."
+- Memory is an exact duplicate of one already saved (compared after the same
+  stripping/newline-flattening the file stores lines under):
+  "The memory was already saved; there is nothing new to remember." — a no-op
+  *success*, deliberately **not** `Error:`-prefixed: small models (observed:
+  Llama-3.2-1B) repeat the identical `add_memory` call every round until the
+  iteration cap, and a failure chip would only invite another retry.
 - `memory_size` is set to 0: "Error: Memory is not enabled for this persona."
 - Memory exceeds `memory_size`: "Error: The memory was too large to save. Configured memory limit: {memory_size} bytes"
 - Memory exceeds 1024 character limit: "Error: The memory was too large to save. Max per-memory length is 1024 characters."

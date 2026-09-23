@@ -11,7 +11,7 @@ from pathlib import Path
 import app.config as app_config
 import app.routers.chat as chat_router
 from app.config import ChatRoom, ChatRoomsConfig, GeneralConfig, Persona, PersonasConfig
-from app.services import builtin
+from app.services import builtin, llm
 from tests.factories import (
     make_chatrooms,
     make_personas,
@@ -1001,4 +1001,103 @@ class TestStreamErrors:
 
         messages = load_history("default")
         # Only the user message landed; the assistant row never did.
+        assert [m["sender"] for m in messages] == ["USER"]
+
+
+# ---------------------------------------------------------------------------
+# Double aborts (issue #128)
+# ---------------------------------------------------------------------------
+
+class TestDoubleAbort:
+    """A stream the server aborts twice in a row (in-band error object,
+    plus its single retry) raises LLMStreamAborted from the LLM layer.
+    The router must surface it as a visible error event and skip
+    persistence — the pre-fix failure mode was a SILENTLY PERSISTED
+    empty assistant row: a blank bubble for the user, and an empty
+    "[Name]: " prefix poisoning every subsequent persona's context."""
+
+    @staticmethod
+    def _tool_persona_cache(monkeypatch):
+        config = make_personas()
+        config.personas.append(
+            Persona(name="ToolUser", system_prompt="You use tools.",
+                    router_hints="tools", allow_tool_calls=True))
+        _patch_personas(monkeypatch, config)
+
+    @staticmethod
+    def _aborting_tools(monkeypatch, events_before_raise):
+        async def fake_tools(messages, tools, persona):
+            for event in events_before_raise:
+                yield event
+            raise llm.LLMStreamAborted("aborted twice in a row")
+
+        monkeypatch.setattr(chat_router, "stream_chat_with_tools", fake_tools)
+
+    @staticmethod
+    def _aborting_plain(monkeypatch):
+        async def fake_stream(messages):
+            # The empty yield loop makes this an async generator (the
+            # router consumes it via `async for`); the raise fires on the
+            # first __anext__, before any token.
+            for token in ():
+                yield token
+            raise llm.LLMStreamAborted("aborted twice in a row")
+
+        monkeypatch.setattr(chat_router, "stream_chat", fake_stream)
+
+    def test_tool_loop_abort_emits_error_not_done(self, client, monkeypatch):
+        self._tool_persona_cache(monkeypatch)
+        self._aborting_tools(monkeypatch, [])
+
+        events = _chat(client, who_answers="ToolUser")
+
+        types = [e["type"] for e in events]
+        assert types == ["start", "error"]
+        assert "aborted twice" in events[-1]["message"]
+        # No done/complete after an abort — same contract as any
+        # mid-stream error (see TestStreamErrors).
+        assert "done" not in types
+        assert "complete" not in types
+
+    def test_tool_loop_abort_after_tool_chip_still_emits_the_chip(self, client, monkeypatch):
+        # The tool call (and its side effects) already happened before
+        # the final round aborted: the chip is real and must be shown,
+        # then the error.
+        self._tool_persona_cache(monkeypatch)
+        self._aborting_tools(monkeypatch, [_tool_call_event()])
+
+        events = _chat(client, who_answers="ToolUser")
+
+        types = [e["type"] for e in events]
+        assert types == ["start", "tool_call", "error"]
+
+    def test_tool_loop_abort_persists_no_empty_reply(self, client, monkeypatch):
+        self._tool_persona_cache(monkeypatch)
+        self._aborting_tools(monkeypatch, [])
+        _chat(client, who_answers="ToolUser")
+
+        from app.persistence import load_history
+
+        messages = load_history("default")
+        # Only the user message landed; no empty assistant row.
+        assert [m["sender"] for m in messages] == ["USER"]
+
+    def test_plain_path_abort_emits_error_not_done(self, client, monkeypatch):
+        self._aborting_plain(monkeypatch)
+
+        events = _chat(client)
+
+        types = [e["type"] for e in events]
+        assert types == ["start", "error"]
+        assert "done" not in types
+        assert "complete" not in types
+
+    def test_plain_path_abort_persists_no_empty_reply(self, client, monkeypatch):
+        self._aborting_plain(monkeypatch)
+        _chat(client)
+
+        from app.persistence import load_history
+
+        messages = load_history("default")
+        # Only the user message landed; no empty assistant row.
         assert [m["sender"] for m in messages] == ["USER"]
