@@ -194,6 +194,46 @@ class TestStreamChat:
         assert tokens == ["ok"]
         assert caplog.text.count("no 'choices' key") == 2
 
+    def test_stream_chat_choices_not_a_list_is_logged_and_skipped(self, monkeypatch, caplog):
+        """A PRESENT but wrongly-typed 'choices' value (string or object)
+        must be logged and skipped — before the shape validation it was
+        yielded as chunk['choices'][0] (a single CHARACTER for a string)
+        and crashed downstream with AttributeError instead of the
+        documented log-and-skip behaviour."""
+        lines = [
+            sse_line({"choices": "oops"}),
+            sse_line({"choices": {"weird": True}}),
+            token_line("ok"),
+            finish_line("stop"),
+        ]
+        patch_llm_client(monkeypatch, FakeLLMClient(lines))
+
+        with caplog.at_level(logging.WARNING):
+            tokens = _collect(llm.stream_chat([{"role": "user", "content": "hi"}]))
+
+        assert tokens == ["ok"]
+        assert caplog.text.count("'choices' not a list") == 2
+
+    def test_stream_chat_choices_first_element_not_a_dict_is_logged_and_skipped(
+        self, monkeypatch, caplog
+    ):
+        """A list whose first element is not an object (scalar items) must
+        be logged and skipped — it would otherwise be yielded and crash
+        downstream on .get('delta')."""
+        lines = [
+            sse_line({"choices": ["not-a-dict"]}),
+            sse_line({"choices": [42]}),
+            token_line("ok"),
+            finish_line("stop"),
+        ]
+        patch_llm_client(monkeypatch, FakeLLMClient(lines))
+
+        with caplog.at_level(logging.WARNING):
+            tokens = _collect(llm.stream_chat([{"role": "user", "content": "hi"}]))
+
+        assert tokens == ["ok"]
+        assert caplog.text.count("'choices[0]' not an object") == 2
+
     def test_stream_chat_retries_once_when_stream_aborts_before_any_content(self, monkeypatch, caplog):
         # GIVEN the first stream ends with an in-band error (no content, no
         # finish_reason) and the second completes normally:
