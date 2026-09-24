@@ -598,6 +598,76 @@ class TestToolCalls:
 
 
 # ---------------------------------------------------------------------------
+# Per-server persona access control (issue #138)
+# ---------------------------------------------------------------------------
+
+class TestAllowedPersonasFiltering:
+    """The agentic loop must receive only the tools from servers that
+    allow the responding persona. The tool registry is seeded directly
+    (no discovery); the router's filtering path is exercised for real."""
+
+    @staticmethod
+    def _openai_tool(name: str) -> dict:
+        return {
+            "type": "function",
+            "function": {"name": name, "description": f"desc {name}",
+                         "parameters": {"type": "object", "properties": {}}},
+        }
+
+    @staticmethod
+    def _seed_registry(allowed_for: list):
+        """An open server ('open_tool') plus a restricted server
+        ('restricted_tool') whose allow-list is ``allowed_for``."""
+        from app.services import tool_registry
+        from tests.factories import make_mcp_server
+
+        open_server = make_mcp_server("open", "http://open.local")
+        restricted_server = make_mcp_server(
+            "restricted", "http://restricted.local", allowed_personas=allowed_for,
+        )
+        open_tool = TestAllowedPersonasFiltering._openai_tool("open_tool")
+        restricted_tool = TestAllowedPersonasFiltering._openai_tool("restricted_tool")
+        tool_registry._tool_cache.update({
+            "open": [open_tool],
+            "restricted": [restricted_tool],
+        })
+        tool_registry._server_map.update({
+            "open_tool": open_server,
+            "restricted_tool": restricted_server,
+        })
+
+    @staticmethod
+    def _tool_user_cache(monkeypatch, tmp_path):
+        config = make_personas()
+        config.personas.append(_tool_persona_dir(tmp_path))
+        _patch_personas(monkeypatch, config)
+
+    def test_unlisted_persona_receives_only_open_tools(self, client, monkeypatch, tmp_path):
+        self._tool_user_cache(monkeypatch, tmp_path)
+        self._seed_registry(allowed_for=["Luna"])  # ToolUser is NOT in the list
+
+        seen = {}
+        _capturing_tools(monkeypatch, seen, events=[{"type": "token", "token": "hi"}])
+
+        _chat(client, who_answers="ToolUser")
+
+        names = {t["function"]["name"] for t in seen["tools"]}
+        assert names == {"open_tool", builtin.ADD_MEMORY_NAME}
+
+    def test_listed_persona_receives_open_and_restricted_tools(self, client, monkeypatch, tmp_path):
+        self._tool_user_cache(monkeypatch, tmp_path)
+        self._seed_registry(allowed_for=["ToolUser"])
+
+        seen = {}
+        _capturing_tools(monkeypatch, seen, events=[{"type": "token", "token": "hi"}])
+
+        _chat(client, who_answers="ToolUser")
+
+        names = {t["function"]["name"] for t in seen["tools"]}
+        assert names == {"open_tool", "restricted_tool", builtin.ADD_MEMORY_NAME}
+
+
+# ---------------------------------------------------------------------------
 # Persona memories (docs/feature_persona_memory.md)
 # ---------------------------------------------------------------------------
 

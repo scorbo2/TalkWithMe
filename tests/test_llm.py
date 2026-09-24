@@ -705,6 +705,54 @@ class TestStreamChatWithTools:
         assert tool_event["failed"] is True
         assert tool_event["result"] == "Error: connection refused"
 
+    def test_tool_call_for_persona_excluded_by_server_is_refused(self, monkeypatch, caplog):
+        """Issue #138 defense in depth: the LLM hallucinates a tool whose
+        server does not list this persona in allowed_personas. The call
+        must be refused locally (Error: result, failed=True) and must
+        NEVER reach the server."""
+        from app.services import mcp_client, tool_registry
+        from tests.factories import make_mcp_server
+
+        tool_registry._server_map["warp"] = make_mcp_server(
+            "warp-server", "http://warp.local",
+            allowed_personas=["OtherMind"],
+        )
+
+        executed = []
+
+        async def fake_call_tool(server_cfg, tool_name, arguments):
+            executed.append(tool_name)
+
+        monkeypatch.setattr(mcp_client, "call_tool", fake_call_tool)
+
+        class RoundClient(FakeLLMClient):
+            def stream(self, method, url, json=None):
+                self.payloads.append(json)
+                if len(self.payloads) == 1:
+                    lines = [
+                        tool_call_delta_line(0, id="c1", type="function",
+                                             function={"name": "warp", "arguments": "{}"}),
+                        finish_line("tool_calls"),
+                    ]
+                else:
+                    lines = [token_line("denied"), finish_line("stop")]
+                return FakeStreamResponse(lines)
+
+        patch_llm_client(monkeypatch, RoundClient([]))
+
+        with caplog.at_level(logging.WARNING):
+            events = _collect(
+                llm.stream_chat_with_tools(
+                    [{"role": "user", "content": "warp"}], [], _tool_persona()
+                )
+            )
+
+        tool_event = next(e for e in events if e["type"] == "tool_call")
+        assert tool_event["failed"] is True
+        assert "not available" in tool_event["result"]
+        assert executed == []  # the boundary held: no network call
+        assert "does not allow this persona" in caplog.text
+
     def test_iteration_cap_forces_final_toolless_round(self, monkeypatch):
         """With max_tool_iterations=1: round 0 may use tools, the final
         round is sent WITHOUT tools, and a tool call there is dropped."""

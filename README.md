@@ -433,8 +433,30 @@ mcp:
     - name: web
       url: http://localhost:9000/mcp    # the server's Streamable HTTP transport endpoint
       timeout: 10                       # per-request timeout in seconds (default 10)
+      allowed_personas: []              # empty = open to all tool-enabled personas
   max_tool_iterations: 8                # max tool-call rounds per reply, 1-50 (default 8)
 ```
+
+**Restricting a server to specific personas.** The optional `allowed_personas` list
+controls which personas may use a server's tools. An empty or missing list is open to
+every tool-enabled persona (the default). Names are matched exactly, as everywhere else
+in the app:
+
+```yaml
+mcp:
+  servers:
+    - name: sip-knowledge
+      url: http://127.0.0.1:8001
+      allowed_personas: ["SIP-Expert"]   # only SIP-Expert sees these tools
+    - name: general-tools
+      url: http://127.0.0.1:8005
+      allowed_personas: []               # open to everyone
+```
+
+A restricted server's tools are simply not offered to the other personas' LLMs. If you
+typo a persona name, the app warns at startup — a restricted server listing a
+nonexistent persona can never serve anyone, and there is no other UI surface that
+would show why.
 
 Restart the app after changes. Tools are discovered at startup, and the log will show a line like `MCP tools available: 5`. If a server is down or unreachable at startup, a warning is logged and its tools are simply unavailable — the app keeps working fine without them.
 
@@ -450,6 +472,7 @@ By default, every tool a persona calls shows up in the chat as a small chip (e.g
 
 - **Your LLM must support tool calling.** The loop speaks OpenAI-style `tools`/`tool_calls`, so the underlying model needs to be capable of it (works with recent Gemma and Qwen models served via llama.cpp's `--api`).
 - **Tool names are global across servers.** If two servers expose a tool with the same name, the first server listed wins and the duplicate is ignored (a warning is logged).
+- **Access control is per server, not per tool.** `allowed_personas` gates a whole server; you cannot allow one tool of a server to a persona and another tool of the same server to a different one.
 - **Only the final answer is persisted.** Chat history stores the persona's text reply; tool calls and results are not saved. Tool chips are a live, in-view decoration only — they disappear on page reload or room switch.
 - **Errors become feedback.** If an MCP server fails or reports an error, the LLM receives a plain-text `Error: ...` result and can retry or explain the failure — the reply will never silently vanish because of a broken tool.
 - **Connections are stateless.** Every tool call opens a fresh MCP session (`initialize` handshake) and closes it afterwards. If your MCP server keeps long-lived session state, TalkWithMe does not preserve it between calls.
