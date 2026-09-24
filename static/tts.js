@@ -51,7 +51,13 @@ async function processAudioQueue() {
     try {
         const audioBuffer = await fetchTTS(item.personaName, item.text, item.messageId);
         if (audioBuffer) {
-            await playAudio(audioBuffer);
+            // Brighten the row while this reply's audio plays.
+            beginSpeaking(item.messageId);
+            try {
+                await playAudioSource(audioBuffer);
+            } finally {
+                endSpeaking(item.messageId);
+            }
         }
     } catch (err) {
         console.warn("TTS playback error:", err);
@@ -116,7 +122,9 @@ async function processTTSRequests() {
     try {
         const audioBuffer = await fetchTTS(item.personaName, item.text, item.messageId);
         if (audioBuffer) {
-            audioBufferQueue.push(audioBuffer);
+            // Carry the message ID into the playback queue so the row can be
+            // brightened while its sentences play (see processAudioBufferQueue).
+            audioBufferQueue.push({ buffer: audioBuffer, messageId: item.messageId });
             processAudioBufferQueue();
         }
     } catch (err) {
@@ -137,14 +145,20 @@ async function processAudioBufferQueue() {
     if (isPlayingAudioBuffer || audioBufferQueue.length === 0) return;
     isPlayingAudioBuffer = true;
 
-    const buffer = audioBufferQueue.shift();
+    const item = audioBufferQueue.shift();
+    // Brighten the row while this sentence plays.
+    beginSpeaking(item.messageId);
     try {
-        await playAudio(buffer);
+        await playAudioSource(item.buffer);
         await new Promise(resolve => setTimeout(resolve, 80)); // brief inter-sentence gap
     } catch (err) {
         console.warn("Audio buffer playback error:", err);
     } finally {
         isPlayingAudioBuffer = false;
+        endSpeaking(item.messageId);
+        // The recursive call below re-highlights the next sentence in the
+        // same tick, so consecutive sentences of one message never paint a
+        // flicker across the inter-sentence gap.
         processAudioBufferQueue();
     }
 }
@@ -209,12 +223,27 @@ async function fetchTTS(personaName, text, messageId) {
     return await audioCtx.decodeAudioData(bytes.buffer);
 }
 
-function playAudio(buffer) {
+/**
+ * Play a decoded AudioBuffer on a fresh BufferSource — the single shared
+ * Web Audio source-construction path. The TTS playback queues resolve a
+ * promise when playback ends; chat.js' persisted-audio playback passes an
+ * onEnd callback (to clear the speaking highlight) instead of duplicating
+ * the source setup.
+ *
+ * @param {AudioBuffer} buffer - Decoded audio to play.
+ * @param {Function} [onEnd] - Called when playback ends (source.onended),
+ *     before the returned promise resolves.
+ * @returns {Promise} Resolves when playback ends.
+ */
+function playAudioSource(buffer, onEnd) {
     return new Promise((resolve) => {
         const source = audioCtx.createBufferSource();
         source.buffer = buffer;
         source.connect(audioCtx.destination);
-        source.onended = resolve;
+        source.onended = () => {
+            if (onEnd) onEnd();
+            resolve();
+        };
         source.start();
     });
 }
