@@ -140,7 +140,9 @@ html, body {
     transition: background 0.15s, border-color 0.15s;
 }
 
-.topbar-actions button:hover {
+/* :not(:disabled) matters for the stop button: a disabled button still
+   matches :hover, and the accent repaint would claim it is clickable. */
+.topbar-actions button:hover:not(:disabled) {
     background: var(--accent);
     border-color: var(--accent);
 }
@@ -171,6 +173,16 @@ html, body {
 
 #tts-icon.muted::after {
     content: " \274C";
+}
+
+/*
+ * The stop button is the only topbar button with a disabled state: JS
+ * enables it exactly while some audio source is producing sound. The
+ * muted state is painted the same way the mic button's is (0.35 opacity).
+ */
+#btn-stop-audio:disabled {
+    opacity: 0.35;
+    cursor: not-allowed;
 }
 
 /* --------------------------------------------------------------------------
