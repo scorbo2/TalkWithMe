@@ -16,7 +16,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 import yaml
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 logger = logging.getLogger(__name__)
 
@@ -242,6 +242,26 @@ class MCPServerConfig(BaseModel):
     # would silently kill the server. le=300: a hung tool call should not
     # be allowed to stall the SSE stream for unreasonably long.
     timeout: float = Field(default=10.0, gt=0, le=300)
+    # Per-persona access control (issue #138): personas allowed to use
+    # this server's tools. Empty/missing = open to all tool-enabled
+    # personas (the pre-#138 behaviour, so existing configs keep working).
+    # Names are matched exactly, like every other persona identity in the app.
+    allowed_personas: List[str] = Field(default_factory=list)
+
+    def allows(self, persona_name: str) -> bool:
+        """True when the persona may use this server's tools."""
+        return not self.allowed_personas or persona_name in self.allowed_personas
+
+    @field_validator("allowed_personas", mode="before")
+    @classmethod
+    def _bare_yaml_key_becomes_empty_list(cls, value):
+        # A bare "allowed_personas:" key in settings.yaml (present, no
+        # value) parses as None. The contract is "empty or missing =
+        # open to all", and "missing" already defaults to [] — so None
+        # must mean the same thing, or a user who wrote the key and
+        # forgot the value gets a ValidationError crash at startup
+        # instead of an open server.
+        return [] if value is None else value
 
     @model_validator(mode="after")
     def _validate_url_scheme(self) -> "MCPServerConfig":

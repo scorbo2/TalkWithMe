@@ -63,16 +63,36 @@ async def load_tools() -> None:
             accepted.append(tool)
         if accepted:
             _tool_cache[server.name] = accepted
-            logger.info("MCP server '%s': %d tool(s) registered",
-                        server.name, len(accepted))
+            if server.allowed_personas:
+                logger.info(
+                    "MCP server '%s': %d tool(s) registered, restricted to: %s",
+                    server.name, len(accepted), ", ".join(server.allowed_personas),
+                )
+            else:
+                logger.info("MCP server '%s': %d tool(s) registered",
+                            server.name, len(accepted))
 
     logger.info("MCP: %d tool(s) registered from %d server(s)",
                 len(_server_map), len(_tool_cache))
 
 
-def get_all_tools() -> List[dict]:
-    """Flattened tool list from all servers, ready for the LLM payload."""
-    return [tool for tools in _tool_cache.values() for tool in tools]
+def get_all_tools(persona_name: Optional[str] = None) -> List[dict]:
+    """Flattened tool list, ready for the LLM payload.
+
+    With a ``persona_name``, tools owned by servers whose
+    ``allowed_personas`` list excludes that persona are omitted
+    (issue #138); servers with an empty list stay open to everyone.
+    Called without a name (e.g. startup logging), everything is returned.
+    """
+    all_tools = [tool for tools in _tool_cache.values() for tool in tools]
+    if persona_name is None:
+        return all_tools
+    # Every cached tool has a _server_map entry (both are populated
+    # together in load_tools), so the lookup cannot miss.
+    return [
+        tool for tool in all_tools
+        if _server_map[tool["function"]["name"]].allows(persona_name)
+    ]
 
 
 def get_server_for_tool(tool_name: str) -> Optional[MCPServerConfig]:

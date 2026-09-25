@@ -462,6 +462,20 @@ async def stream_chat_with_tools(
                         available = [t["function"]["name"] for t in tool_list]
                         result = (f"Error: unknown tool '{tool_name}'. "
                                   f"Available tools: {available}")
+                    elif not server.allows(persona.name):
+                        # Defense in depth (issue #138): the tool list this
+                        # persona was offered is already filtered, but a
+                        # model can still hallucinate a tool name owned by a
+                        # server it is not permitted to use. The server-level
+                        # policy is re-checked here so the boundary holds
+                        # even when the offered list is assembled wrong.
+                        logger.warning(
+                            "Refusing tool '%s' for persona '%s': server '%s' "
+                            "does not allow this persona",
+                            tool_name, persona.name, server.name,
+                        )
+                        result = (f"Error: tool '{tool_name}' is not available "
+                                  f"to persona '{persona.name}'")
                     else:
                         result = await mcp_client.call_tool(server, tool_name, arguments)
             conversation.append({

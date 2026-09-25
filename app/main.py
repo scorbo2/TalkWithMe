@@ -111,6 +111,19 @@ async def lifespan(app: FastAPI):
     logger.info("TTS active: %s (endpoint: %s)", settings.tts.is_active, settings.tts.base_url)
     logger.info("STT active: %s (endpoint: %s)", settings.stt.is_active, settings.stt.base_url)
 
+    # Catch persona-name typos in allowed_personas up front (issue #138):
+    # a restricted server listing a nonexistent persona can never serve
+    # anyone, and there is no other UI surface that would show why.
+    persona_names = {p.name for p in personas_cfg.personas}
+    for server in settings.mcp.servers:
+        unknown = [n for n in server.allowed_personas if n not in persona_names]
+        if unknown:
+            logger.warning(
+                "MCP server '%s': allowed_personas lists unknown persona(s) %s "
+                "— no persona will match them; check for typos",
+                server.name, ", ".join(unknown),
+            )
+
     # Discover MCP tools (per-server details are logged inside load_tools)
     await load_tools()
     logger.info("MCP tools available: %d", len(get_all_tools()))

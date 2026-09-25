@@ -335,6 +335,45 @@ class TestMCPServerConfig:
     def test_mcp_server_config_default_timeout_is_ten_seconds(self):
         assert MCPServerConfig(name="ok", url="http://mcp:9000").timeout == 10.0
 
+    # -- allowed_personas (issue #138) --
+
+    def test_allowed_personas_defaults_to_empty(self):
+        assert MCPServerConfig(name="ok", url="http://mcp:9000").allowed_personas == []
+
+    def test_empty_allowlist_allows_everyone(self):
+        server = MCPServerConfig(name="open", url="http://mcp:9000")
+        assert server.allows("Anyone") is True
+        assert server.allows("Nobody") is True
+
+    def test_allowlist_allows_only_listed_personas(self):
+        server = MCPServerConfig(
+            name="restricted", url="http://mcp:9000",
+            allowed_personas=["SIP-Expert", "IP-Expert"],
+        )
+        assert server.allows("SIP-Expert") is True
+        assert server.allows("IP-Expert") is True
+
+    def test_allowlist_bareYamlKey_parsesAsNone_isTreatedAsEmpty(self):
+        # A bare "allowed_personas:" key in settings.yaml (no value)
+        # parses as None. It must mean "open to all" exactly like the
+        # missing key does — a ValidationError here would crash startup
+        # on a config the issue's contract calls "empty = open to all".
+        server = MCPServerConfig(
+            name="ok", url="http://mcp:9000", allowed_personas=None,
+        )
+        assert server.allowed_personas == []
+        assert server.allows("Anyone") is True
+
+    def test_allowlist_rejects_unlisted_persona_with_case_sensitive_match(self):
+        # Persona identity is exact-match everywhere in the app; the
+        # allowlist must not silently accept a near miss like "sip-expert".
+        server = MCPServerConfig(
+            name="restricted", url="http://mcp:9000",
+            allowed_personas=["SIP-Expert"],
+        )
+        assert server.allows("sip-expert") is False
+        assert server.allows("SIP-Expert2") is False
+
 
 # ---------------------------------------------------------------------------
 # Persona model

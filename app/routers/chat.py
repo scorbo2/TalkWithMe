@@ -320,7 +320,9 @@ async def _chat_stream(req: ChatRequest) -> AsyncIterator[str]:
                     # built-in tools (add_memory) mid-reply. The loop runs
                     # regardless of show_tool_calls; that flag only controls
                     # whether tool_call SSE events are emitted.
-                    tools = get_all_tools() + builtin.get_builtin_tools_for(persona, settings)
+                    # MCP tools are filtered to this persona's grants
+                    # (issue #138); built-ins are unaffected by the lists.
+                    tools = get_all_tools(persona_name) + builtin.get_builtin_tools_for(persona, settings)
                     logger.debug(
                         "Persona memory: persona '%s' — agentic path, %d tool(s) supplied to LLM: %s",
                         persona_name, len(tools),
