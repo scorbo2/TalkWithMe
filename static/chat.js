@@ -559,8 +559,62 @@ async function deleteMessageFromChat(row, messageId) {
 }
 
 /* ==========================================================================
-   Persisted history rendering
-   ========================================================================== */
+    Speaking highlight
+    ========================================================================== */
+
+// Message IDs with audio actively playing, mapped to the number of audio
+// sources currently playing that message. A count rather than a boolean:
+// two sources for the same message can legitimately overlap (a double-
+// clicked play button, or a manual play while the message's live TTS is
+// still finishing), and the first source ending must not un-highlight the
+// row while the second is still audible.
+const speakingMessageIds = new Map(); // messageId -> active source count
+
+/**
+ * Brighten the message row while its audio is playing.
+ *
+ * The row is located by the message ID stamped on it in the "start" event
+ * (live rows) or on history load (persisted rows). A no-op when the ID is
+ * missing or the row is gone (deleted, or the room was switched away
+ * mid-playback — Web Audio keeps playing either way; this app has no stop
+ * mechanism, so the highlight simply has nowhere to land).
+ *
+ * @param {string|null} messageId - The message ID whose row to brighten.
+ * @param {boolean} on - true while audio plays, false when it stops.
+ */
+function setSpeakingHighlight(messageId, on) {
+    if (!messageId) return;
+    const row = messagesEl.querySelector(`.message-row[data-message-id="${messageId}"]`);
+    if (row) {
+        row.classList.toggle("speaking", on);
+    }
+}
+
+/** Mark one of a message's audio sources as starting playback. */
+function beginSpeaking(messageId) {
+    if (!messageId) return;
+    const count = (speakingMessageIds.get(messageId) || 0) + 1;
+    speakingMessageIds.set(messageId, count);
+    if (count === 1) {
+        setSpeakingHighlight(messageId, true);
+    }
+}
+
+/** Mark one of a message's audio sources as finished. */
+function endSpeaking(messageId) {
+    if (!messageId) return;
+    const count = (speakingMessageIds.get(messageId) || 0) - 1;
+    if (count <= 0) {
+        speakingMessageIds.delete(messageId);
+        setSpeakingHighlight(messageId, false);
+    } else {
+        speakingMessageIds.set(messageId, count);
+    }
+}
+
+/* ==========================================================================
+    Persisted history rendering
+    ========================================================================== */
 
 /**
  * Render persisted chat history into the message panel.
@@ -611,7 +665,7 @@ function appendPersistedUserBubble(msg, roomName) {
             playBtn.className = "audio-play-btn";
             playBtn.innerHTML = "\u{1F501}"; // play icon
             playBtn.title = "Play audio";
-            playBtn.addEventListener("click", () => playPersistedAudio(roomName, filename));
+            playBtn.addEventListener("click", () => playPersistedAudio(roomName, filename, row));
             audioContainer.appendChild(playBtn);
         }
         wrapper.appendChild(audioContainer);
@@ -670,7 +724,7 @@ function appendPersistedAssistantBubble(msg, roomName) {
             playBtn.className = "audio-play-btn";
             playBtn.innerHTML = "\u{1F501}"; // 🔁 play icon
             playBtn.title = "Play audio";
-            playBtn.addEventListener("click", () => playPersistedAudio(roomName, filename));
+            playBtn.addEventListener("click", () => playPersistedAudio(roomName, filename, row));
             audioContainer.appendChild(playBtn);
         }
         content.appendChild(nameEl);
@@ -689,9 +743,17 @@ function appendPersistedAssistantBubble(msg, roomName) {
 
 /**
  * Play a persisted audio file using Web Audio API.
+ *
+ * @param {string} roomName - The chat room the file belongs to.
+ * @param {string} filename - The persisted audio filename.
+ * @param {HTMLElement} [row] - The message row whose play button was
+ *     clicked; when given, the row is brightened for the duration of
+ *     playback (see setSpeakingHighlight).
  */
-async function playPersistedAudio(roomName, filename) {
+async function playPersistedAudio(roomName, filename, row) {
     const url = getAudioUrl(roomName, filename);
+    const messageId = row ? row.dataset.messageId : null;
+    let startedSpeaking = false;
     try {
         const resp = await fetch(url);
         if (!resp.ok) {
@@ -705,11 +767,23 @@ async function playPersistedAudio(roomName, filename) {
         }
 
         const audioBuffer = await audioCtx.decodeAudioData(arrayBuffer);
-        const source = audioCtx.createBufferSource();
-        source.buffer = audioBuffer;
-        source.connect(audioCtx.destination);
-        source.start();
+
+        if (messageId) {
+            beginSpeaking(messageId);
+            startedSpeaking = true;
+        }
+        // playAudioSource() is the shared source-construction path (tts.js):
+        // onEnd clears the highlight when playback finishes. If the promise
+        // rejects instead, onended never fires and the catch below does it.
+        await playAudioSource(audioBuffer, messageId ? () => endSpeaking(messageId) : undefined);
     } catch (err) {
+        // A failure after beginSpeaking() must still clear the highlight —
+        // but only then: an earlier failure (fetch/decode) never began one,
+        // and an endSpeaking() without a matching beginSpeaking() would
+        // underflow a concurrent source's refcount for the same message.
+        if (startedSpeaking) {
+            endSpeaking(messageId);
+        }
         console.error("Failed to play persisted audio:", err);
     }
 }
@@ -750,7 +824,7 @@ function addAudioButtonToAssistantMessage(messageId, filename) {
     playBtn.className = "audio-play-btn";
     playBtn.innerHTML = "\u{1F501}"; // play icon
     playBtn.title = "Play audio";
-    playBtn.addEventListener("click", () => playPersistedAudio(currentChatRoom, filename));
+    playBtn.addEventListener("click", () => playPersistedAudio(currentChatRoom, filename, row));
     audioContainer.appendChild(playBtn);
 }
 
@@ -795,6 +869,6 @@ function addAudioButtonToUserMessage(messageId, filename, retries = 3) {
     playBtn.className = "audio-play-btn";
     playBtn.innerHTML = "\u{1F501}"; // play icon
     playBtn.title = "Play audio";
-    playBtn.addEventListener("click", () => playPersistedAudio(currentChatRoom, filename));
+    playBtn.addEventListener("click", () => playPersistedAudio(currentChatRoom, filename, row));
     audioContainer.appendChild(playBtn);
 }

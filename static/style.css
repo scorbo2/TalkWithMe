@@ -23,6 +23,8 @@
     --accent-hover: #ff6b81;
     --bubble-user: #0f3460;
     --bubble-ai: #16213e;
+    --bubble-user-speaking: #1a4a85;
+    --bubble-ai-speaking: #20396b;
     --border-color: #2a2a4e;
     --sidebar-width: 310px;
     --topbar-height: 52px;
@@ -41,6 +43,8 @@ body[data-theme="light"] {
     --accent-hover: #4d85f2;
     --bubble-user: #d9e6ff;
     --bubble-ai: #ffffff;
+    --bubble-user-speaking: #c2dbff;
+    --bubble-ai-speaking: #e7efff;
     --border-color: #ccd6e6;
 }
 
@@ -56,6 +60,8 @@ body[data-theme="matrix"] {
     --accent-hover: #6eff95;
     --bubble-user: #0a2a10;
     --bubble-ai: #08220d;
+    --bubble-user-speaking: #155221;
+    --bubble-ai-speaking: #12471c;
     --border-color: #1f5f2f;
 }
 
@@ -71,6 +77,8 @@ body[data-theme="blues"] {
     --accent-hover: #8cc8ff;
     --bubble-user: #174073;
     --bubble-ai: #12335e;
+    --bubble-user-speaking: #235a9c;
+    --bubble-ai-speaking: #1d4c8c;
     --border-color: #2a4f82;
 }
 
@@ -500,6 +508,8 @@ html, body {
     line-height: 1.5;
     word-wrap: break-word;
     white-space: pre-wrap;
+    /* Smooth both edges of the speaking-highlight enter/leave. */
+    transition: background-color 150ms ease, box-shadow 150ms ease;
 }
 
 .message-row.user .bubble {
@@ -511,6 +521,21 @@ html, body {
     background: var(--bubble-ai);
     border: 1px solid var(--border-color);
     border-bottom-left-radius: 4px;
+}
+
+/* "Speaking" highlight: brightens a bubble while its audio is playing.
+   tts.js / chat.js toggle .speaking on the message row for the duration
+   of playback (setSpeakingHighlight in chat.js). The background is a
+   per-theme brighter shade; the accent glow makes the effect visible in
+   the light theme too, where the AI bubble is already near-white and
+   has no brighter background to fall back on. */
+.message-row.speaking .bubble {
+    background: var(--bubble-ai-speaking);
+    box-shadow: 0 0 12px 0 var(--accent);
+}
+
+.message-row.user.speaking .bubble {
+    background: var(--bubble-user-speaking);
 }
 
 /* Tool-call chips — display-only indicators of MCP tool invocations.
