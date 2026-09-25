@@ -207,7 +207,7 @@ async function processAudioBufferQueue() {
         // highlight, no inter-sentence gap. The flag is checked per item,
         // so a mute lifted mid-drain resumes playback on the very next one.
         isPlayingAudioBuffer = false;
-        processAudioBufferQueue();
+        setTimeout(processAudioBufferQueue, 0);
         return;
     }
     // Brighten the row while this sentence plays.
