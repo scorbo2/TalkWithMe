@@ -667,7 +667,6 @@ test("a manual replay click clears the mute and the clicked replay plays", async
     await waitUntil(() => h.audioCtx.sources.length === 1);
     h.sandbox.stopAudioPlayback();
     assert.equal(h.get("audioPlaybackStopped"), true);
-    rowP1; // (row is linked for the highlight assertions below)
 
     // WHEN the user clicks a replay button under another bubble,
     h.sandbox.playPersistedAudio("default", "p2.wav", rowP2);
