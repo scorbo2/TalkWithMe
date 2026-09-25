@@ -125,6 +125,7 @@ function setupEventListeners() {
     });
 
     newChatBtn.addEventListener("click", newChat);
+    stopAudioBtn.addEventListener("click", stopAudioPlayback);
     ttsToggleBtn.addEventListener("click", toggleTTS);
     micBtn.addEventListener("click", toggleMicrophone);
     themeSelectEl.addEventListener("change", () => {

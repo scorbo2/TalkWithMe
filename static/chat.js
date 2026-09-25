@@ -73,6 +73,13 @@ async function sendMessage() {
         return;
     }
 
+    // A sent user prompt ends the stop button's mute (docs: "stop does not
+    // persist across user prompts"): the reply to THIS message must play,
+    // and whatever audio the previous turn left queued resumes. Placed
+    // after the guards above so a send that never goes out keeps the mute.
+    audioPlaybackStopped = false;
+    updateStopButtonUI();
+
     // Auto-select a persona if the user mentioned one by name in their message.
     // This runs before getWhoAnswers() so the "Selected persona" radio is
     // already checked by the time we determine who should respond.
@@ -575,9 +582,9 @@ const speakingMessageIds = new Map(); // messageId -> active source count
  *
  * The row is located by the message ID stamped on it in the "start" event
  * (live rows) or on history load (persisted rows). A no-op when the ID is
- * missing or the row is gone (deleted, or the room was switched away
- * mid-playback — Web Audio keeps playing either way; this app has no stop
- * mechanism, so the highlight simply has nowhere to land).
+  * missing or the row is gone (deleted, or the room was switched away
+  * mid-playback — Web Audio keeps playing either way; neither action stops
+  * playback by itself, so the highlight simply has nowhere to land).
  *
  * @param {string|null} messageId - The message ID whose row to brighten.
  * @param {boolean} on - true while audio plays, false when it stops.
@@ -751,6 +758,14 @@ function appendPersistedAssistantBubble(msg, roomName) {
  *     playback (see setSpeakingHighlight).
  */
 async function playPersistedAudio(roomName, filename, row) {
+    // A manual replay click ends the stop button's mute — this very
+    // playback is the "user clicked a replay button" the mute yields to,
+    // so it must play even though the click happened while muted.
+    // Cleared before the (slow) fetch: any audio reaching its playback
+    // start while the fetch is in flight resumes as well.
+    audioPlaybackStopped = false;
+    updateStopButtonUI();
+
     const url = getAudioUrl(roomName, filename);
     const messageId = row ? row.dataset.messageId : null;
     let startedSpeaking = false;
