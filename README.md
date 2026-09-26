@@ -15,6 +15,7 @@ Follow the development of this app on my YouTube channel:
 - Externalizing persona persistence: https://www.youtube.com/watch?v=Vj9rUy06Dcw
 - Adding persistent memories: https://www.youtube.com/watch?v=YD6cInSuQZs
 - Generifying TTS settings / cloning voices with emotion: https://www.youtube.com/watch?v=WuIiyz9ESfQ
+- Minimal setup for low VRAM: https://www.youtube.com/watch?v=P0N91YLX04A
 
 ## Features
 
@@ -664,12 +665,17 @@ standalone script under `impl/` with per-engine install notes.
   - Minor: remove prepackaged `settings.yaml` and `chatrooms.yaml` (#113)
   - Minor: `personas.yaml` -> `personas.yaml.example` and untrack `personas.yaml` (#119)
   - Add "reset to defaults" button on TTS server settings (#121)
-- **Work in progress - release date goes here when ready** v7.2
+- **2026-09-25** v7.2
   - Enable "echo chamber" option in default chat room (#125)
   - Bug fix: persona rename/delete no longer resets "echo chamber" across chatrooms (#125)
+  - Bug fix: STT microphone capture with multichannel audio devices (#124)
   - Increase `max_persona_replies` limit from 4 to 12 (#130)
   - Allow "echo chamber" to respect `max_persona_replies` (#131)
+  - Fix two broken unit tests on Mac (#133)
   - Fix handling of in-band LLM failures (#128)
+  - MCP Server access control (#138)
+  - Chat bubbles should "glow" when speaking (#139)
+  - Add a "stop" button to halt audio output (#142)
 
 ## License
 
