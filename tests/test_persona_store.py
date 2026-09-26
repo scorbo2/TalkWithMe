@@ -716,6 +716,47 @@ class TestAppendMemory:
         )
         assert read_memories(d) == "old\nThe user likes tea.\n"
 
+    def test_exact_duplicate_is_a_no_op_success_not_an_error(self, tmp_path):
+        # Small models (observed: Llama-3.2-1B) repeat the SAME add_memory
+        # call every round until the iteration cap — the spec's "do not
+        # add a redundant memory" rule is prompt text they ignore. The
+        # file must not fill with copies, and the result must NOT carry
+        # the "Error:" prefix: a red failure chip would invite the model
+        # to retry, the opposite of what we want.
+        d = _dir(tmp_path)
+        assert append_memory(d, "The user likes tea.", DEFAULT_MEMORY_SIZE) == (
+            "The memory was saved successfully."
+        )
+
+        result = append_memory(d, "The user likes tea.", DEFAULT_MEMORY_SIZE)
+
+        assert result == "The memory was already saved; there is nothing new to remember."
+        assert result.startswith("Error:") is False
+        assert read_memories(d) == "The user likes tea.\n"  # still exactly one line
+
+    def test_duplicate_is_compared_after_normalization(self, tmp_path):
+        # Edges stripped and newlines flattened BEFORE the comparison —
+        # the same normalization the file stores lines under, so a
+        # whitespace-padded repeat is still caught:
+        d = _dir(tmp_path)
+        append_memory(d, "The user likes tea.", DEFAULT_MEMORY_SIZE)
+
+        result = append_memory(d, "  The user likes tea. \n", DEFAULT_MEMORY_SIZE)
+
+        assert result == "The memory was already saved; there is nothing new to remember."
+        assert read_memories(d) == "The user likes tea.\n"
+
+    def test_similar_but_distinct_memory_is_still_saved(self, tmp_path):
+        # Dedupe is EXACT-match only: a genuinely new fact that merely
+        # shares a prefix must not be silently dropped.
+        d = _dir(tmp_path)
+        append_memory(d, "The user likes tea.", DEFAULT_MEMORY_SIZE)
+
+        assert append_memory(d, "The user likes tea and coffee.", DEFAULT_MEMORY_SIZE) == (
+            "The memory was saved successfully."
+        )
+        assert read_memories(d) == "The user likes tea.\nThe user likes tea and coffee.\n"
+
     def test_newlines_are_deleted_not_replaced(self, tmp_path):
         # The spec deletes newline characters ("a\nb" -> "ab"): a memory
         # must be a single line, and replacement would silently change

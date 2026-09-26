@@ -32,6 +32,55 @@ function toggleTTS() {
 }
 
 /* ==========================================================================
+    Stop button (temporary "mute" — see docs/feature_stop_button.md)
+    ========================================================================== */
+
+/**
+ * Sync the stop button with reality: enabled while any audio source is
+ * producing sound, disabled otherwise. Called on every source start and
+ * end (from playAudioSource) so the button never lags a frame behind
+ * the audio.
+ */
+function updateStopButtonUI() {
+    stopAudioBtn.disabled = activeAudioSources.size === 0;
+}
+
+/**
+ * Stop button click: halt every source currently producing sound and
+ * engage the mute. Muted audio is still fetched and persisted, and still
+ * gets its replay button — it just never plays, until the next user
+ * prompt or a manual replay click clears audioPlaybackStopped.
+ *
+ * The button is disabled immediately (per the spec), not when the async
+ * onended callbacks finish draining the source set.
+ */
+function stopAudioPlayback() {
+    if (audioPlaybackStopped) return;
+    audioPlaybackStopped = true;
+    stopAllAudioSources();
+    stopAudioBtn.disabled = true;
+}
+
+/**
+ * Stop every active BufferSource. Each source is removed from the set
+ * BEFORE stop() so its async onended handler is a harmless no-op; the
+ * try/catch covers the browser race where a source ends naturally
+ * between the set iteration and the stop() call (stop() then throws
+ * InvalidStateError, but onended has already done the cleanup).
+ */
+function stopAllAudioSources() {
+    for (const source of [...activeAudioSources]) {
+        activeAudioSources.delete(source);
+        try {
+            source.stop();
+        } catch (err) {
+            // The source ended naturally a moment ago: nothing left to stop.
+            console.warn("stopAllAudioSources: source already ended:", err);
+        }
+    }
+}
+
+/* ==========================================================================
    Non-streaming TTS (enqueue full text after LLM finishes)
    ========================================================================== */
 
@@ -50,8 +99,19 @@ async function processAudioQueue() {
     const item = audioQueue.shift();
     try {
         const audioBuffer = await fetchTTS(item.personaName, item.text, item.messageId);
-        if (audioBuffer) {
-            await playAudio(audioBuffer);
+        // "Stop" is a mute, not a discard: fetchTTS already persisted this
+        // audio and injected its replay button, so a muted item simply
+        // skips the playback — and the highlight, since nothing is audible.
+        // The flag is checked at playback start, so a mute lifted by the
+        // next user prompt mid-fetch still lets this item play.
+        if (audioBuffer && !audioPlaybackStopped) {
+            // Brighten the row while this reply's audio plays.
+            beginSpeaking(item.messageId);
+            try {
+                await playAudioSource(audioBuffer);
+            } finally {
+                endSpeaking(item.messageId);
+            }
         }
     } catch (err) {
         console.warn("TTS playback error:", err);
@@ -116,7 +176,9 @@ async function processTTSRequests() {
     try {
         const audioBuffer = await fetchTTS(item.personaName, item.text, item.messageId);
         if (audioBuffer) {
-            audioBufferQueue.push(audioBuffer);
+            // Carry the message ID into the playback queue so the row can be
+            // brightened while its sentences play (see processAudioBufferQueue).
+            audioBufferQueue.push({ buffer: audioBuffer, messageId: item.messageId });
             processAudioBufferQueue();
         }
     } catch (err) {
@@ -137,14 +199,30 @@ async function processAudioBufferQueue() {
     if (isPlayingAudioBuffer || audioBufferQueue.length === 0) return;
     isPlayingAudioBuffer = true;
 
-    const buffer = audioBufferQueue.shift();
+    const item = audioBufferQueue.shift();
+    if (audioPlaybackStopped) {
+        // "Stop" is a mute, not a discard: this buffer was already fetched
+        // and persisted (replay button included) by processTTSRequests, so
+        // a muted item just drains the queue silently — no playback, no
+        // highlight, no inter-sentence gap. The flag is checked per item,
+        // so a mute lifted mid-drain resumes playback on the very next one.
+        isPlayingAudioBuffer = false;
+        setTimeout(processAudioBufferQueue, 0);
+        return;
+    }
+    // Brighten the row while this sentence plays.
+    beginSpeaking(item.messageId);
     try {
-        await playAudio(buffer);
+        await playAudioSource(item.buffer);
         await new Promise(resolve => setTimeout(resolve, 80)); // brief inter-sentence gap
     } catch (err) {
         console.warn("Audio buffer playback error:", err);
     } finally {
         isPlayingAudioBuffer = false;
+        endSpeaking(item.messageId);
+        // The recursive call below re-highlights the next sentence in the
+        // same tick, so consecutive sentences of one message never paint a
+        // flicker across the inter-sentence gap.
         processAudioBufferQueue();
     }
 }
@@ -209,13 +287,34 @@ async function fetchTTS(personaName, text, messageId) {
     return await audioCtx.decodeAudioData(bytes.buffer);
 }
 
-function playAudio(buffer) {
+/**
+ * Play a decoded AudioBuffer on a fresh BufferSource — the single shared
+ * Web Audio source-construction path. The TTS playback queues resolve a
+ * promise when playback ends; chat.js' persisted-audio playback passes an
+ * onEnd callback (to clear the speaking highlight) instead of duplicating
+ * the source setup.
+ *
+ * @param {AudioBuffer} buffer - Decoded audio to play.
+ * @param {Function} [onEnd] - Called when playback ends (source.onended),
+ *     before the returned promise resolves.
+ * @returns {Promise} Resolves when playback ends.
+ */
+function playAudioSource(buffer, onEnd) {
     return new Promise((resolve) => {
         const source = audioCtx.createBufferSource();
         source.buffer = buffer;
         source.connect(audioCtx.destination);
-        source.onended = resolve;
+        source.onended = () => {
+            // Natural end and a stop() both land here: the set cleanup is
+            // idempotent, and the button state is re-derived from the set.
+            activeAudioSources.delete(source);
+            updateStopButtonUI();
+            if (onEnd) onEnd();
+            resolve();
+        };
         source.start();
+        activeAudioSources.add(source);
+        updateStopButtonUI();
     });
 }
 

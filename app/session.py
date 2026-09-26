@@ -11,6 +11,23 @@ from typing import Dict, List, Optional
 from app.models import ChatMessage
 from app import persistence
 
+# Appended to the system prompt when the history slice contains another
+# persona's message (the one rendered as "[Name]: <text>"). Small models
+# (observed: Llama-3.2-1B) parrot the transcript format: they begin their
+# own reply with the "[Name]: " prefix of the most recent prefixed message.
+# The app then persists that prefix into the history, where it compounds
+# turn after turn ([Luna]: [Alex]: [Luna]: ...). A capable model simply
+# ignores the note, and a content filter could not tell a parroted prefix
+# from a legitimate one — so the prompt is the only safe line of defense.
+# Live-validated against Llama-3.2-1B: with the note, 16/16 two-persona
+# rounds produced no prefixed replies; without it, 3/4 did.
+_ANTI_MIMICRY_NOTE = (
+    "Note: in this conversation, messages spoken by OTHER personas are "
+    "displayed as '[Name]: text' — the prefix only identifies who spoke "
+    "that message. It is NOT part of your reply and you must NEVER begin "
+    "your own reply with a '[Name]:' prefix."
+)
+
 
 class SessionManager:
     """Manages the single active chat session."""
@@ -129,6 +146,8 @@ class SessionManager:
         """Build the messages list for an LLM call.
 
         - System message with the responding persona's system prompt.
+          When the slice contains other personas' messages, the
+          anti-mimicry note (see _ANTI_MIMICRY_NOTE) is appended to it.
         - Conversation history, reformatted so:
             * User messages keep role "user".
             * This persona's messages keep role "assistant".
@@ -143,6 +162,7 @@ class SessionManager:
         if max_turns_for_context is not None:
             history_slice = self._history[-max_turns_for_context:]
 
+        saw_other_persona = False
         for msg in history_slice:
             if msg.role == "user":
                 messages.append({"role": "user", "content": msg.content})
@@ -153,12 +173,23 @@ class SessionManager:
                     # Another persona spoke — use role "user" to avoid consecutive
                     # assistant messages (which many LLMs reject with 400) and to
                     # prevent the model from treating another persona's words as its own.
+                    saw_other_persona = True
                     messages.append(
                         {
                             "role": "user",
                             "content": f"[{msg.persona}]: {msg.content}",
                         }
                     )
+
+        if saw_other_persona:
+            # Gated on the sliced history, not the full one: the note is
+            # only worth the tokens when the "[Name]:" format is actually
+            # in the context the model sees.
+            messages[0]["content"] = (
+                messages[0]["content"].rstrip()
+                + "\n\n"
+                + _ANTI_MIMICRY_NOTE
+            )
 
         return messages
 

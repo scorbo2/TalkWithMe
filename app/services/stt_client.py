@@ -6,27 +6,14 @@ a warning and returns None to the caller.
 """
 
 import logging
-import mimetypes
 from typing import Optional
 
 import httpx
 
 from app.config import get_settings
+from app.services.mime import mime_to_extension
 
 logger = logging.getLogger(__name__)
-
-
-def _mime_to_extension(mime_type: str) -> str:
-    """Derive a file extension from a MIME type, falling back to 'bin'."""
-    base = (mime_type or "").split(";", 1)[0].strip()
-    if "/" not in base:
-        return "bin"
-    ext = mimetypes.guess_extension(base)
-    if ext and ext.startswith("."):
-        return ext[1:]  # strip leading dot
-    # Fallback: use the subtype (e.g. "audio/webm" -> "webm")
-    subtype = base.split("/", 1)[1]
-    return subtype or "bin"
 
 
 async def check_stt_health() -> bool:
@@ -63,9 +50,12 @@ async def transcribe_audio(audio_bytes: bytes, mime_type: str = "audio/webm") ->
     url = f"{settings.stt.base_url}/v1/audio/transcriptions"
 
     # Derive a sensible filename from the MIME type so the STT server
-    # can identify the format. E.g. "audio/ogg" -> "audio.ogg"
+    # can identify the format. E.g. "audio/ogg" -> "audio.ogg".
+    # mime_to_extension() is deterministic on purpose — never the OS's
+    # mime database (see app/services/mime.py); a blank/None MIME type
+    # defaults to webm above rather than falling through to "bin".
     mime_type = (mime_type or "audio/webm").split(";", 1)[0].strip() or "audio/webm"
-    ext = _mime_to_extension(mime_type)
+    ext = mime_to_extension(mime_type)
     files = {
         "file": (f"audio.{ext}", audio_bytes, mime_type),
     }

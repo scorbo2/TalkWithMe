@@ -9,7 +9,6 @@ import asyncio
 import logging
 
 import httpx
-import pytest
 
 import app.config as app_config
 import app.services.stt_client as stt_client
@@ -1100,7 +1099,32 @@ class TestTranscribeAudio:
 
         filename, _, mime = seen["files"]["file"]
         assert mime == "audio/ogg"
-        assert filename == "audio.oga"  # mimetypes knows ogg as .oga
+        assert filename == "audio.ogg"  # extension from the MIME subtype
+
+    def test_filename_never_depends_on_host_mimetypes_database(self, monkeypatch):
+        # Integration-level regression guard for the macOS '.weba' bug
+        # report (the unit-level guard lives in tests/test_mime.py): even
+        # if a future change made the filename derivation consult the OS
+        # mime database again, this fails on every platform — not just the
+        # ones whose database disagrees — and pins the user-visible symptom
+        # (the multipart part name) itself.
+        _active_stt(monkeypatch)
+
+        def poison(*args, **kwargs):
+            raise AssertionError("must not consult the host OS's mime database")
+
+        monkeypatch.setattr("mimetypes.guess_extension", poison)
+        seen = {}
+
+        def responder(method, url, **kw):
+            seen["files"] = kw.get("files")
+            return json_response(200, {"text": "ok"})
+
+        _patch_http(monkeypatch, responder)
+        _run(stt_client.transcribe_audio(b"x", mime_type="audio/webm"))
+
+        filename, _, _ = seen["files"]["file"]
+        assert filename == "audio.webm"
 
     def test_connect_error_returns_none(self, monkeypatch):
         _active_stt(monkeypatch)
@@ -1115,24 +1139,3 @@ class TestTranscribeAudio:
         _active_stt(monkeypatch)
         _patch_http(monkeypatch, lambda method, url, **kw: json_response(500, {}))
         assert _run(stt_client.transcribe_audio(b"x")) is None
-
-
-# ---------------------------------------------------------------------------
-# _mime_to_extension
-# ---------------------------------------------------------------------------
-
-class TestMimeToExtension:
-    @pytest.mark.parametrize("mime,expected", [
-        ("audio/webm", "webm"),       # mimetypes has no mapping here: subtype fallback
-        ("audio/ogg", "oga"),         # mimetypes' actual mapping, not ".ogg"
-        ("audio/wav", "wav"),
-        ("audio/utterly-unknown", "utterly-unknown"),  # subtype fallback
-        ("garbage-no-slash", "bin"),
-        ("", "bin"),
-        ("audio/ogg;rate=44100", "oga"),  # parameters stripped
-    ])
-    def test_mime_to_extension(self, mime, expected):
-        assert stt_client._mime_to_extension(mime) == expected
-
-    def test_mime_to_extension_none_input(self):
-        assert stt_client._mime_to_extension(None) == "bin"

@@ -11,13 +11,14 @@ import app.config as app_config
 import app.main as main_module
 import app.services.llm_auth as llm_auth
 import app.services.tts_client as tts_client
-from app.config import TTSConfig
+from app.config import MCPConfig, TTSConfig
 from app.session import session
 from tests.factories import (
     FakeAsyncClient,
     json_response,
     make_capabilities_doc,
     make_chatrooms,
+    make_mcp_server,
     make_personas,
     make_settings,
 )
@@ -194,12 +195,55 @@ class TestLifespanLlmApiKey:
         assert "cleartext" not in caplog.text
 
 
+class TestLifespanAllowedPersonas:
+    """Startup check for persona-name typos in MCP allowed_personas
+    (issue #138): a restricted server listing a nonexistent persona can
+    never serve anyone, so the mismatch must be loud at startup."""
+
+    def test_startup_unknownPersonaInAllowedPersonas_warns(self, monkeypatch, caplog):
+        # GIVEN an MCP server restricted to a persona that does not exist:
+        settings = make_settings(mcp=MCPConfig(servers=[
+            make_mcp_server("sip-knowledge", "http://127.0.0.1:8001",
+                            allowed_personas=["SIP-Expert"]),
+        ]))
+        stub_lifespan(monkeypatch, settings=settings)
+
+        # WHEN the lifespan runs,
+        with caplog.at_level(logging.WARNING):
+            with TestClient(main_module.app):
+                pass
+
+        # THEN the warning names the server and the offending persona:
+        warnings = [r.getMessage() for r in caplog.records
+                    if r.levelno == logging.WARNING and "allowed_personas" in r.getMessage()]
+        assert len(warnings) == 1
+        assert "sip-knowledge" in warnings[0]
+        assert "SIP-Expert" in warnings[0]
+
+    def test_startup_knownPersonaInAllowedPersonas_noWarning(self, monkeypatch, caplog):
+        # GIVEN an MCP server restricted to a persona that DOES exist:
+        settings = make_settings(mcp=MCPConfig(servers=[
+            make_mcp_server("sip-knowledge", "http://127.0.0.1:8001",
+                            allowed_personas=["Luna"]),
+        ]))
+        stub_lifespan(monkeypatch, settings=settings)
+
+        # WHEN the lifespan runs,
+        with caplog.at_level(logging.WARNING):
+            with TestClient(main_module.app):
+                pass
+
+        # THEN no allowed_personas warning is logged:
+        assert not any("allowed_personas" in r.getMessage()
+                       for r in caplog.records if r.levelno == logging.WARNING)
+
+
 class TestIndex:
     def test_serves_chat_ui(self, client):
         resp = client.get("/")
         assert resp.status_code == 200
         assert "text/html" in resp.headers["content-type"]
-        assert "TalkWithMe v7.1" in resp.text
+        assert "TalkWithMe v7.2" in resp.text
 
     def test_static_files_mounted(self, client):
         # state.js is the shared-globals module every other frontend file depends on.

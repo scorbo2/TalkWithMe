@@ -11,7 +11,7 @@ from pathlib import Path
 import app.config as app_config
 import app.routers.chat as chat_router
 from app.config import ChatRoom, ChatRoomsConfig, GeneralConfig, Persona, PersonasConfig
-from app.services import builtin
+from app.services import builtin, llm
 from tests.factories import (
     make_chatrooms,
     make_personas,
@@ -320,6 +320,50 @@ class TestPersonaSelection:
 
 
 # ---------------------------------------------------------------------------
+# Responder planning (_plan_responders — pure function, no endpoint)
+# ---------------------------------------------------------------------------
+
+class TestPlanResponders:
+    def test_single_reply_plans_only_the_first_persona(self):
+        plan = chat_router._plan_responders(["Alex", "Luna"], "Alex", 1)
+
+        assert plan == ["Alex"]
+
+    def test_cap_larger_than_pool_plans_every_eligible_exactly_once(self):
+        plan = chat_router._plan_responders(["Alex", "Luna"], "Luna", 12)
+
+        assert plan[0] == "Luna"  # the configured pick keeps slot 0
+        assert sorted(plan) == ["Alex", "Luna"]
+
+    def test_planned_personas_are_always_distinct_and_eligible(self):
+        # Invariant sweep over pools/counts: the plan must only ever
+        # contain eligible, non-repeating names, with `first` in slot 0
+        # and its length capped at min(count, pool size).
+        pool = ["Alex", "Luna", "Cmdr", "Bella"]
+        for first in pool:
+            for count in range(1, 10):
+                plan = chat_router._plan_responders(pool, first, count)
+
+                assert plan[0] == first
+                assert len(plan) == min(count, len(pool))
+                assert len(set(plan)) == len(plan)  # no repeats
+                assert set(plan) <= set(pool)       # never an outsider
+
+    def test_zero_or_negative_count_plans_nothing(self):
+        assert chat_router._plan_responders(["Alex"], "Alex", 0) == []
+        assert chat_router._plan_responders(["Alex"], "Alex", -3) == []
+
+    def test_first_outside_pool_stays_slot_zero_and_well_formed(self):
+        # Defensive: _pick_persona() guarantees `first` is eligible, but
+        # the plan must stay well-formed if a future caller breaks that
+        # contract (no crash, no duplicate of `first`).
+        plan = chat_router._plan_responders(["Alex", "Luna"], "Nobody", 2)
+
+        assert plan[0] == "Nobody"
+        assert plan[1] in ("Alex", "Luna")
+
+
+# ---------------------------------------------------------------------------
 # Multi-persona replies
 # ---------------------------------------------------------------------------
 
@@ -339,7 +383,7 @@ class TestMultiPersonaReplies:
         assert len({e["message_id"] for e in starts}) == 2
 
     def test_replies_capped_at_eligible_count(self, client, monkeypatch):
-        _patch_general(monkeypatch, max_persona_replies=4)
+        _patch_general(monkeypatch, max_persona_replies=12)
         _patch_chatrooms(monkeypatch, [ChatRoom(name="Solo", persona_names=["Luna"])])
         _stub_stream(monkeypatch, ["hi"])
 
@@ -376,8 +420,8 @@ class TestMultiPersonaReplies:
 class TestEchoChamber:
     def test_echoes_user_message_verbatim_without_llm(self, client, monkeypatch):
         _patch_chatrooms(monkeypatch,
-                         [ChatRoom(name="Echo", persona_names=["Alex"], echo_chamber=True)])
-        _patch_general(monkeypatch, max_persona_replies=4)  # must be overridden to 1
+                          [ChatRoom(name="Echo", persona_names=["Alex"], echo_chamber=True)])
+        _patch_general(monkeypatch, max_persona_replies=4)
 
         def fail(*a, **kw):
             raise AssertionError("echo chamber must bypass the LLM entirely")
@@ -390,8 +434,105 @@ class TestEchoChamber:
         assert [t["token"] for t in tokens] == ["hello there"]
         done = sse_events_by_type(events, "done")[0]
         assert done["text"] == "hello there"
-        # Exactly one persona responds, even though max_persona_replies is 4.
+        # Only one echo because the room has only one persona — the count
+        # is capped at the eligible count, not at 1 (see the tests below
+        # for multi-persona echo rooms).
         assert [e["persona"] for e in sse_events_by_type(events, "start")] == ["Alex"]
+
+    def test_echo_enabled_on_default_room_bypasses_llm(self, client, monkeypatch):
+        # The default room has no record in chat_rooms; its flag lives in
+        # the config (default_echo_chamber). The chat flow must read it
+        # from there, not only from per-room records.
+        config = make_chatrooms()
+        config.default_echo_chamber = True
+        monkeypatch.setattr(app_config, "_chatrooms_cache", config)
+        # max_persona_replies=1 keeps this test focused on the flag — the
+        # reply-COUNT behavior of the echo chamber has its own tests below.
+        _patch_general(monkeypatch, max_persona_replies=1)
+
+        def fail(*a, **kw):
+            raise AssertionError("echo chamber must bypass the LLM entirely")
+
+        monkeypatch.setattr(chat_router, "stream_chat", fail)
+
+        events = _chat(client, who_answers="Alex", chat_room="default")
+
+        tokens = sse_events_by_type(events, "token")
+        assert [t["token"] for t in tokens] == ["hello there"]
+        done = sse_events_by_type(events, "done")[0]
+        assert done["text"] == "hello there"
+        assert [e["persona"] for e in sse_events_by_type(events, "start")] == ["Alex"]
+
+    def test_echo_respects_max_persona_replies(self, client, monkeypatch):
+        # The echo chamber no longer caps replies at 1: with two personas
+        # in the room and max_persona_replies=2, BOTH echo the message
+        # verbatim — the explicit pick first, then the remaining pool.
+        _patch_chatrooms(monkeypatch,
+                          [ChatRoom(name="Echo", persona_names=["Alex", "Luna"],
+                                    echo_chamber=True)])
+        _patch_general(monkeypatch, max_persona_replies=2)
+
+        def fail(*a, **kw):
+            raise AssertionError("echo chamber must bypass the LLM entirely")
+
+        monkeypatch.setattr(chat_router, "stream_chat", fail)
+
+        events = _chat(client, who_answers="Alex", chat_room="Echo")
+
+        starts = sse_events_by_type(events, "start")
+        assert [e["persona"] for e in starts] == ["Alex", "Luna"]
+        # Every reply is the user's message, verbatim, with no LLM tokens.
+        assert [t["token"] for t in sse_events_by_type(events, "token")] == \
+            ["hello there", "hello there"]
+        assert [e["text"] for e in sse_events_by_type(events, "done")] == \
+            ["hello there", "hello there"]
+        # Each echo gets its own assistant message id.
+        assert len({e["message_id"] for e in starts}) == 2
+
+    def test_echo_capped_at_eligible_count_without_repeats(self, client, monkeypatch):
+        # max_persona_replies above the room's persona count must not
+        # duplicate personas: three personas in the room, max=12, and each
+        # persona echoes exactly once.
+        personas_config = make_personas()
+        personas_config.personas.append(
+            Persona(name="Cmdr", system_prompt="You are Cmdr.",
+                    router_hints="commands"))
+        _patch_personas(monkeypatch, personas_config)
+        _patch_chatrooms(monkeypatch,
+                          [ChatRoom(name="Echo",
+                                    persona_names=["Alex", "Luna", "Cmdr"],
+                                    echo_chamber=True)])
+        _patch_general(monkeypatch, max_persona_replies=12)
+
+        def fail(*a, **kw):
+            raise AssertionError("echo chamber must bypass the LLM entirely")
+
+        monkeypatch.setattr(chat_router, "stream_chat", fail)
+
+        events = _chat(client, who_answers="Alex", chat_room="Echo")
+
+        starts = sse_events_by_type(events, "start")
+        # Alex first (explicit pick); the other two come from the remaining
+        # pool in random order — each exactly once.
+        assert starts[0]["persona"] == "Alex"
+        assert sorted(e["persona"] for e in starts) == ["Alex", "Cmdr", "Luna"]
+        assert [t["token"] for t in sse_events_by_type(events, "token")] == \
+            ["hello there"] * 3
+        assert [e["text"] for e in sse_events_by_type(events, "done")] == \
+            ["hello there"] * 3
+
+    def test_default_room_with_flag_off_streams_from_llm(self, client, monkeypatch):
+        # Regression guard: a config with the flag explicitly False (how
+        # pre-flag files load) must NOT echo — the normal LLM path runs.
+        config = make_chatrooms()
+        config.default_echo_chamber = False
+        monkeypatch.setattr(app_config, "_chatrooms_cache", config)
+        _stub_stream(monkeypatch, ["normal reply"])
+
+        events = _chat(client, who_answers="Alex", chat_room="default")
+
+        tokens = sse_events_by_type(events, "token")
+        assert [t["token"] for t in tokens] == ["normal reply"]
 
 
 # ---------------------------------------------------------------------------
@@ -454,6 +595,76 @@ class TestToolCalls:
         assert sse_events_by_type(events, "tool_call") == []
         # The reply itself still streams and completes.
         assert sse_events_by_type(events, "done")[0]["text"] == "noon"
+
+
+# ---------------------------------------------------------------------------
+# Per-server persona access control (issue #138)
+# ---------------------------------------------------------------------------
+
+class TestAllowedPersonasFiltering:
+    """The agentic loop must receive only the tools from servers that
+    allow the responding persona. The tool registry is seeded directly
+    (no discovery); the router's filtering path is exercised for real."""
+
+    @staticmethod
+    def _openai_tool(name: str) -> dict:
+        return {
+            "type": "function",
+            "function": {"name": name, "description": f"desc {name}",
+                         "parameters": {"type": "object", "properties": {}}},
+        }
+
+    @staticmethod
+    def _seed_registry(allowed_for: list):
+        """An open server ('open_tool') plus a restricted server
+        ('restricted_tool') whose allow-list is ``allowed_for``."""
+        from app.services import tool_registry
+        from tests.factories import make_mcp_server
+
+        open_server = make_mcp_server("open", "http://open.local")
+        restricted_server = make_mcp_server(
+            "restricted", "http://restricted.local", allowed_personas=allowed_for,
+        )
+        open_tool = TestAllowedPersonasFiltering._openai_tool("open_tool")
+        restricted_tool = TestAllowedPersonasFiltering._openai_tool("restricted_tool")
+        tool_registry._tool_cache.update({
+            "open": [open_tool],
+            "restricted": [restricted_tool],
+        })
+        tool_registry._server_map.update({
+            "open_tool": open_server,
+            "restricted_tool": restricted_server,
+        })
+
+    @staticmethod
+    def _tool_user_cache(monkeypatch, tmp_path):
+        config = make_personas()
+        config.personas.append(_tool_persona_dir(tmp_path))
+        _patch_personas(monkeypatch, config)
+
+    def test_unlisted_persona_receives_only_open_tools(self, client, monkeypatch, tmp_path):
+        self._tool_user_cache(monkeypatch, tmp_path)
+        self._seed_registry(allowed_for=["Luna"])  # ToolUser is NOT in the list
+
+        seen = {}
+        _capturing_tools(monkeypatch, seen, events=[{"type": "token", "token": "hi"}])
+
+        _chat(client, who_answers="ToolUser")
+
+        names = {t["function"]["name"] for t in seen["tools"]}
+        assert names == {"open_tool", builtin.ADD_MEMORY_NAME}
+
+    def test_listed_persona_receives_open_and_restricted_tools(self, client, monkeypatch, tmp_path):
+        self._tool_user_cache(monkeypatch, tmp_path)
+        self._seed_registry(allowed_for=["ToolUser"])
+
+        seen = {}
+        _capturing_tools(monkeypatch, seen, events=[{"type": "token", "token": "hi"}])
+
+        _chat(client, who_answers="ToolUser")
+
+        names = {t["function"]["name"] for t in seen["tools"]}
+        assert names == {"open_tool", "restricted_tool", builtin.ADD_MEMORY_NAME}
 
 
 # ---------------------------------------------------------------------------
@@ -860,4 +1071,103 @@ class TestStreamErrors:
 
         messages = load_history("default")
         # Only the user message landed; the assistant row never did.
+        assert [m["sender"] for m in messages] == ["USER"]
+
+
+# ---------------------------------------------------------------------------
+# Double aborts (issue #128)
+# ---------------------------------------------------------------------------
+
+class TestDoubleAbort:
+    """A stream the server aborts twice in a row (in-band error object,
+    plus its single retry) raises LLMStreamAborted from the LLM layer.
+    The router must surface it as a visible error event and skip
+    persistence — the pre-fix failure mode was a SILENTLY PERSISTED
+    empty assistant row: a blank bubble for the user, and an empty
+    "[Name]: " prefix poisoning every subsequent persona's context."""
+
+    @staticmethod
+    def _tool_persona_cache(monkeypatch):
+        config = make_personas()
+        config.personas.append(
+            Persona(name="ToolUser", system_prompt="You use tools.",
+                    router_hints="tools", allow_tool_calls=True))
+        _patch_personas(monkeypatch, config)
+
+    @staticmethod
+    def _aborting_tools(monkeypatch, events_before_raise):
+        async def fake_tools(messages, tools, persona):
+            for event in events_before_raise:
+                yield event
+            raise llm.LLMStreamAborted("aborted twice in a row")
+
+        monkeypatch.setattr(chat_router, "stream_chat_with_tools", fake_tools)
+
+    @staticmethod
+    def _aborting_plain(monkeypatch):
+        async def fake_stream(messages):
+            # The empty yield loop makes this an async generator (the
+            # router consumes it via `async for`); the raise fires on the
+            # first __anext__, before any token.
+            for token in ():
+                yield token
+            raise llm.LLMStreamAborted("aborted twice in a row")
+
+        monkeypatch.setattr(chat_router, "stream_chat", fake_stream)
+
+    def test_tool_loop_abort_emits_error_not_done(self, client, monkeypatch):
+        self._tool_persona_cache(monkeypatch)
+        self._aborting_tools(monkeypatch, [])
+
+        events = _chat(client, who_answers="ToolUser")
+
+        types = [e["type"] for e in events]
+        assert types == ["start", "error"]
+        assert "aborted twice" in events[-1]["message"]
+        # No done/complete after an abort — same contract as any
+        # mid-stream error (see TestStreamErrors).
+        assert "done" not in types
+        assert "complete" not in types
+
+    def test_tool_loop_abort_after_tool_chip_still_emits_the_chip(self, client, monkeypatch):
+        # The tool call (and its side effects) already happened before
+        # the final round aborted: the chip is real and must be shown,
+        # then the error.
+        self._tool_persona_cache(monkeypatch)
+        self._aborting_tools(monkeypatch, [_tool_call_event()])
+
+        events = _chat(client, who_answers="ToolUser")
+
+        types = [e["type"] for e in events]
+        assert types == ["start", "tool_call", "error"]
+
+    def test_tool_loop_abort_persists_no_empty_reply(self, client, monkeypatch):
+        self._tool_persona_cache(monkeypatch)
+        self._aborting_tools(monkeypatch, [])
+        _chat(client, who_answers="ToolUser")
+
+        from app.persistence import load_history
+
+        messages = load_history("default")
+        # Only the user message landed; no empty assistant row.
+        assert [m["sender"] for m in messages] == ["USER"]
+
+    def test_plain_path_abort_emits_error_not_done(self, client, monkeypatch):
+        self._aborting_plain(monkeypatch)
+
+        events = _chat(client)
+
+        types = [e["type"] for e in events]
+        assert types == ["start", "error"]
+        assert "done" not in types
+        assert "complete" not in types
+
+    def test_plain_path_abort_persists_no_empty_reply(self, client, monkeypatch):
+        self._aborting_plain(monkeypatch)
+        _chat(client)
+
+        from app.persistence import load_history
+
+        messages = load_history("default")
+        # Only the user message landed; no empty assistant row.
         assert [m["sender"] for m in messages] == ["USER"]

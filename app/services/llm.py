@@ -66,6 +66,19 @@ def warn_if_plaintext_llm(base_url: Optional[str]) -> None:
     logger.warning("Warning: your LLM connection uses http; your chats are sent in cleartext.")
 
 
+class LLMStreamAborted(Exception):
+    """The LLM server aborted a stream, and the single retry aborted too.
+
+    A stream that ends with no content and no finish_reason was killed
+    mid-flight by the server (the in-band error object, see
+    _iter_completion_chunks). One retry is attempted because a healthy
+    stream always ends with a finish_reason — but when BOTH attempts
+    abort, this is raised so the caller can surface a visible error.
+    The alternative is a silently persisted empty reply, which lands in
+    history.json and in every subsequent persona's context.
+    """
+
+
 def _base_payload(messages: List[dict]) -> dict:
     """Common /v1/chat/completions payload fields (model, sampling, streaming)."""
     settings = get_settings()
@@ -83,6 +96,16 @@ async def _iter_completion_chunks(payload: dict) -> AsyncGenerator[dict, None]:
 
     Each dict carries the "delta" and, on the final line, "finish_reason".
     Malformed lines are logged and skipped rather than aborting the stream.
+
+    Some servers signal a mid-stream failure in-band: a valid JSON object
+    with an "error" key and no "choices" (observed: llama.cpp's OpenAI
+    server, which emits
+    `{"error": {"code": 500, "message": "The model produced output that
+    does not match the expected peg-native format", ...}}` when the model's
+    output fails its tool-call parser grammar — while the HTTP status stays
+    200). Those are logged with the server's own message: a bare
+    `KeyError: 'choices'` would tell the operator nothing about why the
+    stream died.
     """
     settings = get_settings()
     url = f"{settings.llm.base_url}/v1/chat/completions"
@@ -98,10 +121,36 @@ async def _iter_completion_chunks(payload: dict) -> AsyncGenerator[dict, None]:
                     break
                 try:
                     chunk = json.loads(data_str)
-                    yield chunk["choices"][0]
-                except (json.JSONDecodeError, KeyError, IndexError) as exc:
+                except json.JSONDecodeError as exc:
                     logger.warning("Malformed SSE chunk from LLM: %s", exc)
                     continue
+                if not isinstance(chunk, dict) or "choices" not in chunk:
+                    error = chunk.get("error") if isinstance(chunk, dict) else None
+                    if error is not None:
+                        logger.warning("LLM server error mid-stream: %r", error)
+                    else:
+                        logger.warning(
+                            "Malformed SSE chunk from LLM (no 'choices' key): %r",
+                            chunk,
+                        )
+                    continue
+                choices = chunk.get("choices")
+                if not isinstance(choices, list):
+                    logger.warning(
+                        "Malformed SSE chunk from LLM ('choices' not a list): %r", chunk
+                    )
+                    continue
+                if not choices:
+                    logger.warning(
+                        "Malformed SSE chunk from LLM (empty 'choices'): %r", chunk
+                    )
+                    continue
+                if not isinstance(choices[0], dict):
+                    logger.warning(
+                        "Malformed SSE chunk from LLM ('choices[0]' not an object): %r", chunk
+                    )
+                    continue
+                yield choices[0]
 
 
 async def stream_chat(
@@ -110,12 +159,39 @@ async def stream_chat(
     """Stream tokens from the LLM's /v1/chat/completions endpoint.
 
     Yields individual token strings as they arrive.
+
+    A stream that ends without yielding any content AND without a
+    finish_reason was aborted mid-flight by the server (e.g. the in-band
+    error object, see _iter_completion_chunks). That single request is
+    retried once — a healthy stream always ends with a finish_reason,
+    even an empty, legitimate "stop", so this can never fire for a normal
+    completion. If the retry aborts as well, LLMStreamAborted is raised:
+    the caller must surface that as a visible error, because the
+    alternative is a silently persisted empty reply.
     """
     payload = _base_payload(messages)
-    async for choice in _iter_completion_chunks(payload):
-        token = (choice.get("delta") or {}).get("content") or ""
-        if token:
-            yield token
+    for attempt in range(2):
+        got_content = False
+        got_finish_reason = False
+        async for choice in _iter_completion_chunks(payload):
+            token = (choice.get("delta") or {}).get("content") or ""
+            if token:
+                got_content = True
+                yield token
+            if choice.get("finish_reason"):
+                got_finish_reason = True
+        aborted = not got_content and not got_finish_reason
+        if not aborted:
+            return
+        if attempt == 1:
+            raise LLMStreamAborted(
+                "The LLM server aborted the stream twice in a row without "
+                "producing any content; the reply was not saved."
+            )
+        logger.warning(
+            "LLM stream ended with no content and no finish_reason "
+            "(server abort); retrying once"
+        )
 
 
 async def chat_completion(messages: List[Dict[str, str]], max_tokens: int = 64) -> str:
@@ -238,6 +314,12 @@ async def stream_chat_with_tools(
     truncated at max_tokens, i.e. finish_reason "length") are NOT
     executed; the LLM receives an "Error:" result explaining why, and
     can retry with a smaller request or answer without the tool.
+
+    A round that the server aborts (no content, no tool calls, and no
+    finish_reason — see _iter_completion_chunks) is re-sent exactly
+    once, while nothing has been streamed yet. If the retry aborts as
+    well, LLMStreamAborted is raised so the caller can surface a visible
+    error instead of persisting an empty reply.
     """
     settings = get_settings()
     max_iterations = settings.mcp.max_tool_iterations
@@ -263,20 +345,51 @@ async def stream_chat_with_tools(
                 len(offered), [t["function"]["name"] for t in offered],
             )
 
-        content_parts: List[str] = []
-        pending_tool_calls: Dict[int, dict] = {}
-        finish_reason: Optional[str] = None
-        async for choice in _iter_completion_chunks(payload):
-            delta = choice.get("delta") or {}
-            token = delta.get("content") or ""
-            if token:
-                content_parts.append(token)
-                yield {"type": "token", "token": token}
-            for tc_delta in delta.get("tool_calls") or []:
-                _merge_tool_call_delta(pending_tool_calls, tc_delta)
-            # Intermediate chunks carry null; keep the last non-null value.
-            if choice.get("finish_reason"):
-                finish_reason = choice["finish_reason"]
+        for attempt in range(2):
+            # Re-armed per attempt: a retry must start from a blank slate,
+            # so nothing from the aborted attempt leaks into the new one.
+            content_parts: List[str] = []
+            pending_tool_calls: Dict[int, dict] = {}
+            finish_reason: Optional[str] = None
+            async for choice in _iter_completion_chunks(payload):
+                delta = choice.get("delta") or {}
+                token = delta.get("content") or ""
+                if token:
+                    content_parts.append(token)
+                    yield {"type": "token", "token": token}
+                for tc_delta in delta.get("tool_calls") or []:
+                    _merge_tool_call_delta(pending_tool_calls, tc_delta)
+                # Intermediate chunks carry null; keep the last non-null value.
+                if choice.get("finish_reason"):
+                    finish_reason = choice["finish_reason"]
+            # No content, no tool calls, and no finish_reason: the server
+            # aborted the stream mid-flight (see _iter_completion_chunks).
+            # The same conversation is re-sent exactly once, while nothing
+            # was streamed yet — a partially streamed round (content or
+            # tool deltas present) keeps the existing truncation/refusal
+            # handling below. If the retry aborts as well, LLMStreamAborted
+            # is raised: the chat router turns it into a visible error
+            # event and skips persistence, so a double abort can never
+            # surface as a silently persisted empty reply.
+            aborted = (
+                not content_parts
+                and not pending_tool_calls
+                and finish_reason is None
+            )
+            if not aborted:
+                break
+            if attempt == 1:
+                raise LLMStreamAborted(
+                    f"The LLM server aborted the stream for persona "
+                    f"'{persona.name}' twice in a row (round {round_num + 1}); "
+                    "the reply was not saved."
+                )
+            logger.warning(
+                "LLM stream for persona '%s' round %d ended with no content, "
+                "no tool calls, and no finish_reason (server abort); "
+                "retrying the round once",
+                persona.name, round_num + 1,
+            )
 
         if not pending_tool_calls:
             # Key diagnostic line: if the round above shows add_memory in
@@ -349,6 +462,20 @@ async def stream_chat_with_tools(
                         available = [t["function"]["name"] for t in tool_list]
                         result = (f"Error: unknown tool '{tool_name}'. "
                                   f"Available tools: {available}")
+                    elif not server.allows(persona.name):
+                        # Defense in depth (issue #138): the tool list this
+                        # persona was offered is already filtered, but a
+                        # model can still hallucinate a tool name owned by a
+                        # server it is not permitted to use. The server-level
+                        # policy is re-checked here so the boundary holds
+                        # even when the offered list is assembled wrong.
+                        logger.warning(
+                            "Refusing tool '%s' for persona '%s': server '%s' "
+                            "does not allow this persona",
+                            tool_name, persona.name, server.name,
+                        )
+                        result = (f"Error: tool '{tool_name}' is not available "
+                                  f"to persona '{persona.name}'")
                     else:
                         result = await mcp_client.call_tool(server, tool_name, arguments)
             conversation.append({

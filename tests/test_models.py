@@ -175,7 +175,7 @@ class TestGeneralSettingsRequestPartialUpdate:
 
     def test_general_settings_request_out_of_range_replies_rejected(self):
         with pytest.raises(ValidationError):
-            GeneralSettingsRequest(max_persona_replies=5)
+            GeneralSettingsRequest(max_persona_replies=13)
 
     def test_general_settings_request_out_of_range_context_rejected(self):
         with pytest.raises(ValidationError):

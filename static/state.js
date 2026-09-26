@@ -35,6 +35,12 @@ const audioQueue = [];
 let audioCtx = null;
 let isPlayingAudio = false;
 
+// Stop button (docs/feature_stop_button.md) — a temporary "mute". While
+// true, audio is still fetched and persisted (replay buttons included),
+// but never played. Set by the stop button; cleared by the next user
+// prompt or a manual replay click.
+let audioPlaybackStopped = false;
+
 // Streaming TTS state
 let sentenceBuffer = "";
 let currentStreamingPersona = null;
@@ -44,6 +50,13 @@ const ttsRequestQueue = [];
 const audioBufferQueue = [];
 let isFetchingTTS = false;
 let isPlayingAudioBuffer = false;
+
+// Every BufferSource currently producing sound. A Set rather than a
+// single "current source" reference, because two sources can legitimately
+// overlap (a double-clicked play button, or a manual play while the
+// message's live TTS is still finishing). The stop button is enabled
+// exactly while this set is non-empty, and stops every member at once.
+const activeAudioSources = new Set();
 
 // Chat persistence — track message IDs for audio association
 let pendingUserMessageId = null; // UUID generated before sending, used for STT audio
@@ -63,6 +76,7 @@ const inputEl = document.getElementById("message-input");
 const sendBtn = document.getElementById("btn-send");
 const micBtn = document.getElementById("btn-mic");
 const newChatBtn = document.getElementById("btn-new-chat");
+const stopAudioBtn = document.getElementById("btn-stop-audio");
 const ttsToggleBtn = document.getElementById("btn-tts-toggle");
 const ttsIcon = document.getElementById("tts-icon");
 const personaListEl = document.getElementById("persona-list");

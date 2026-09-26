@@ -95,11 +95,12 @@ function applyChatRoomFilter() {
     // Update dropdown selection
     chatRoomDropdown.value = currentChatRoom;
 
-    // Update echo chamber checkbox state (case-insensitive, matching backend behavior)
+    // Update echo chamber checkbox state (case-insensitive, matching backend behavior).
+    // The checkbox is enabled in every room, including "default" — the backend
+    // persists the default room's flag in its own config field.
     const roomInfo = allChatRooms.find(r => r.name.toLowerCase() === currentChatRoom.toLowerCase());
     const echoEnabled = roomInfo ? roomInfo.echo_chamber : false;
     echoChamberToggle.checked = echoEnabled;
-    echoChamberToggle.disabled = !isActiveRoom;
 }
 
 /**
@@ -197,13 +198,10 @@ async function switchChatRoom(roomName) {
 
 /**
  * Persist echo chamber toggle for the current chat room.
+ * Works for every room, including "default" (the backend stores that
+ * room's flag separately, but the endpoint is the same).
  */
 async function updateEchoChamber(roomName, enabled) {
-    if (roomName === "default") {
-        // Default room cannot be modified
-        echoChamberToggle.checked = false;
-        return;
-    }
     // Skip no-op to avoid unnecessary PUTs (and handle case-insensitive room matching)
     const currentRoom = allChatRooms.find(r => r.name.toLowerCase() === roomName.toLowerCase());
     if (currentRoom && currentRoom.echo_chamber === enabled) {

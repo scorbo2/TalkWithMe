@@ -79,3 +79,16 @@ else:
     # existing LLM streaming path
 ```
 
+## Addendum: the "default" room
+
+The original implementation excluded the implicit "default" room from echo chamber: because that
+room is synthesized (it always contains every persona) and never stored in `chat_rooms`, its flag
+had nowhere to live, and the checkbox was disabled there. That was an unexplained gap rather than
+a deliberate design decision — the spec above says the checkbox updates "the current chat room",
+and the default room is a room.
+
+The fix: a top-level `default_echo_chamber` boolean in `chatrooms.yaml` (absent = false) holds the
+default room's flag. The same `PUT /api/chatrooms/{name}/echo-chamber` endpoint now accepts
+`default`, the checkbox is enabled in the default room, and the chat flow reads the flag through
+`room_echo_enabled()` in `app/config.py` (single source of truth for both default and named rooms).
+

@@ -159,3 +159,58 @@ class TestLoadTools:
 
         assert tool_registry.get_all_tools() == []
         assert tool_registry.get_server_for_tool("t1") is None
+
+
+# ---------------------------------------------------------------------------
+# Per-persona access control (issue #138)
+# ---------------------------------------------------------------------------
+
+class TestAllowedPersonasFilter:
+    def _restricted_setup(self, monkeypatch, patch_discover):
+        """Server 'a' restricted to P1, server 'b' open to everyone."""
+        a = make_mcp_server("a", "http://a.local", allowed_personas=["P1"])
+        b = make_mcp_server("b", "http://b.local")
+        _, table = patch_discover
+        table["a"] = [_openai_tool("a_tool")]
+        table["b"] = [_openai_tool("b_tool")]
+        _patch_settings(monkeypatch, [a, b])
+        _run(tool_registry.load_tools())
+
+    def test_unnamed_call_returns_everything(self, monkeypatch, patch_discover):
+        # Backward compatibility: startup logging and other callers that
+        # have no persona in mind still see the full tool cache.
+        self._restricted_setup(monkeypatch, patch_discover)
+
+        names = [t["function"]["name"] for t in tool_registry.get_all_tools()]
+        assert sorted(names) == ["a_tool", "b_tool"]
+
+    def test_listed_persona_sees_restricted_and_open_tools(self, monkeypatch, patch_discover):
+        self._restricted_setup(monkeypatch, patch_discover)
+
+        names = [t["function"]["name"] for t in tool_registry.get_all_tools("P1")]
+        assert sorted(names) == ["a_tool", "b_tool"]
+
+    def test_unlisted_persona_sees_only_open_tools(self, monkeypatch, patch_discover):
+        self._restricted_setup(monkeypatch, patch_discover)
+
+        names = [t["function"]["name"] for t in tool_registry.get_all_tools("P2")]
+        assert names == ["b_tool"]
+
+    def test_restricted_server_logs_its_allowlist(self, monkeypatch, patch_discover, caplog):
+        a = make_mcp_server("a", "http://a.local", allowed_personas=["SIP-Expert", "IP-Expert"])
+        _, table = patch_discover
+        table["a"] = [_openai_tool("a_tool")]
+        _patch_settings(monkeypatch, [a])
+
+        with caplog.at_level(logging.INFO):
+            _run(tool_registry.load_tools())
+
+        assert "restricted to: SIP-Expert, IP-Expert" in caplog.text
+
+    def test_get_server_for_tool_ignores_allowlist(self, monkeypatch, patch_discover):
+        # Dispatch lookup is policy-agnostic: the llm.py dispatch path
+        # re-checks server.allows() itself (defense in depth).
+        self._restricted_setup(monkeypatch, patch_discover)
+
+        assert tool_registry.get_server_for_tool("a_tool").name == "a"
+        assert tool_registry.get_server_for_tool("a_tool").allows("P2") is False

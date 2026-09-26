@@ -1,7 +1,7 @@
 # Persona-to-persona chat
 
 This document describes an addition to the TalkWithMe app.
-The goal is to add a new general config option `max_persona_replies` (any number between 1 and 4, inclusive, default is 1).
+The goal is to add a new general config option `max_persona_replies` (any number between 1 and 12, inclusive, default is 1).
 This value controls how many personas reply to each user prompt. 
 
 ## Current state

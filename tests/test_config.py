@@ -256,12 +256,12 @@ class TestSTTConfigIsActive:
 # ---------------------------------------------------------------------------
 
 class TestGeneralConfigBounds:
-    @pytest.mark.parametrize("value", [0, 5, -1])
+    @pytest.mark.parametrize("value", [0, 13, -1])
     def test_general_config_max_persona_replies_out_of_range_rejected(self, value):
         with pytest.raises(ValidationError):
             GeneralConfig(max_persona_replies=value)
 
-    @pytest.mark.parametrize("value", [1, 4])
+    @pytest.mark.parametrize("value", [1, 12])
     def test_general_config_max_persona_replies_in_range_accepted(self, value):
         assert GeneralConfig(max_persona_replies=value).max_persona_replies == value
 
@@ -334,6 +334,45 @@ class TestMCPServerConfig:
 
     def test_mcp_server_config_default_timeout_is_ten_seconds(self):
         assert MCPServerConfig(name="ok", url="http://mcp:9000").timeout == 10.0
+
+    # -- allowed_personas (issue #138) --
+
+    def test_allowed_personas_defaults_to_empty(self):
+        assert MCPServerConfig(name="ok", url="http://mcp:9000").allowed_personas == []
+
+    def test_empty_allowlist_allows_everyone(self):
+        server = MCPServerConfig(name="open", url="http://mcp:9000")
+        assert server.allows("Anyone") is True
+        assert server.allows("Nobody") is True
+
+    def test_allowlist_allows_only_listed_personas(self):
+        server = MCPServerConfig(
+            name="restricted", url="http://mcp:9000",
+            allowed_personas=["SIP-Expert", "IP-Expert"],
+        )
+        assert server.allows("SIP-Expert") is True
+        assert server.allows("IP-Expert") is True
+
+    def test_allowlist_bareYamlKey_parsesAsNone_isTreatedAsEmpty(self):
+        # A bare "allowed_personas:" key in settings.yaml (no value)
+        # parses as None. It must mean "open to all" exactly like the
+        # missing key does — a ValidationError here would crash startup
+        # on a config the issue's contract calls "empty = open to all".
+        server = MCPServerConfig(
+            name="ok", url="http://mcp:9000", allowed_personas=None,
+        )
+        assert server.allowed_personas == []
+        assert server.allows("Anyone") is True
+
+    def test_allowlist_rejects_unlisted_persona_with_case_sensitive_match(self):
+        # Persona identity is exact-match everywhere in the app; the
+        # allowlist must not silently accept a near miss like "sip-expert".
+        server = MCPServerConfig(
+            name="restricted", url="http://mcp:9000",
+            allowed_personas=["SIP-Expert"],
+        )
+        assert server.allows("sip-expert") is False
+        assert server.allows("SIP-Expert2") is False
 
 
 # ---------------------------------------------------------------------------
@@ -520,6 +559,8 @@ class TestLoadingFallbacks:
     def test_load_chatrooms_missing_file_returns_empty(self, tmp_path):
         cfg = app_config.load_chatrooms(tmp_path / "nope.yaml")
         assert cfg.chat_rooms == []
+        # Pre-flag files must load as "echo off" for the default room too.
+        assert cfg.default_echo_chamber is False
 
     def test_load_settings_empty_file_returns_defaults(self, tmp_path):
         path = tmp_path / "empty.yaml"
@@ -585,6 +626,118 @@ chat_rooms:
         cfg = app_config.load_chatrooms(path)
         assert cfg.chat_rooms[0] == ChatRoom(name="TNG", persona_names=["Alex"], echo_chamber=True)
 
+    def test_load_chatrooms_parses_default_echo_chamber(self, tmp_path):
+        # The implicit "default" room has no record in chat_rooms; its flag
+        # lives in the top-level key.
+        path = tmp_path / "chatrooms.yaml"
+        path.write_text(
+            """
+default_echo_chamber: true
+chat_rooms:
+  - name: TNG
+    persona_names: [Alex]
+"""
+        )
+        cfg = app_config.load_chatrooms(path)
+        assert cfg.default_echo_chamber is True
+        assert [r.name for r in cfg.chat_rooms] == ["TNG"]
+
+    def test_load_chatrooms_bare_default_echo_key_loads_as_false(self, tmp_path):
+        # A hand-edited bare key ("default_echo_chamber:" = YAML null) must
+        # load as off, not crash — same convention as global_system_prompt.
+        path = tmp_path / "chatrooms.yaml"
+        path.write_text(
+            """
+default_echo_chamber:
+chat_rooms: []
+"""
+        )
+        cfg = app_config.load_chatrooms(path)
+        assert cfg.default_echo_chamber is False
+
+    def test_load_chatrooms_default_echo_absent_is_false(self, tmp_path):
+        # Legacy files written before the flag existed must not 500 or flip
+        # the default room into echo mode on upgrade.
+        path = tmp_path / "chatrooms.yaml"
+        path.write_text(
+            """
+chat_rooms:
+  - name: TNG
+    persona_names: [Alex]
+"""
+        )
+        cfg = app_config.load_chatrooms(path)
+        assert cfg.default_echo_chamber is False
+
+
+# ---------------------------------------------------------------------------
+# room_echo_enabled() — the single source of truth for the flag
+# ---------------------------------------------------------------------------
+
+class TestRoomEchoEnabled:
+    def test_named_room_true(self):
+        cfg = ChatRoomsConfig(chat_rooms=[
+            ChatRoom(name="TNG", persona_names=["Alex"], echo_chamber=True)
+        ])
+        assert app_config.room_echo_enabled(cfg, "TNG") is True
+
+    def test_named_room_false(self):
+        cfg = ChatRoomsConfig(chat_rooms=[
+            ChatRoom(name="TNG", persona_names=["Alex"], echo_chamber=False)
+        ])
+        assert app_config.room_echo_enabled(cfg, "TNG") is False
+
+    def test_lookup_is_case_insensitive(self):
+        cfg = ChatRoomsConfig(chat_rooms=[
+            ChatRoom(name="TNG", persona_names=["Alex"], echo_chamber=True)
+        ])
+        assert app_config.room_echo_enabled(cfg, "tng") is True
+        assert app_config.room_echo_enabled(cfg, "TnG") is True
+
+    def test_default_room_reads_config_flag_when_true(self):
+        cfg = ChatRoomsConfig(default_echo_chamber=True)
+        assert app_config.room_echo_enabled(cfg, "default") is True
+
+    def test_default_room_reads_config_flag_when_false(self):
+        cfg = ChatRoomsConfig(default_echo_chamber=False)
+        assert app_config.room_echo_enabled(cfg, "default") is False
+
+    def test_default_room_is_case_insensitive(self):
+        cfg = ChatRoomsConfig(default_echo_chamber=True)
+        assert app_config.room_echo_enabled(cfg, "Default") is True
+
+    def test_unknown_room_is_off(self):
+        # The chat flow may receive any name; a room not in the config is
+        # simply off rather than an error.
+        cfg = ChatRoomsConfig(chat_rooms=[
+            ChatRoom(name="TNG", persona_names=["Alex"], echo_chamber=True)
+        ])
+        assert app_config.room_echo_enabled(cfg, "NoSuchRoom") is False
+
+    def test_default_flag_does_not_leak_to_named_rooms(self):
+        # Enabling echo on "default" must not turn on a room that has its
+        # own (false) record — and vice versa.
+        cfg = ChatRoomsConfig(
+            chat_rooms=[ChatRoom(name="TNG", persona_names=["Alex"], echo_chamber=False)],
+            default_echo_chamber=True,
+        )
+        assert app_config.room_echo_enabled(cfg, "TNG") is False
+        assert app_config.room_echo_enabled(cfg, "default") is True
+
+    def test_with_rooms_preserves_default_echo_flag(self):
+        # Every mutation endpoint rebuilds the config; with_rooms() is what
+        # keeps the default room's flag from being silently dropped.
+        cfg = ChatRoomsConfig(
+            chat_rooms=[ChatRoom(name="TNG", persona_names=["Alex"])],
+            default_echo_chamber=True,
+        )
+        rebuilt = cfg.with_rooms([ChatRoom(name="Enterprise", persona_names=[])])
+        assert rebuilt.default_echo_chamber is True
+        assert [r.name for r in rebuilt.chat_rooms] == ["Enterprise"]
+        # The original config is untouched (copy, not mutation).
+        assert cfg.default_echo_chamber is True
+        assert [r.name for r in cfg.chat_rooms] == ["TNG"]
+
 
 # ---------------------------------------------------------------------------
 # Save/load round-trips
@@ -622,6 +775,23 @@ class TestSaveLoadRoundTrip:
         cfg = make_chatrooms()
         app_config.save_chatrooms(cfg, path)
         reloaded = app_config.load_chatrooms(path)
+        assert [r.name for r in reloaded.chat_rooms] == ["TNG"]
+
+    def test_save_chatrooms_writes_default_echo_flag(self, tmp_path):
+        # The key is always serialized (even when false) so the file is an
+        # explicit statement of state — matching save_settings() behaviour.
+        path = tmp_path / "chatrooms.yaml"
+        app_config.save_chatrooms(make_chatrooms(), path)
+        reloaded = yaml.safe_load(path.read_text())
+        assert reloaded["default_echo_chamber"] is False
+
+    def test_save_chatrooms_round_trip_default_echo_true(self, tmp_path):
+        path = tmp_path / "chatrooms.yaml"
+        cfg = make_chatrooms()
+        cfg.default_echo_chamber = True
+        app_config.save_chatrooms(cfg, path)
+        reloaded = app_config.load_chatrooms(path)
+        assert reloaded.default_echo_chamber is True
         assert [r.name for r in reloaded.chat_rooms] == ["TNG"]
 
 

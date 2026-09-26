@@ -21,7 +21,6 @@ from app.config import (
     DEFAULT_MEMORY_SIZE,
     MAX_MEMORY_SIZE,
     ChatRoom,
-    ChatRoomsConfig,
     Persona,
     PersonasConfig,
     get_chatrooms,
@@ -53,8 +52,10 @@ def _cascade_persona_rename(old_name: str, new_name: str) -> None:
     updated = []
     for room in config.chat_rooms:
         new_names = [new_name if p == old_name else p for p in room.persona_names]
-        updated.append(ChatRoom(name=room.name, persona_names=new_names))
-    save_chatrooms(ChatRoomsConfig(chat_rooms=updated))
+        # echo_chamber must be carried over — a bare ChatRoom(...) reset it
+        # to False and wiped every room's echo setting on each rename.
+        updated.append(ChatRoom(name=room.name, persona_names=new_names, echo_chamber=room.echo_chamber))
+    save_chatrooms(config.with_rooms(updated))
     logger.info("Cascaded persona rename '%s' -> '%s' to chat rooms", old_name, new_name)
 
 
@@ -70,8 +71,8 @@ def _cascade_persona_delete(persona_name: str) -> None:
     updated = []
     for room in config.chat_rooms:
         new_names = [p for p in room.persona_names if p != persona_name]
-        updated.append(ChatRoom(name=room.name, persona_names=new_names))
-    save_chatrooms(ChatRoomsConfig(chat_rooms=updated))
+        updated.append(ChatRoom(name=room.name, persona_names=new_names, echo_chamber=room.echo_chamber))
+    save_chatrooms(config.with_rooms(updated))
     logger.info("Cascaded persona delete '%s' from chat rooms", persona_name)
 
 

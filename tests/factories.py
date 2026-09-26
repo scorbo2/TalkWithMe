@@ -148,8 +148,15 @@ def make_chatrooms() -> ChatRoomsConfig:
     )
 
 
-def make_mcp_server(name: str = "tools-1", url: str = "http://mcp.local:9000") -> MCPServerConfig:
-    return MCPServerConfig(name=name, url=url, timeout=5.0)
+def make_mcp_server(
+    name: str = "tools-1",
+    url: str = "http://mcp.local:9000",
+    allowed_personas: Optional[List[str]] = None,
+) -> MCPServerConfig:
+    return MCPServerConfig(
+        name=name, url=url, timeout=5.0,
+        allowed_personas=list(allowed_personas or []),
+    )
 
 
 # ---------------------------------------------------------------------------

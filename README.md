@@ -15,6 +15,7 @@ Follow the development of this app on my YouTube channel:
 - Externalizing persona persistence: https://www.youtube.com/watch?v=Vj9rUy06Dcw
 - Adding persistent memories: https://www.youtube.com/watch?v=YD6cInSuQZs
 - Generifying TTS settings / cloning voices with emotion: https://www.youtube.com/watch?v=WuIiyz9ESfQ
+- Minimal setup for low VRAM: https://www.youtube.com/watch?v=P0N91YLX04A
 
 ## Features
 
@@ -329,6 +330,9 @@ chat_rooms:
   persona_names:
   - kstew
   echo_chamber: true
+# The implicit "default" room (all personas) has no entry in chat_rooms;
+# its echo chamber flag lives in this top-level key instead.
+default_echo_chamber: false
 ```
 
 Personas can be added/removed to a chat room via the main chat interface's left panel:
@@ -369,13 +373,37 @@ For lowest lag time, consider OmniVoice as the TTS server. It is considerably fa
 
 ## Persona-to-persona chat
 
-By default, only one AI persona in the current chat room will answer your prompt. You can make it feel more like a group chat by turning up the `max_persona_replies` option in `settings.yaml` (or by visiting the settings dialog). You can choose any number between 1 and 4. The given number of AI personas will answer your prompt (or reply to the persona who responded before them). Your personas may argue amongst themselves, depending on their respective system prompts!
+By default, only one AI persona in the current chat room will answer your prompt. You can make it feel more like a group chat by turning up the `max_persona_replies` option in `settings.yaml` (or by visiting the settings dialog). You can choose any number between 1 and 12. The given number of AI personas will answer your prompt (or reply to the persona who responded before them). Your personas may argue amongst themselves, depending on their respective system prompts!
 
 ## MCP tools (optional)
 
 If you want your personas to be able to *do* things — fetch a web page, query a database, check the weather — you can connect one or more [MCP (Model Context Protocol)](https://modelcontextprotocol.io) servers. When a persona with tools enabled replies, TalkWithMe runs an agentic loop: the LLM may request tool calls, TalkWithMe executes them against the configured MCP servers, feeds the results back to the LLM, and repeats until the LLM produces a final text answer.
 
 Be careful connecting MCP servers, especially if you are connecting to a remote LLM. You are giving the LLM the ability to execute arbitrary tools, which might be a privacy or security concern.
+
+### Compatibility note
+
+Some models — especially very small ones — cannot reliably follow the
+tool-calling protocol; `Llama-3.2-1B-Instruct` is a confirmed example.
+If you run one of these models, keep **"Allow tool calls"** off on your
+personas. (Side effect: the persona can no longer save *new* memories —
+ones it saved earlier are still used normally.)
+
+If "Allow tool calls" is on and you see any of the following, it is
+almost certainly the model, not an app bug:
+
+- A persona "replying" in raw JSON that mentions `add_memory` — often
+  repeated verbatim by the personas that answer after it.
+- Tool-call chips repeating the same memory over and over while the
+  model never answers your actual question.
+- Empty replies.
+- In the server log: `LLM server error mid-stream: ... peg-native
+  format ...` (or, on versions before the #128 fix, the cryptic
+  `Malformed SSE chunk from LLM: 'choices'`).
+
+The app now logs the server's own error message and re-sends an aborted
+request once — but it cannot teach a model the protocol. If your model
+shows these symptoms, turn tool calls off (or switch to a larger model!)
 
 ## Persona memories
 
@@ -406,8 +434,30 @@ mcp:
     - name: web
       url: http://localhost:9000/mcp    # the server's Streamable HTTP transport endpoint
       timeout: 10                       # per-request timeout in seconds (default 10)
+      allowed_personas: []              # empty = open to all tool-enabled personas
   max_tool_iterations: 8                # max tool-call rounds per reply, 1-50 (default 8)
 ```
+
+**Restricting a server to specific personas.** The optional `allowed_personas` list
+controls which personas may use a server's tools. An empty or missing list is open to
+every tool-enabled persona (the default). Names are matched exactly, as everywhere else
+in the app:
+
+```yaml
+mcp:
+  servers:
+    - name: sip-knowledge
+      url: http://127.0.0.1:8001
+      allowed_personas: ["SIP-Expert"]   # only SIP-Expert sees these tools
+    - name: general-tools
+      url: http://127.0.0.1:8005
+      allowed_personas: []               # open to everyone
+```
+
+A restricted server's tools are simply not offered to the other personas' LLMs. If you
+typo a persona name, the app warns at startup — a restricted server listing a
+nonexistent persona can never serve anyone, and there is no other UI surface that
+would show why.
 
 Restart the app after changes. Tools are discovered at startup, and the log will show a line like `MCP tools available: 5`. If a server is down or unreachable at startup, a warning is logged and its tools are simply unavailable — the app keeps working fine without them.
 
@@ -423,6 +473,7 @@ By default, every tool a persona calls shows up in the chat as a small chip (e.g
 
 - **Your LLM must support tool calling.** The loop speaks OpenAI-style `tools`/`tool_calls`, so the underlying model needs to be capable of it (works with recent Gemma and Qwen models served via llama.cpp's `--api`).
 - **Tool names are global across servers.** If two servers expose a tool with the same name, the first server listed wins and the duplicate is ignored (a warning is logged).
+- **Access control is per server, not per tool.** `allowed_personas` gates a whole server; you cannot allow one tool of a server to a persona and another tool of the same server to a different one.
 - **Only the final answer is persisted.** Chat history stores the persona's text reply; tool calls and results are not saved. Tool chips are a live, in-view decoration only — they disappear on page reload or room switch.
 - **Errors become feedback.** If an MCP server fails or reports an error, the LLM receives a plain-text `Error: ...` result and can retry or explain the failure — the reply will never silently vanish because of a broken tool.
 - **Connections are stateless.** Every tool call opens a fresh MCP session (`initialize` handshake) and closes it afterwards. If your MCP server keeps long-lived session state, TalkWithMe does not preserve it between calls.
@@ -475,6 +526,15 @@ will play the respective sentence:
 Enabling the "echo chamber" option in a chat room will cause the responding persona to simply echo back
 whatever you type or speak, verbatim. This is useful with TTS servers, if you want to hear a persona
 speak a specific line of dialogue. This option is disabled by default.
+
+The number of echoing personas follows the `max_persona_replies` setting (see above): the normally
+selected persona echoes first, and additional personas are picked at random from the room (without
+repeats) until that limit is reached or the room runs out of personas. Set it high enough and you can
+hear **every** persona in the room speak the same line at once — handy for comparing TTS voices.
+
+The checkbox works in every chat room, including the implicit "default" room. Because that room is not
+stored in `chatrooms.yaml`, its flag is persisted in the top-level `default_echo_chamber` key of the
+file (see the example above) rather than on a room entry.
 
 ## Logging
 
@@ -605,6 +665,17 @@ standalone script under `impl/` with per-engine install notes.
   - Minor: remove prepackaged `settings.yaml` and `chatrooms.yaml` (#113)
   - Minor: `personas.yaml` -> `personas.yaml.example` and untrack `personas.yaml` (#119)
   - Add "reset to defaults" button on TTS server settings (#121)
+- **2026-09-25** v7.2
+  - Enable "echo chamber" option in default chat room (#125)
+  - Bug fix: persona rename/delete no longer resets "echo chamber" across chatrooms (#125)
+  - Bug fix: STT microphone capture with multichannel audio devices (#124)
+  - Increase `max_persona_replies` limit from 4 to 12 (#130)
+  - Allow "echo chamber" to respect `max_persona_replies` (#131)
+  - Fix two broken unit tests on Mac (#133)
+  - Fix handling of in-band LLM failures (#128)
+  - MCP Server access control (#138)
+  - Chat bubbles should "glow" when speaking (#139)
+  - Add a "stop" button to halt audio output (#142)
 
 ## License
 

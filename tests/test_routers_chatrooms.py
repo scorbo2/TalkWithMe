@@ -278,9 +278,66 @@ class TestEchoChamber:
         assert resp.json()["echo_chamber"] is False
         assert resp.json()["persona_names"] == ["Alex", "Luna"]
 
-    def test_echo_chamber_default_room_rejected(self, client):
+    def test_enable_echo_chamber_on_default_room(self, client):
+        # The default room used to be rejected outright (the flag had no
+        # home); it is now stored in the config-level default_echo_chamber
+        # field and behaves like any other room's flag.
         resp = client.put("/api/chatrooms/default/echo-chamber", json={"echo_chamber": True})
-        assert resp.status_code == 400
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["name"] == "default"
+        assert body["echo_chamber"] is True
+        # The synthesized room still carries every persona.
+        assert body["persona_names"] == ["Alex", "Luna"]
+
+        # Both read paths report the flag (no hard-coded False):
+        all_rooms = client.get("/api/chatrooms/all").json()
+        default_room = next(r for r in all_rooms if r["name"] == "default")
+        assert default_room["echo_chamber"] is True
+        assert client.get("/api/chatrooms/default").json()["echo_chamber"] is True
+
+    def test_disable_echo_chamber_on_default_room(self, client):
+        client.put("/api/chatrooms/default/echo-chamber", json={"echo_chamber": True})
+        resp = client.put("/api/chatrooms/default/echo-chamber", json={"echo_chamber": False})
+        assert resp.status_code == 200
+        assert resp.json()["echo_chamber"] is False
+        assert client.get("/api/chatrooms/default").json()["echo_chamber"] is False
+
+    def test_default_echo_chamber_put_is_case_insensitive(self, client):
+        resp = client.put("/api/chatrooms/Default/echo-chamber", json={"echo_chamber": True})
+        assert resp.status_code == 200
+        assert client.get("/api/chatrooms/default").json()["echo_chamber"] is True
+
+    def test_default_echo_flag_persisted_to_yaml(self, client, tmp_project_root):
+        import yaml
+
+        client.put("/api/chatrooms/default/echo-chamber", json={"echo_chamber": True})
+
+        raw = yaml.safe_load((tmp_project_root / "chatrooms.yaml").read_text())
+        assert raw["default_echo_chamber"] is True
+
+    def test_default_echo_toggle_does_not_disturb_named_rooms(self, client):
+        # Toggling the default room rewrites the whole config; named rooms'
+        # flags must survive untouched.
+        client.put("/api/chatrooms/TNG/echo-chamber", json={"echo_chamber": True})
+        client.put("/api/chatrooms/default/echo-chamber", json={"echo_chamber": True})
+
+        tng = next(r for r in client.get("/api/chatrooms").json() if r["name"] == "TNG")
+        assert tng["echo_chamber"] is True
+
+    def test_default_echo_flag_survives_room_operations(self, client):
+        # Every room mutation rebuilds the config; none may silently drop
+        # the default room's flag (config.with_rooms() carries it over).
+        client.put("/api/chatrooms/default/echo-chamber", json={"echo_chamber": True})
+
+        client.post("/api/chatrooms", json={"name": "Enterprise"})
+        client.put("/api/chatrooms/TNG/personas", json={"persona_names": ["Luna"]})
+        client.delete("/api/chatrooms/TNG/personas/Alex")
+        client.delete("/api/chatrooms/Enterprise")
+
+        all_rooms = client.get("/api/chatrooms/all").json()
+        default_room = next(r for r in all_rooms if r["name"] == "default")
+        assert default_room["echo_chamber"] is True
 
     def test_echo_chamber_unknown_room_404(self, client):
         resp = client.put("/api/chatrooms/NoSuchRoom/echo-chamber", json={"echo_chamber": True})

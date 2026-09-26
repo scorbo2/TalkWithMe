@@ -331,6 +331,21 @@ class TestUpdatePersona:
         tng = next(r for r in rooms if r["name"] == "TNG")
         assert tng["persona_names"] == ["Alexander", "Luna"]
 
+    def test_rename_cascade_preserves_echo_chamber_flags(self, client, personas_root):
+        # GIVEN echo chamber on in a named room AND in the default room:
+        client.put("/api/chatrooms/TNG/echo-chamber", json={"echo_chamber": True})
+        client.put("/api/chatrooms/default/echo-chamber", json={"echo_chamber": True})
+
+        # WHEN a persona is renamed (the cascade rebuilds every room):
+        resp = client.put("/api/personas/Alex", data=self._data(name="Alexander"))
+        assert resp.status_code == 200
+
+        # THEN no echo flag is reset by the rebuild:
+        rooms = client.get("/api/chatrooms/all").json()
+        by_name = {r["name"]: r for r in rooms}
+        assert by_name["TNG"]["echo_chamber"] is True
+        assert by_name["default"]["echo_chamber"] is True
+
     def test_rename_to_occupied_sanitized_directory_keeps_directory(self, client, personas_root):
         # Two DISTINCT persona names can sanitize to the same directory
         # name: "Alex2" and "Alex.2" both -> "Alex2".
@@ -573,6 +588,21 @@ class TestDeletePersona:
         assert tng["persona_names"] == ["Alex"]
         # The whole directory is gone.
         assert not (personas_root / "Luna").exists()
+
+    def test_delete_cascade_preserves_echo_chamber_flags(self, client, personas_root):
+        # GIVEN echo chamber on in a named room AND in the default room:
+        client.put("/api/chatrooms/TNG/echo-chamber", json={"echo_chamber": True})
+        client.put("/api/chatrooms/default/echo-chamber", json={"echo_chamber": True})
+
+        # WHEN a persona is deleted (the cascade rebuilds every room):
+        resp = client.delete("/api/personas/Luna")
+        assert resp.status_code == 204
+
+        # THEN no echo flag is reset by the rebuild:
+        rooms = client.get("/api/chatrooms/all").json()
+        by_name = {r["name"]: r for r in rooms}
+        assert by_name["TNG"]["echo_chamber"] is True
+        assert by_name["default"]["echo_chamber"] is True
 
     def test_delete_unknown_persona_404(self, client, personas_root):
         resp = client.delete("/api/personas/NoSuchOne")
