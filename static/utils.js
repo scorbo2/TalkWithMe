@@ -48,6 +48,26 @@ function comparePersonasByName(a, b) {
     return a.name.localeCompare(b.name, undefined, { sensitivity: "base" });
 }
 
+/**
+ * Generate a v4 UUID for a message ID.
+ *
+ * `crypto.randomUUID()` only exists in secure contexts (HTTPS, or the
+ * browser's "localhost" exception) — it's `undefined` when the app is
+ * reached over plain HTTP by IP or hostname (e.g. from another machine on
+ * the LAN with `--host 0.0.0.0`). Falls back to `crypto.getRandomValues()`,
+ * which carries no such restriction.
+ */
+function generateMessageId() {
+    if (typeof crypto !== "undefined" && typeof crypto.randomUUID === "function") {
+        return crypto.randomUUID();
+    }
+    const bytes = crypto.getRandomValues(new Uint8Array(16));
+    bytes[6] = (bytes[6] & 0x0f) | 0x40; // version 4
+    bytes[8] = (bytes[8] & 0x3f) | 0x80; // variant 10xx
+    const hex = Array.from(bytes, (b) => b.toString(16).padStart(2, "0")).join("");
+    return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
+}
+
 /** Escape HTML special characters to prevent XSS in dynamically rendered text. */
 function escapeHtml(str) {
     if (typeof str !== 'string') return str;
