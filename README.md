@@ -677,7 +677,7 @@ standalone script under `impl/` with per-engine install notes.
   - Chat bubbles should "glow" when speaking (#139)
   - Add a "stop" button to halt audio output (#142)
 - **Work in progress, add release date when ready** v7.3
-  - TODO release notes for v7.3 go here
+  - Bug fix: Send button throws error when using http over LAN (#145)
 
 ## License
 
