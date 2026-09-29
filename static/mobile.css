@@ -1,0 +1,103 @@
+/*
+ * Mobile layout (issue #143).
+ * Loaded after style.css; only touches narrow screens (<= 768px), so the
+ * desktop layout is unchanged.
+ */
+
+/* Phones: 100vh includes the browser's address/tab bars, which pushed the
+   input bar below the visible area. dvh is the actually visible height. */
+@supports (height: 100dvh) {
+    html, body { height: 100dvh; }
+    #main-layout { height: calc(100dvh - var(--topbar-height)); }
+}
+
+#btn-sidebar-toggle,
+#sidebar-backdrop {
+    display: none;
+}
+
+@media (max-width: 768px) {
+    :root {
+        --topbar-height: 48px;
+    }
+
+    /* Top bar: one row, buttons scroll sideways instead of wrapping. */
+    #topbar {
+        padding: 0 8px;
+        gap: 8px;
+    }
+    /* The title costs a third of the row on a phone; the tab title has it. */
+    #topbar h1 { display: none; }
+    .topbar-actions {
+        flex: 1;
+        min-width: 0;
+        justify-content: flex-start;
+        overflow-x: auto;
+        scrollbar-width: none;
+        gap: 6px;
+    }
+    .topbar-actions::-webkit-scrollbar { display: none; }
+    .topbar-actions button {
+        flex-shrink: 0;
+        padding: 6px 9px;
+        font-size: 0.78rem;
+        white-space: nowrap;
+    }
+    .theme-label { display: none; }
+    #theme-select { flex-shrink: 0; }
+
+    #btn-sidebar-toggle {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        flex-shrink: 0;
+        width: 36px;
+        height: 36px;
+        background: var(--bg-tertiary);
+        color: var(--text-primary);
+        border: 1px solid var(--border-color);
+        border-radius: 6px;
+        font-size: 1.1rem;
+        cursor: pointer;
+    }
+
+    /* Sidebar becomes a slide-in drawer over the chat. */
+    #sidebar {
+        position: fixed;
+        top: var(--topbar-height);
+        bottom: 0;
+        left: 0;
+        z-index: 50;
+        width: min(85vw, var(--sidebar-width));
+        min-width: 0;
+        transform: translateX(-100%);
+        transition: transform 0.2s ease;
+        box-shadow: 4px 0 16px rgba(0, 0, 0, 0.4);
+    }
+    body.sidebar-open #sidebar { transform: translateX(0); }
+    body.sidebar-open #sidebar-backdrop {
+        display: block;
+        position: fixed;
+        inset: var(--topbar-height) 0 0 0;
+        z-index: 40;
+        background: rgba(0, 0, 0, 0.45);
+    }
+
+    /* Chat: use the full width. */
+    #messages { padding: 12px 10px; }
+    .message-row { max-width: 92%; }
+
+    #input-bar {
+        gap: 8px;
+        padding: 8px 10px calc(8px + env(safe-area-inset-bottom)) 10px;
+    }
+    /* 16px stops iOS from zooming into the field on focus. */
+    #message-input { font-size: 16px; }
+
+    /* Dialogs: fit the screen. */
+    .modal-overlay { padding: 8px; }
+    .modal-box {
+        max-height: calc(100dvh - 16px);
+    }
+    .modal-header { padding: 12px 14px; }
+}
