@@ -24,6 +24,7 @@ import app.services.llm as llm_module
 import app.services.llm_auth as llm_auth
 import app.services.tool_registry as tool_registry
 import app.services.tts_client as tts_client
+import app.services.voice_fx as voice_fx
 from app.session import session as global_session
 
 from tests.factories import make_chatrooms, make_personas, make_settings
@@ -61,6 +62,10 @@ def isolated_app_state(tmp_path, monkeypatch):
     # The once-per-URL cleartext warning dedupe in llm.py must not survive
     # a test boundary.
     llm_module._warned_plaintext_urls.clear()
+    # Voice FX: never depend on the host having ffmpeg (tests opt in by
+    # patching voice_fx._ffmpeg), and reset the once-only warning.
+    monkeypatch.setattr(voice_fx, "_ffmpeg", lambda: None)
+    monkeypatch.setattr(voice_fx, "_warned_missing_ffmpeg", False)
 
     # The global session singleton: start every test clean.
     global_session._history.clear()

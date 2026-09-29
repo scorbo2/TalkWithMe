@@ -118,6 +118,10 @@ class PersonaDetailResponse(BaseModel):
         description="Size budget (bytes) for the persona's memories.txt; 0 disables memory saving",
     )
     tts_capable: bool = False
+    # Voice effects (voice_fx.yaml); the neutral values when the persona has none.
+    voice_effect: str = ""
+    voice_glitch_chance: float = 0.0
+    voice_distance: str = "near"
 
 
 class SessionState(BaseModel):

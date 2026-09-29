@@ -17,7 +17,7 @@ from fastapi.responses import StreamingResponse
 from app.config import get_chatrooms, get_personas, get_settings, room_echo_enabled
 from app.models import ChatRequest
 from app.session import session
-from app.services import builtin, expressive, persona_store
+from app.services import builtin, expressive, persona_store, voice_fx
 from app.services.llm import chat_completion, stream_chat, stream_chat_with_tools
 from app.services.tts_client import direction_parameter, get_capabilities
 from app.services.tool_registry import get_all_tools
@@ -242,10 +242,16 @@ async def _delivery_markup_prompt(settings) -> str | None:
     return expressive.delivery_prompt()
 
 
-def _with_delivery_markup(system_prompt: str, markup: str | None) -> str:
-    """Append the markup rules after everything else (global prompt included)."""
+def _with_delivery_markup(system_prompt: str, markup: str | None, persona) -> str:
+    """Append the markup rules after everything else (global prompt included).
+
+    With ffmpeg available the rules also cover distance and, for a persona
+    with a speaker effect (voice_fx.yaml), the (glitch) tag.
+    """
     if not markup:
         return system_prompt
+    if voice_fx.available():
+        markup = markup + "\n" + voice_fx.prompt_note(voice_fx.load_voice_fx(persona.persona_dir))
     return system_prompt.rstrip() + "\n\n" + markup
 
 
@@ -337,7 +343,7 @@ async def _chat_stream(req: ChatRequest) -> AsyncIterator[str]:
             # Normal path: stream LLM response (history already includes prior personas' replies)
             messages = session.build_llm_messages(
                 system_prompt=_with_delivery_markup(_with_global_system_prompt(
-                    _system_prompt_with_memories(persona, settings), settings), delivery_markup),
+                    _system_prompt_with_memories(persona, settings), settings), delivery_markup, persona),
                 responding_persona=persona_name,
                 max_turns_for_context=settings.general.max_turns_for_context,
             )

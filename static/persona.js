@@ -297,6 +297,9 @@ async function openPersonaForm(name) {
             pfReferenceAudioTx.value  = p.reference_audio_transcript || "";
             pfAllowToolCalls.checked  = p.allow_tool_calls ?? false;
             pfMemorySize.value        = p.memory_size ?? 8192;
+            pfVoiceEffect.value       = p.voice_effect || "none";
+            pfVoiceGlitch.value       = Math.round((p.voice_glitch_chance ?? 0) * 100);
+            pfVoiceDistance.value     = p.voice_distance ?? "near";
             // avatar_image / reference_audio are now presence flags; the
             // actual files are previewed via their dedicated endpoints.
             peAvatarOnServer = !!p.avatar_image;
@@ -316,6 +319,9 @@ async function openPersonaForm(name) {
         pfReferenceAudioTx.value  = "";
         pfAllowToolCalls.checked  = false;
         pfMemorySize.value        = 8192;
+        pfVoiceEffect.value       = "none";
+        pfVoiceGlitch.value       = 0;
+        pfVoiceDistance.value     = "near";
     }
 
     // "Clear saved memories" only makes sense when editing an existing
@@ -514,6 +520,10 @@ async function submitPersonaForm(e) {
     if (isNaN(memorySize) || memorySize < 0 || memorySize > 16384) {
         return showPersonaFormError("Memory size must be a whole number between 0 and 16384 bytes.");
     }
+    const glitchPercent = Number(pfVoiceGlitch.value === "" ? 0 : pfVoiceGlitch.value);
+    if (!Number.isFinite(glitchPercent) || glitchPercent < 0 || glitchPercent > 100) {
+        return showPersonaFormError("Random glitches must be between 0 and 100 %.");
+    }
 
     // Multipart: text fields + the chosen files in one request. The remove_*
     // flags are sent ONLY for an explicit "Remove" click (see the
@@ -532,6 +542,12 @@ async function submitPersonaForm(e) {
     // memory_size is ALWAYS sent (the update endpoint requires it — an
     // omitted value must not silently reset the persona's budget).
     form.append("memory_size", String(memorySize));
+    // Voice effects: always sent from the editor, so what the form shows is
+    // what voice_fx.yaml holds after the save (the API keeps the file when a
+    // client omits all three).
+    form.append("voice_effect", pfVoiceEffect.value || "none");
+    form.append("voice_glitch_chance", String(glitchPercent / 100));
+    form.append("voice_distance", pfVoiceDistance.value || "near");
     // clear_memories only after an explicit "Clear saved memories" click,
     // for the same reason the remove_* flags require explicit clicks.
     if (peMemoriesClearRequested) {

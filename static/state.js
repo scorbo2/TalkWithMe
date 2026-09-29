@@ -121,6 +121,9 @@ const pfAudioRemoveBtn = document.getElementById("pf-audio-remove");
 const pfReferenceAudioTx = document.getElementById("pf-reference-audio-transcript");
 const pfAllowToolCalls = document.getElementById("pf-allow-tool-calls");
 const pfMemorySize = document.getElementById("pf-memory-size");
+const pfVoiceEffect = document.getElementById("pf-voice-effect");
+const pfVoiceGlitch = document.getElementById("pf-voice-glitch");       // percent in the UI
+const pfVoiceDistance = document.getElementById("pf-voice-distance");
 const pfMemoriesClearBtn = document.getElementById("pf-memories-clear");
 
 // Persona editor editing state

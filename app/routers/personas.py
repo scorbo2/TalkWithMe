@@ -30,7 +30,7 @@ from app.config import (
     set_personas_cache,
 )
 from app.models import PersonaDetailResponse, PersonaResponse
-from app.services import persona_store
+from app.services import persona_store, voice_fx
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/personas", tags=["personas"])
@@ -204,6 +204,34 @@ def _to_response(p: Persona) -> PersonaResponse:
     )
 
 
+def _voice_fx_from_form(
+    persona_dir: Optional[Path],
+    effect: Optional[str],
+    glitch_chance: Optional[float],
+    distance: Optional[str],
+) -> Optional[voice_fx.VoiceFx]:
+    """The VoiceFx to save, or None when the form carried none of the fields.
+
+    The editor always sends all three; another client that sends none
+    keeps the persona's voice_fx.yaml untouched, and a partial set fills
+    the gaps from the current file.
+    """
+    if effect is None and glitch_chance is None and distance is None:
+        return None
+    current = voice_fx.load_voice_fx(persona_dir) or voice_fx.VoiceFx()
+    # "none" (not ""): an empty form value arrives as "not sent".
+    effect = current.effect if effect is None else effect.strip()
+    if effect.lower() == "none":
+        effect = ""
+    distance = current.distance if distance is None else (distance.strip().lower() or "near")
+    if effect and effect not in voice_fx.PRESETS:
+        raise HTTPException(status_code=422, detail=f"Unknown voice effect '{effect}'")
+    if distance not in voice_fx.DISTANCES:
+        raise HTTPException(status_code=422, detail=f"Unknown voice distance '{distance}'")
+    chance = current.glitch_chance if glitch_chance is None else glitch_chance
+    return voice_fx.VoiceFx(effect=effect, glitch_chance=chance, distance=distance)
+
+
 def _to_detail(p: Persona) -> PersonaDetailResponse:
     transcript: Optional[str] = None
     if p.reference_audio_transcript:
@@ -223,7 +251,14 @@ def _to_detail(p: Persona) -> PersonaDetailResponse:
         allow_tool_calls=p.allow_tool_calls,
         memory_size=p.memory_size,
         tts_capable=p.tts_capable,
+        **_voice_fx_detail(p.persona_dir),
     )
+
+
+def _voice_fx_detail(persona_dir: Optional[Path]) -> dict:
+    fx = voice_fx.load_voice_fx(persona_dir) or voice_fx.VoiceFx()
+    return {"voice_effect": fx.effect, "voice_glitch_chance": fx.glitch_chance,
+            "voice_distance": fx.distance}
 
 
 # ---------------------------------------------------------------------------
@@ -252,6 +287,10 @@ def create_persona(
     reference_audio: Optional[UploadFile] = File(None),
     remove_reference_audio: bool = Form(False),
     clear_memories: bool = Form(False),
+    # Voice effects (voice_fx.yaml). Optional: omitted = keep the current file.
+    voice_effect: Optional[str] = Form(None, max_length=40),
+    voice_glitch_chance: Optional[float] = Form(None, ge=0.0, le=1.0),
+    voice_distance: Optional[str] = Form(None, max_length=20),
 ):
     """Create a new persona in the Personas directory (multipart/form-data).
 
@@ -271,6 +310,7 @@ def create_persona(
         )
 
     image, audio = _read_uploads(avatar_image, reference_audio)
+    fx = _voice_fx_from_form(None, voice_effect, voice_glitch_chance, voice_distance)
 
     root = get_personas_directory()
     persona_dir = root / persona_store.unique_persona_dirname(root, dir_base)
@@ -293,6 +333,8 @@ def create_persona(
             remove_audio=False,
             memory_size=memory_size,
         )
+        if fx is not None:
+            voice_fx.write_voice_fx(persona_dir, fx)
         persona = persona_store.load_persona_from_dir(persona_dir)
     except OSError as exc:
         _remove_persona_dir(persona_dir)
@@ -332,6 +374,10 @@ def update_persona(
     reference_audio: Optional[UploadFile] = File(None),
     remove_reference_audio: bool = Form(False),
     clear_memories: bool = Form(False),
+    # Voice effects (voice_fx.yaml). Optional: omitted = keep the current file.
+    voice_effect: Optional[str] = Form(None, max_length=40),
+    voice_glitch_chance: Optional[float] = Form(None, ge=0.0, le=1.0),
+    voice_distance: Optional[str] = Form(None, max_length=20),
 ):
     """Update an existing persona in its directory (multipart/form-data).
 
@@ -368,6 +414,7 @@ def update_persona(
 
     image, audio = _read_uploads(avatar_image, reference_audio)
     persona_dir = existing.persona_dir
+    fx = _voice_fx_from_form(persona_dir, voice_effect, voice_glitch_chance, voice_distance)
     # A rename may also move the persona's directory to match the new
     # name. The move is attempted AFTER the fields are written, so a
     # failed rename degrades to the old behaviour (new name, old
@@ -393,6 +440,8 @@ def update_persona(
             remove_audio=remove_reference_audio,
             memory_size=memory_size,
         )
+        if fx is not None:
+            voice_fx.write_voice_fx(persona_dir, fx)
         if clear_memories:
             # Explicit user action: propagate I/O failures as 500 (the
             # persona fields ARE saved; a silent no-op clear is worse).

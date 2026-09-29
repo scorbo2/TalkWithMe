@@ -15,7 +15,7 @@ from fastapi.responses import JSONResponse
 
 from app.config import clean_base_url, get_personas, get_settings
 from app.models import TTSRequest, TTSHealthResponse
-from app.services import expressive
+from app.services import expressive, voice_fx
 from app.services.tts_client import (
     cached_capabilities,
     direction_parameter,
@@ -135,17 +135,23 @@ async def tts_proxy(req: TTSRequest):
     # Expressive speech: turn the LLM's markup into what the engine can do.
     # Judged on the same cached doc (never a fetch here): a cold cache counts
     # as "cannot direct", so the markup is stripped rather than read aloud.
-    text = req.text
+    # Voice effects (voice_fx.yaml): (glitch) is ours, never the engine's.
+    fx = voice_fx.load_voice_fx(persona.persona_dir)
+    glitch_requested, text = voice_fx.take_fx_events(req.text)
     instruction = None
+    fx_direction = None
     if get_settings().general.expressive_speech:
         doc_is_current = cached_url == get_settings().tts.base_url
         can_direct = doc_is_current and direction_parameter(cached_doc) is not None
         tag_direction, text = expressive.split_direction(text)
         text = expressive.prepare_tts_text(text, events_allowed=can_direct)
+        # The distance in a direction is an effect: it applies even when the
+        # engine itself cannot take the direction.
+        fx_direction = req.instruction or tag_direction
         if can_direct:
-            instruction = req.instruction or tag_direction
-        if not text:
-            return JSONResponse(status_code=400, content={"detail": "Nothing to speak once the markup is removed"})
+            instruction = fx_direction
+    if not text:
+        return JSONResponse(status_code=400, content={"detail": "Nothing to speak once the markup is removed"})
 
     # Load reference audio and transcript
     audio_b64 = encode_reference_audio(persona.reference_audio)
@@ -167,5 +173,10 @@ async def tts_proxy(req: TTSRequest):
 
     if not result:
         return JSONResponse(status_code=502, content={"detail": "TTS server returned no audio"})
+
+    chain = voice_fx.build_chain(fx, direction=fx_direction, glitch_requested=glitch_requested)
+    if chain and result.get("audio_base64"):
+        result = {**result, "audio_base64": await voice_fx.apply_chain(
+            result["audio_base64"], chain, int(result.get("sample_rate") or 24000))}
 
     return result

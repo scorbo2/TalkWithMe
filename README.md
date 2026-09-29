@@ -516,6 +516,27 @@ The LLM is then told about two kinds of markup (appended after the global system
 With any other TTS engine the option does nothing harmful: the LLM is not told
 about the markup, and any markup that still appears is stripped before synthesis.
 
+## Voice effects
+
+Each persona can get an audio effect on top of its TTS voice, set in the persona editor
+(**Voice Effect**, **Random Glitches**, **Default Distance**) and stored in the persona's
+`voice_fx.yaml`:
+
+- **Voice Effect**: a speaker coloration, e.g. *Metallic speaker* (a small, overdriven
+  speaker in a metal housing) or *Small speaker*.
+- **Random Glitches**: the share of sentences that crackle and distort for a moment
+  (only with a voice effect).
+- **Default Distance**: close, normal, across the room, far away, or muffled (behind a door,
+  in a pocket).
+
+With [expressive speech](#expressive-speech-voice-direction-and-vocal-events) enabled,
+personas can also change the distance per sentence (`{calling, from far away} ...`) and a
+persona with a voice effect can glitch on purpose with `(glitch)`.
+
+The effects are rendered with **ffmpeg**, which must be installed and on the `PATH`
+(`sudo apt install ffmpeg`, `brew install ffmpeg`, or `winget install ffmpeg`). Without it
+the audio is played unchanged and a warning is logged once.
+
 ## Chat persistence
 
 Each chat room persists its chat history to a dedicated subdirectory in the top-level `chatrooms` directory.

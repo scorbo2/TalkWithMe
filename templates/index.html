@@ -194,6 +194,33 @@
                         <input id="pf-reference-audio-language" type="text" maxlength="2" minlength="2" placeholder="en" style="width:60px">
                         <span class="field-hint">2-letter code for the language of the reference audio</span>
                     </div>
+                    <div class="form-row">
+                        <label for="pf-voice-effect">Voice Effect</label>
+                        <select id="pf-voice-effect">
+                            <option value="none">None</option>
+                            <option value="small_speaker">Small speaker</option>
+                            <option value="metallic_speaker">Metallic speaker</option>
+                            <option value="metallic_flanger">Metallic speaker + flanger</option>
+                            <option value="metallic_light">Metallic, light</option>
+                        </select>
+                        <span class="field-hint">Applied to every sentence this persona speaks (needs ffmpeg on the server).</span>
+                    </div>
+                    <div class="form-row">
+                        <label for="pf-voice-glitch">Random Glitches (%)</label>
+                        <input id="pf-voice-glitch" type="number" min="0" max="100" step="1" value="0" style="width:80px">
+                        <span class="field-hint">Share of sentences that crackle and distort. Only with a voice effect; with expressive speech the persona can also glitch on purpose.</span>
+                    </div>
+                    <div class="form-row">
+                        <label for="pf-voice-distance">Default Distance</label>
+                        <select id="pf-voice-distance">
+                            <option value="close">Close</option>
+                            <option value="near">Normal</option>
+                            <option value="room">Across the room</option>
+                            <option value="far">Far away</option>
+                            <option value="muffled">Muffled (behind a door, in a pocket)</option>
+                        </select>
+                        <span class="field-hint">Where the voice comes from. With expressive speech, a direction like {calling, from far away} overrides it for that sentence.</span>
+                    </div>
                     <div class="form-actions">
                         <button type="button" id="pe-form-btn-cancel2" class="btn-secondary">Cancel</button>
                         <button type="submit" id="pe-form-btn-save" class="btn-accent">Save</button>

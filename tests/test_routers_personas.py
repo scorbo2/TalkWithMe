@@ -751,3 +751,90 @@ class TestGetReferenceAudio:
     def test_unknown_persona_404(self, client, personas_root):
         resp = client.get("/api/personas/NoSuchOne/reference-audio")
         assert resp.status_code == 404
+
+
+# ---------------------------------------------------------------------------
+# Voice effects (voice_fx.yaml) through the persona editor API
+# ---------------------------------------------------------------------------
+
+
+class TestPersonaVoiceFx:
+    FX_FIELDS = {"voice_effect": "metallic_speaker", "voice_glitch_chance": "0.08", "voice_distance": "room"}
+
+    def _update(self, **overrides):
+        return TestUpdatePersona()._data(**overrides)
+
+    def _fx(self, personas_root, name="Alex"):
+        from app.services import voice_fx
+        return voice_fx.load_voice_fx(personas_root / name)
+
+    def test_detail_reports_neutral_values_without_a_file(self, client, personas_root):
+        body = client.get("/api/personas/Alex/detail").json()
+        assert (body["voice_effect"], body["voice_glitch_chance"], body["voice_distance"]) == ("", 0.0, "near")
+
+    def test_update_writes_voice_fx_yaml_and_detail_reads_it(self, client, personas_root):
+        resp = client.put("/api/personas/Alex", data=self._update(**self.FX_FIELDS))
+
+        assert resp.status_code == 200
+        body = resp.json()
+        assert (body["voice_effect"], body["voice_glitch_chance"], body["voice_distance"]) == (
+            "metallic_speaker", 0.08, "room")
+        fx = self._fx(personas_root)
+        assert (fx.effect, fx.glitch_chance, fx.distance) == ("metallic_speaker", 0.08, "room")
+
+    def test_neutral_values_remove_the_file(self, client, personas_root):
+        client.put("/api/personas/Alex", data=self._update(**self.FX_FIELDS))
+        client.put("/api/personas/Alex", data=self._update(
+            voice_effect="none", voice_glitch_chance="0", voice_distance="near"))
+
+        assert not (personas_root / "Alex" / "voice_fx.yaml").exists()
+
+    def test_omitted_fields_keep_the_file(self, client, personas_root):
+        client.put("/api/personas/Alex", data=self._update(**self.FX_FIELDS))
+        client.put("/api/personas/Alex", data=self._update())  # an older client
+
+        assert self._fx(personas_root).effect == "metallic_speaker"
+
+    def test_partial_fields_fill_the_rest_from_the_file(self, client, personas_root):
+        client.put("/api/personas/Alex", data=self._update(**self.FX_FIELDS))
+        client.put("/api/personas/Alex", data=self._update(voice_distance="far"))
+
+        fx = self._fx(personas_root)
+        assert (fx.effect, fx.glitch_chance, fx.distance) == ("metallic_speaker", 0.08, "far")
+
+    @pytest.mark.parametrize("field, value", [
+        ("voice_effect", "tin_can"), ("voice_distance", "mars"), ("voice_glitch_chance", "1.5"),
+    ])
+    def test_invalid_values_are_rejected_before_anything_is_written(self, client, personas_root, field, value):
+        resp = client.put("/api/personas/Alex", data=self._update(**{**self.FX_FIELDS, field: value}))
+
+        assert resp.status_code == 422
+        assert not (personas_root / "Alex" / "voice_fx.yaml").exists()
+
+    def test_create_with_voice_fx(self, client, personas_root):
+        data = TestCreatePersona()._data(**self.FX_FIELDS)
+        resp = client.post("/api/personas", data=data)
+
+        assert resp.status_code == 201
+        assert self._fx(personas_root, "Data").effect == "metallic_speaker"
+
+    def test_rename_keeps_voice_fx(self, client, personas_root):
+        client.put("/api/personas/Alex", data=self._update(**self.FX_FIELDS))
+        resp = client.put("/api/personas/Alex", data=self._update(name="Alexa"))
+
+        assert resp.status_code == 200
+        assert resp.json()["voice_effect"] == "metallic_speaker"
+
+    def test_editor_options_match_the_backend(self):
+        # The persona editor's <select> options are static HTML; they must
+        # offer exactly the presets and distances voice_fx knows.
+        import re
+        from app.services import voice_fx
+        html = (Path(__file__).parent.parent / "templates" / "index.html").read_text(encoding="utf-8")
+
+        def options(select_id):
+            block = re.search(rf'<select id="{select_id}">(.*?)</select>', html, re.S).group(1)
+            return re.findall(r'<option value="([^"]*)"', block)
+
+        assert options("pf-voice-effect") == ["none", *voice_fx.PRESETS]
+        assert options("pf-voice-distance") == list(voice_fx.DISTANCES)
