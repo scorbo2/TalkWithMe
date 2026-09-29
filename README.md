@@ -496,6 +496,47 @@ Adding or modifying text here takes effect immediately on save - no restart is n
 Remember that the "echo chamber" feature bypasses the LLM entirely, so the
 global prompt has no effect there.
 
+## Expressive speech (voice direction and vocal events)
+
+With a TTS engine that can take a voice instruction together with the reference
+clip (currently BreezeBlue in tts-serve), personas can direct their own voice
+sentence by sentence. Enable **Expressive speech** in the general Settings dialog.
+
+The LLM is then told about two kinds of markup (appended after the global system prompt):
+
+- **Voice direction** in curly braces at the start of a sentence, e.g.
+  `{coldly, slowly} Well done.` It becomes the TTS instruction for that sentence
+  and the following ones, until the next direction, replacing the static
+  `instruction` from the TTS parameters. The braces are hidden in the chat.
+- **Vocal events** in round brackets, e.g. `That went well (laugh).` The engine
+  performs them; they stay visible in the chat. The allowed words are listed in
+  `app/services/expressive.py` (`VOCAL_EVENTS`); other parentheses are unwrapped so
+  the voice never reads out a tag.
+
+With any other TTS engine the option does nothing harmful: the LLM is not told
+about the markup, and any markup that still appears is stripped before synthesis.
+
+## Voice effects
+
+Each persona can get an audio effect on top of its TTS voice, set in the persona editor
+(**Voice Effect**, **Random Glitches**, **Default Distance**) and stored in the persona's
+`voice_fx.yaml`:
+
+- **Voice Effect**: a speaker coloration, e.g. *Metallic speaker* (a small, overdriven
+  speaker in a metal housing) or *Small speaker*.
+- **Random Glitches**: the share of sentences that crackle and distort for a moment
+  (only with a voice effect).
+- **Default Distance**: close, normal, across the room, far away, or muffled (behind a door,
+  in a pocket).
+
+With [expressive speech](#expressive-speech-voice-direction-and-vocal-events) enabled,
+personas can also change the distance per sentence (`{calling, from far away} ...`) and a
+persona with a voice effect can glitch on purpose with `(glitch)`.
+
+The effects are rendered with **ffmpeg**, which must be installed and on the `PATH`
+(`sudo apt install ffmpeg`, `brew install ffmpeg`, or `winget install ffmpeg`). Without it
+the audio is played unchanged and a warning is logged once.
+
 ## Chat persistence
 
 Each chat room persists its chat history to a dedicated subdirectory in the top-level `chatrooms` directory.

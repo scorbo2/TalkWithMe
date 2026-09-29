@@ -146,6 +146,7 @@ class TestGeneralSettingsRequestPartialUpdate:
         assert req.model_dump() == {
             "persona_name_mentions": None,
             "max_persona_replies": None,
+            "expressive_speech": None,
             "max_turns_for_context": None,
             "show_tool_calls": None,
             "enable_persona_memories": None,

@@ -59,6 +59,7 @@ async function loadGenSettingsIntoForm() {
         }
         const data = await resp.json();
         gsfMaxPersonaReplies.value = data.general.max_persona_replies ?? 1;
+        gsfExpressiveSpeech.checked = data.general.expressive_speech ?? false;
         gsfPersonaNameMentions.checked = data.general.persona_name_mentions ?? true;
         gsfMaxTurnsForContext.value = data.general.max_turns_for_context ?? 6;
         gsfShowToolCalls.checked = data.general.show_tool_calls ?? true;
@@ -113,6 +114,7 @@ async function submitGenSettings(e) {
         general: {
             persona_name_mentions: gsfPersonaNameMentions.checked,
             max_persona_replies: maxReplies,
+            expressive_speech: gsfExpressiveSpeech.checked,
             max_turns_for_context: maxTurns,
             show_tool_calls: gsfShowToolCalls.checked,
             enable_persona_memories: gsfEnablePersonaMemories.checked,
@@ -140,6 +142,7 @@ async function submitGenSettings(e) {
         personaNameMentionsEnabled = gsfPersonaNameMentions.checked;
         maxPersonaReplies = maxReplies;
         maxTurnsForContext = maxTurns;
+        expressiveSpeechEnabled = gsfExpressiveSpeech.checked;
 
         closeGenSettings();
     } catch (err) {

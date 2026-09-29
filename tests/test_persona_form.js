@@ -226,6 +226,9 @@ function detailFixture({ avatarOnServer = true, audioOnServer = true, memorySize
         allow_tool_calls: false,
         tts_capable: audioOnServer,
         memory_size: memorySize,
+        voice_effect: "metallic_speaker",
+        voice_glitch_chance: 0.08,
+        voice_distance: "room",
     };
 }
 
@@ -593,4 +596,61 @@ test("submitPersonaForm_invalidMemorySize_showsErrorAndSendsNoRequest", async ()
         assert.ok(errEl.textContent.includes("Memory size"), `unexpected error for ${JSON.stringify(bad)}: ${errEl.textContent}`);
         assert.equal(mutationCall(h), undefined, `request sent for invalid budget ${JSON.stringify(bad)}`);
     }
+});
+
+test("openPersonaForm_editing_loadsVoiceEffects_andSaveSendsThemBack", async () => {
+    // GIVEN a persona with voice effects on the server:
+    const h = createFormHarness();
+    await openEditForm(h);
+
+    // THEN the fields show them (glitch chance as a percentage):
+    assert.equal(h.elementById("pf-voice-effect").value, "metallic_speaker");
+    assert.equal(String(h.elementById("pf-voice-glitch").value), "8");
+    assert.equal(h.elementById("pf-voice-distance").value, "room");
+
+    // WHEN the user saves without touching them:
+    await h.sandbox.submitPersonaForm({ preventDefault() {} });
+    assertNoFormError(h);
+
+    // THEN the same values go out (chance back as a fraction):
+    const form = mutationCall(h).body;
+    assert.equal(form.get("voice_effect"), "metallic_speaker");
+    assert.equal(form.get("voice_glitch_chance"), "0.08");
+    assert.equal(form.get("voice_distance"), "room");
+});
+
+test("submitPersonaForm_voiceEffectsEdited_sendsEditedValues", async () => {
+    const h = createFormHarness();
+    await openEditForm(h);
+
+    h.elementById("pf-voice-effect").value = "none";
+    h.elementById("pf-voice-glitch").value = "25";
+    h.elementById("pf-voice-distance").value = "muffled";
+    await h.sandbox.submitPersonaForm({ preventDefault() {} });
+    assertNoFormError(h);
+
+    const form = mutationCall(h).body;
+    assert.equal(form.get("voice_effect"), "none");
+    assert.equal(form.get("voice_glitch_chance"), "0.25");
+    assert.equal(form.get("voice_distance"), "muffled");
+});
+
+test("submitPersonaForm_glitchOutOfRange_showsErrorAndSendsNothing", async () => {
+    const h = createFormHarness();
+    await openEditForm(h);
+
+    h.elementById("pf-voice-glitch").value = "150";
+    await h.sandbox.submitPersonaForm({ preventDefault() {} });
+
+    assert.match(h.elementById("pe-form-error").textContent, /glitches/);
+    assert.equal(mutationCall(h), undefined);
+});
+
+test("openPersonaForm_newPersona_voiceEffectsStartNeutral", async () => {
+    const h = createFormHarness();
+    await h.sandbox.openPersonaForm(null);
+
+    assert.equal(h.elementById("pf-voice-effect").value, "none");
+    assert.equal(String(h.elementById("pf-voice-glitch").value), "0");
+    assert.equal(h.elementById("pf-voice-distance").value, "near");
 });
