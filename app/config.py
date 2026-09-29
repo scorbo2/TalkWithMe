@@ -179,6 +179,11 @@ class GeneralConfig(BaseModel):
     """Application-wide feature flags and preferences."""
     persona_name_mentions: bool = True
     max_persona_replies: int = Field(default=1, ge=1, le=MAX_PERSONA_REPLIES)
+    # False: exactly max_persona_replies personas answer (capped at the room
+    # size). True: max_persona_replies is only the upper limit — after every
+    # reply the router decides who reacts next, or ends the round (see
+    # _pick_next_speaker in routers/chat.py). The echo chamber ignores it.
+    dynamic_replies: bool = False
     max_turns_for_context: int = Field(default=6, ge=1, le=50, description="Max history turns sent to the LLM")
     show_tool_calls: bool = True
     # Global kill-switch for the persona memory feature (docs/
