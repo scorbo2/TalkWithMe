@@ -375,6 +375,12 @@ For lowest lag time, consider OmniVoice as the TTS server. It is considerably fa
 
 By default, only one AI persona in the current chat room will answer your prompt. You can make it feel more like a group chat by turning up the `max_persona_replies` option in `settings.yaml` (or by visiting the settings dialog). You can choose any number between 1 and 12. The given number of AI personas will answer your prompt (or reply to the persona who responded before them). Your personas may argue amongst themselves, depending on their respective system prompts!
 
+With **Dynamic replies** enabled (general Settings dialog, or `dynamic_replies: true`), that
+number becomes an upper limit instead: after each reply the LLM decides who would naturally
+react next, or hands the conversation back to you. A persona may speak again after someone
+else, so two personas can go back and forth. To keep rounds from always running to the limit,
+each further reply is a little less likely (for a limit of 4: 100 %, 67 %, 33 %).
+
 ## MCP tools (optional)
 
 If you want your personas to be able to *do* things — fetch a web page, query a database, check the weather — you can connect one or more [MCP (Model Context Protocol)](https://modelcontextprotocol.io) servers. When a persona with tools enabled replies, TalkWithMe runs an agentic loop: the LLM may request tool calls, TalkWithMe executes them against the configured MCP servers, feeds the results back to the LLM, and repeats until the LLM produces a final text answer.

@@ -59,6 +59,18 @@ def _resolve_room_personas(chat_room: str) -> list[str]:
 # Persona router — asks the LLM to pick the best responder
 # ---------------------------------------------------------------------------
 
+def _recent_context() -> str:
+    """The last max_turns_for_context turns as "User: ..." / "<Persona>: ..." lines."""
+    max_context = get_settings().general.max_turns_for_context
+    lines = []
+    for msg in session.history[-max_context:]:
+        if msg.role == "user":
+            lines.append(f"User: {msg.content}")
+        else:
+            lines.append(f"{msg.persona}: {msg.content}")
+    return "\n".join(lines)
+
+
 def _build_router_prompt(user_message: str, chat_room: str) -> list[dict]:
     """Build a minimal prompt that asks the LLM to pick a persona by name."""
     personas_config = get_personas().personas
@@ -71,16 +83,7 @@ def _build_router_prompt(user_message: str, chat_room: str) -> list[dict]:
         f"- {p.name}: {p.router_hints}" for p in active_personas
     )
 
-    # Include last N conversation turns for context
-    max_context = get_settings().general.max_turns_for_context
-    recent = session.history[-max_context:]
-    context_lines = []
-    for msg in recent:
-        if msg.role == "user":
-            context_lines.append(f"User: {msg.content}")
-        else:
-            context_lines.append(f"{msg.persona}: {msg.content}")
-    context = "\n".join(context_lines)
+    context = _recent_context()
 
     system = (
         "You are a conversation router. Your ONLY job is to pick the best "
@@ -131,6 +134,82 @@ async def _pick_persona(who_answers: str, user_message: str, chat_room: str) -> 
     # Unknown value — fall back to random
     logger.info("Unrecognized who_answers='%s', falling back to random", who_answers)
     return random.choice(eligible)
+
+
+# ---------------------------------------------------------------------------
+# Dynamic replies — after each reply, the router decides who (if anyone) is next
+# ---------------------------------------------------------------------------
+
+_NO_NEXT_SPEAKER = "NONE"
+
+
+def _build_next_speaker_prompt(chat_room: str, last_speaker: str, replies_so_far: int,
+                               max_replies: int) -> list[dict]:
+    """Prompt asking the LLM who reacts to the last reply, or NONE to end the round."""
+    personas_config = get_personas().personas
+    eligible = _resolve_room_personas(chat_room)
+    candidates = [p for p in personas_config if p.name in eligible and p.name != last_speaker]
+    hints = "\n".join(f"- {p.name}: {p.router_hints}" for p in candidates)
+    choices = ", ".join([p.name for p in candidates] + [_NO_NEXT_SPEAKER])
+
+    system = (
+        "You are directing a group conversation between a user and several personas. "
+        "Decide who, if anyone, speaks next.\n\n"
+        f"Personas who could speak next:\n{hints}\n\n"
+        f"Recent conversation:\n{_recent_context()}\n\n"
+        f"{last_speaker} just spoke. The personas have replied {replies_so_far} time(s) "
+        f"since the user's last message (at most {max_replies}).\n\n"
+        "Pick the persona who would naturally react to what was just said: someone who "
+        "was addressed, contradicted, blamed or mentioned, or who would clearly have "
+        f"something to add. Answer {_NO_NEXT_SPEAKER} when the exchange has reached a natural "
+        "pause, when a question to the user is waiting for an answer, or when nobody "
+        "has a strong reason to speak. Real conversations rarely go on for long without "
+        f"the user: the more replies so far, the more likely {_NO_NEXT_SPEAKER} is right.\n\n"
+        f"Respond with ONLY one of: {choices}. Do not add any explanation."
+    )
+    return [{"role": "system", "content": system}, {"role": "user", "content": "Who speaks next?"}]
+
+
+def _round_continues(replies_so_far: int, max_replies: int) -> bool:
+    """Taper: should the router even be asked for another reply?
+
+    Personas written to react to each other (GLaDOS and Wheatley blame each
+    other in every line) always give the router a reason to continue, so a
+    round would always run to the cap. The chance to go on falls linearly
+    with each reply: the first follow-up is always offered, the last
+    possible one only with 1/(max-1) — for a cap of 4: 100 %, 67 %, 33 %.
+    """
+    if max_replies <= 1 or replies_so_far >= max_replies:
+        return False
+    chance = 1.0 - (replies_so_far - 1) / (max_replies - 1)
+    return random.random() < chance
+
+
+async def _pick_next_speaker(chat_room: str, last_speaker: str, replies_so_far: int,
+                             max_replies: int) -> str | None:
+    """The next dynamic responder, or None to end the round.
+
+    Never the persona that just spoke (no talking to oneself); anyone else in
+    the room may come back, so GLaDOS -> Wheatley -> GLaDOS is possible. An
+    unknown name, NONE, or an LLM failure ends the round: in doubt, the user
+    gets the floor back rather than a random persona.
+    """
+    candidates = [n for n in _resolve_room_personas(chat_room) if n != last_speaker]
+    if not candidates:
+        return None
+    try:
+        prompt = _build_next_speaker_prompt(chat_room, last_speaker, replies_so_far, max_replies)
+        result = await chat_completion(prompt, max_tokens=16)
+    except Exception as exc:
+        logger.warning("Next-speaker call failed (%s), ending the round", exc)
+        return None
+    chosen = result.strip().strip("\"'.")
+    if chosen in candidates:
+        logger.debug("Dynamic replies: %s speaks after %s", chosen, last_speaker)
+        return chosen
+    if chosen.upper() != _NO_NEXT_SPEAKER:
+        logger.info("Next-speaker call returned unknown name '%s', ending the round", chosen)
+    return None
 
 
 # ---------------------------------------------------------------------------
@@ -243,6 +322,14 @@ async def _chat_stream(req: ChatRequest) -> AsyncIterator[str]:
 
     settings = get_settings()
     max_replies = min(settings.general.max_persona_replies, len(eligible))
+    # Echo chamber keeps the fixed plan: it exists to hear every voice speak
+    # the same line, which a "who reacts?" decision would defeat.
+    dynamic = settings.general.dynamic_replies and not room_echo_enabled(get_chatrooms(), req.chat_room)
+    if dynamic:
+        # A persona may speak again after someone else, so the cap is not
+        # limited to the room size here; a one-persona room still ends after
+        # one reply (nobody else to hand over to).
+        max_replies = settings.general.max_persona_replies
 
     # Pick the first persona using the configured strategy
     first_persona_name = await _pick_persona(req.who_answers, req.message, req.chat_room)
@@ -272,9 +359,17 @@ async def _chat_stream(req: ChatRequest) -> AsyncIterator[str]:
     # Plan the full responder sequence up front (first persona from the
     # configured selection strategy, then random non-repeating picks from
     # the remaining eligible personas until the cap or the room runs out).
-    responders = _plan_responders(eligible, first_persona_name, max_replies)
+    # Dynamic replies start with the first persona only and grow one at a
+    # time, after each reply (see _pick_next_speaker).
+    if dynamic:
+        responders = [first_persona_name]
+    else:
+        responders = _plan_responders(eligible, first_persona_name, max_replies)
 
-    for persona_name in responders:
+    index = 0
+    while index < len(responders):
+        persona_name = responders[index]
+        index += 1
         persona = next((p for p in config.personas if p.name == persona_name), None)
         if not persona:
             yield f'data: {json.dumps({"type": "error", "message": f"Persona {persona_name} not found"})}\n\n'
@@ -352,6 +447,12 @@ async def _chat_stream(req: ChatRequest) -> AsyncIterator[str]:
         session.add_assistant_message(full_text, persona_name, assistant_message_id)
 
         yield f'data: {json.dumps({"type": "done", "persona": persona_name, "text": full_text, "message_id": assistant_message_id})}\n\n'
+
+        if dynamic and _round_continues(len(responders), max_replies):
+            next_name = await _pick_next_speaker(
+                req.chat_room, persona_name, len(responders), max_replies)
+            if next_name:
+                responders.append(next_name)
 
     yield f'data: {json.dumps({"type": "complete"})}\n\n'
 
