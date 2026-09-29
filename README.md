@@ -496,6 +496,26 @@ Adding or modifying text here takes effect immediately on save - no restart is n
 Remember that the "echo chamber" feature bypasses the LLM entirely, so the
 global prompt has no effect there.
 
+## Expressive speech (voice direction and vocal events)
+
+With a TTS engine that can take a voice instruction together with the reference
+clip (currently BreezeBlue in tts-serve), personas can direct their own voice
+sentence by sentence. Enable **Expressive speech** in the general Settings dialog.
+
+The LLM is then told about two kinds of markup (appended after the global system prompt):
+
+- **Voice direction** in curly braces at the start of a sentence, e.g.
+  `{coldly, slowly} Well done.` It becomes the TTS instruction for that sentence
+  and the following ones, until the next direction, replacing the static
+  `instruction` from the TTS parameters. The braces are hidden in the chat.
+- **Vocal events** in round brackets, e.g. `That went well (laugh).` The engine
+  performs them; they stay visible in the chat. The allowed words are listed in
+  `app/services/expressive.py` (`VOCAL_EVENTS`); other parentheses are unwrapped so
+  the voice never reads out a tag.
+
+With any other TTS engine the option does nothing harmful: the LLM is not told
+about the markup, and any markup that still appears is stripped before synthesis.
+
 ## Chat persistence
 
 Each chat room persists its chat history to a dedicated subdirectory in the top-level `chatrooms` directory.

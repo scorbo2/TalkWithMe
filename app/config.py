@@ -179,6 +179,11 @@ class GeneralConfig(BaseModel):
     """Application-wide feature flags and preferences."""
     persona_name_mentions: bool = True
     max_persona_replies: int = Field(default=1, ge=1, le=MAX_PERSONA_REPLIES)
+    # Voice direction ({coldly, slowly}) and vocal events ((laugh)) written by
+    # the LLM and performed by the TTS engine — only with an engine that
+    # takes an instruction together with the reference clip (Breeze TTS).
+    # See app/services/expressive.py.
+    expressive_speech: bool = False
     max_turns_for_context: int = Field(default=6, ge=1, le=50, description="Max history turns sent to the LLM")
     show_tool_calls: bool = True
     # Global kill-switch for the persona memory feature (docs/

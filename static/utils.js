@@ -82,3 +82,72 @@ function escapeHtml(str) {
         }[match];
     });
 }
+
+/**
+ * Expressive speech: the vocal events the TTS engine performs. Keep in sync
+ * with VOCAL_EVENTS in app/services/expressive.py (tests/test_expressive.py
+ * compares the two lists).
+ */
+const VOCAL_EVENTS = [
+    "laugh", "cough", "clears throat", "sigh",
+    "laughs", "chuckle", "giggle", "snicker", "scoff", "snort",
+    "gasp", "groan", "grunt", "sniff", "sob", "cry", "scream", "yawn", "sneeze", "hiccup",
+    "hum", "hmm", "uh", "um", "tsk",
+    "inhale", "exhale", "deep breath", "breathes heavily", "pause",
+    "whisper", "whispers", "shouts", "mumbles",
+];
+
+/** The event a whole bracket part names, inflections included (sighing -> sigh). */
+function eventForm(part) {
+    // An event's own name wins over another event's inflection ("laughs").
+    if (VOCAL_EVENTS.includes(part)) return part;
+    for (const event of VOCAL_EVENTS) {
+        const forms = [event, event + "s", event + "es", event + "ing", event + "ed"];
+        if (event.endsWith("e")) forms.push(event.slice(0, -1) + "ing", event.slice(0, -1) + "ed");
+        if (forms.includes(part)) return event;
+    }
+    return null;
+}
+
+/**
+ * {sigh} -> (sigh), {cough, sigh} -> (cough) (sigh): braces holding only
+ * sounds are sounds, never a direction. Mirrors the curly-brace rule of
+ * _bracket_events() in app/services/expressive.py.
+ */
+function eventsOutOfBraces(text) {
+    return text.replace(/\{([^{}]*)\}/g, (tag, inner) => {
+        const parts = inner.trim().toLowerCase()
+            .split(/\s*(?:,|;|\/|\band\b|\bthen\b)\s*/)
+            .filter(Boolean);
+        const events = parts.map(eventForm);
+        if (!parts.length || events.some(e => !e)) return tag;
+        return events.map(e => `(${e})`).join(" ");
+    });
+}
+
+/**
+ * Expressive speech: the chat-bubble view of a reply. Removes {direction}
+ * tags, including a still-unclosed one at the end of a streaming reply (so
+ * a half-received tag never flashes up), and tidies the spaces they leave.
+ * Vocal events like (laugh) stay visible: they read like stage directions.
+ */
+function stripDirectionTags(text) {
+    return eventsOutOfBraces(text)
+        .replace(/\{[^{}]*\}/g, " ")
+        .replace(/\{[^{}]*$/, "")
+        .replace(/[ \t]{2,}/g, " ")
+        .replace(/ +([,.;:!?])/g, "$1")
+        .replace(/^ +/gm, "");
+}
+
+/**
+ * Expressive speech: the direction tags in one sentence.
+ * Returns { first, last } (null when absent): `first` directs this
+ * sentence, `last` carries on to the following ones.
+ */
+function findDirectionTags(text) {
+    const tags = [...eventsOutOfBraces(text).matchAll(/\{([^{}]*)\}/g)]
+        .map(m => m[1].trim())
+        .filter(Boolean);
+    return { first: tags[0] ?? null, last: tags[tags.length - 1] ?? null };
+}

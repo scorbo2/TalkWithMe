@@ -15,8 +15,10 @@ from fastapi.responses import JSONResponse
 
 from app.config import clean_base_url, get_personas, get_settings
 from app.models import TTSRequest, TTSHealthResponse
+from app.services import expressive
 from app.services.tts_client import (
     cached_capabilities,
+    direction_parameter,
     check_tts_health,
     doc_supports_reference_audio,
     encode_reference_audio,
@@ -130,6 +132,21 @@ async def tts_proxy(req: TTSRequest):
             content={"detail": "The connected TTS engine does not support reference-audio voice cloning"},
         )
 
+    # Expressive speech: turn the LLM's markup into what the engine can do.
+    # Judged on the same cached doc (never a fetch here): a cold cache counts
+    # as "cannot direct", so the markup is stripped rather than read aloud.
+    text = req.text
+    instruction = None
+    if get_settings().general.expressive_speech:
+        doc_is_current = cached_url == get_settings().tts.base_url
+        can_direct = doc_is_current and direction_parameter(cached_doc) is not None
+        tag_direction, text = expressive.split_direction(text)
+        text = expressive.prepare_tts_text(text, events_allowed=can_direct)
+        if can_direct:
+            instruction = req.instruction or tag_direction
+        if not text:
+            return JSONResponse(status_code=400, content={"detail": "Nothing to speak once the markup is removed"})
+
     # Load reference audio and transcript
     audio_b64 = encode_reference_audio(persona.reference_audio)
     transcript = read_transcript(persona.reference_audio_transcript)
@@ -137,11 +154,15 @@ async def tts_proxy(req: TTSRequest):
     if not audio_b64 or not transcript:
         return JSONResponse(status_code=503, content={"detail": "TTS reference files unavailable"})
 
+    # instruction only when there is one: keeps the call identical to the
+    # pre-expressive one otherwise.
+    extra = {"instruction": instruction} if instruction else {}
     result = await synthesize(
-        text=req.text,
+        text=text,
         reference_text=transcript,
         audio_base64=audio_b64,
         language=persona.reference_audio_language,
+        **extra,
     )
 
     if not result:

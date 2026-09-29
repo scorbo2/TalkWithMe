@@ -192,6 +192,24 @@ def _advertised_parameter_specs(doc: dict) -> dict:
     return specs
 
 
+# Parameter names an engine may use for a voice instruction: `instruction`
+# (tts-serve's BreezeBlue server), and `instructions` from the tts-serve
+# voice-design proposal (tts-serve issue #41).
+_DIRECTION_PARAMETER_NAMES = ("instruction", "instructions")
+
+
+def direction_parameter(doc: Optional[dict]) -> Optional[str]:
+    """Name of the voice-instruction parameter a cloning engine advertises, or None.
+
+    Only a cloning engine counts: an instruction without a reference clip is
+    voice *design* (a new voice), not direction of the persona's own voice.
+    """
+    if not doc_supports_reference_audio(doc):
+        return None
+    specs = _advertised_parameter_specs(doc)
+    return next((name for name in _DIRECTION_PARAMETER_NAMES if name in specs), None)
+
+
 def _wrong_type_message(name: str, expected: str, value: Any) -> str:
     return f"TTS parameter {name!r} expects {expected}, got {type(value).__name__}"
 
@@ -456,6 +474,7 @@ def build_synthesis_payload(
     audio_base64: Optional[str],
     language: str,
     configured_parameters: Optional[dict],
+    instruction: Optional[str] = None,
 ) -> dict:
     """Build the /synthesize JSON body from a capabilities doc (plan T4).
 
@@ -470,6 +489,11 @@ def build_synthesis_payload(
 
     `configured_parameters` can never override the app-managed fields —
     see _APP_MANAGED_PARAMETER_NAMES.
+
+    `instruction` (expressive speech: a per-sentence voice direction)
+    replaces the configured instruction, under whichever name the engine
+    advertises (see direction_parameter). Without a doc it is dropped: we
+    cannot know the field name, and a wrong guess would 422.
     """
     payload: dict = {"text": text}
     specs = _advertised_parameter_specs(doc) if doc is not None else None
@@ -507,6 +531,12 @@ def build_synthesis_payload(
             continue  # "not set" — let the engine decide
         if advertised(name):
             payload[name] = value
+    if instruction:
+        name = direction_parameter(doc)
+        if name:
+            for other in _DIRECTION_PARAMETER_NAMES:
+                payload.pop(other, None)
+            payload[name] = instruction
     return payload
 
 
@@ -533,8 +563,12 @@ async def synthesize(
     reference_text: str,
     audio_base64: str,
     language: str = "en",
+    instruction: Optional[str] = None,
 ) -> Optional[dict]:
     """Call the TTS server's /synthesize endpoint with a doc-driven payload.
+
+    `instruction` is an optional per-request voice direction (expressive
+    speech), see build_synthesis_payload.
 
     Returns the server's raw response dict (engine extras pass through; the
     frontend only reads `audio_base64`) or None on failure.
@@ -562,7 +596,7 @@ async def synthesize(
     def payload_for(doc: Optional[dict]) -> dict:
         return build_synthesis_payload(
             doc, text, reference_text, audio_base64, language,
-            settings.tts.parameters,
+            settings.tts.parameters, instruction,
         )
 
     try:

@@ -14,6 +14,9 @@ let selectedPersona = null;
 let personaNameMentionsEnabled = true;
 let maxPersonaReplies = 1;
 let maxTurnsForContext = 6;
+// Expressive speech (general.expressive_speech): hide {direction} tags in
+// bubbles and carry them into TTS requests. See app/services/expressive.py.
+let expressiveSpeechEnabled = false;
 let ttsEnabled = false;
 let ttsAvailable = false;
 let ttsStreaming = false;
@@ -44,6 +47,9 @@ let audioPlaybackStopped = false;
 // Streaming TTS state
 let sentenceBuffer = "";
 let currentStreamingPersona = null;
+// The {direction} in force for the reply being streamed: set by a tag,
+// carried to the following sentences, reset on every "start".
+let streamingDirection = null;
 
 // Streaming: decoupled fetch queue and decoded-buffer playback queue
 const ttsRequestQueue = [];
@@ -177,6 +183,7 @@ const genSettingsOverlay = document.getElementById("gen-settings-overlay");
 const genSettingsForm = document.getElementById("gen-settings-form");
 const genSettingsError = document.getElementById("gen-settings-error");
 const gsfMaxPersonaReplies = document.getElementById("gsf-max-persona-replies");
+const gsfExpressiveSpeech = document.getElementById("gsf-expressive-speech");
 const gsfPersonaNameMentions = document.getElementById("gsf-persona-name-mentions");
 const gsfMaxTurnsForContext = document.getElementById("gsf-max-turns-for-context");
 const gsfGlobalSystemPrompt = document.getElementById("gsf-global-system-prompt");

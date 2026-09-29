@@ -224,13 +224,20 @@ function handleSSEEvent(event) {
             if (ttsStreaming) {
                 currentStreamingPersona = event.persona;
                 sentenceBuffer = "";
+                streamingDirection = null;
             }
             break;
         }
         case "token": {
             const bubble = currentAssistantRow && currentAssistantRow.querySelector(".bubble");
             if (bubble) {
-                bubble.textContent += event.token;
+                // The raw reply (with {direction} tags) is kept on the
+                // element; the visible text is derived from it, so a tag
+                // split across tokens never shows up half-rendered.
+                bubble.dataset.raw = (bubble.dataset.raw || "") + event.token;
+                bubble.textContent = expressiveSpeechEnabled
+                    ? stripDirectionTags(bubble.dataset.raw)
+                    : bubble.dataset.raw;
                 scrollToBottom();
             }
 
@@ -720,7 +727,7 @@ function appendPersistedAssistantBubble(msg, roomName) {
 
     const bubble = document.createElement("div");
     bubble.className = "bubble";
-    bubble.textContent = msg.text;
+    bubble.textContent = expressiveSpeechEnabled ? stripDirectionTags(msg.text) : msg.text;
 
     // Add audio playback buttons if this message has audio files
     if (msg.audio && msg.audio.length > 0) {

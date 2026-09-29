@@ -417,6 +417,13 @@
                         </div>
                         <div class="form-row">
                             <label class="settings-checkbox-label">
+                                <input id="gsf-expressive-speech" type="checkbox">
+                                <span>Expressive speech</span>
+                            </label>
+                            <span class="field-hint">Personas direct their own voice ({coldly, slowly}) and add vocal events like (laugh) or (sigh). Needs a TTS engine that takes an instruction with the reference voice (Breeze TTS); with any other engine the markup is stripped and the LLM is not told about it.</span>
+                        </div>
+                        <div class="form-row">
+                            <label class="settings-checkbox-label">
                                 <input id="gsf-persona-name-mentions" type="checkbox">
                                 <span>Auto-select persona on name mention</span>
                             </label>

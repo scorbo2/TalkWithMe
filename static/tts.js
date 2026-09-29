@@ -132,10 +132,16 @@ async function processAudioQueue() {
 function extractSentences(text) {
     const sentences = [];
     const regex = /[^.!?]*[.!?]+/g;
+    // Punctuation inside a {direction} tag, closed or still streaming in,
+    // must not end a sentence: match on a copy with the tags blanked out
+    // (same length, so the indices still slice the original text).
+    const masked = text
+        .replace(/\{[^{}]*\}/g, m => "_".repeat(m.length))
+        .replace(/\{[^{}]*$/, m => "_".repeat(m.length));
     let lastIndex = 0;
     let match;
-    while ((match = regex.exec(text)) !== null) {
-        const s = match[0].trim();
+    while ((match = regex.exec(masked)) !== null) {
+        const s = text.slice(match.index, regex.lastIndex).trim();
         if (s) sentences.push(s);
         lastIndex = regex.lastIndex;
     }
@@ -156,10 +162,21 @@ function accumulateForTTS(token, personaName) {
 
 /** Push a sentence into the fetch queue and kick off the fetch pipeline. */
 function enqueueStreamingTTS(personaName, text) {
+    // Expressive speech: a {direction} directs its own sentence and carries
+    // on to the following ones of the same reply. Stamped at enqueue time,
+    // like the message ID, because the fetches run later. A sentence that
+    // is nothing but a tag only moves the direction on.
+    let instruction = null;
+    if (expressiveSpeechEnabled) {
+        const tags = findDirectionTags(text);
+        instruction = tags.first ?? streamingDirection;
+        if (tags.last) streamingDirection = tags.last;
+        if (!stripDirectionTags(text).trim()) return;
+    }
     // Stamp the current message ID at enqueue time. It was issued by the
     // server in the "start" event, so it is already correct for this
     // response — no backfilling needed when "done" arrives.
-    ttsRequestQueue.push({ personaName, text, messageId: currentAssistantMessageId });
+    ttsRequestQueue.push({ personaName, text, messageId: currentAssistantMessageId, instruction });
     processTTSRequests();
 }
 
@@ -174,7 +191,7 @@ async function processTTSRequests() {
 
     const item = ttsRequestQueue.shift();
     try {
-        const audioBuffer = await fetchTTS(item.personaName, item.text, item.messageId);
+        const audioBuffer = await fetchTTS(item.personaName, item.text, item.messageId, item.instruction);
         if (audioBuffer) {
             // Carry the message ID into the playback queue so the row can be
             // brightened while its sentences play (see processAudioBufferQueue).
@@ -239,12 +256,17 @@ async function processAudioBufferQueue() {
  * @param {string|null} messageId - The message ID this audio belongs to.
  *   Stamped at enqueue time from the "start" event, so it is correct
  *   regardless of when this fetch resolves.
+ * @param {string|null} [instruction] - Expressive speech: the direction
+ *   carried from an earlier sentence (the server reads a tag in the text
+ *   itself). Omitted from the request when null.
  */
-async function fetchTTS(personaName, text, messageId) {
+async function fetchTTS(personaName, text, messageId, instruction = null) {
+    const body = { text, persona_name: personaName };
+    if (instruction) body.instruction = instruction;
     const resp = await fetch("/api/tts", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ text, persona_name: personaName }),
+        body: JSON.stringify(body),
     });
 
     if (!resp.ok) {
