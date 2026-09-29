@@ -17,8 +17,9 @@ from fastapi.responses import StreamingResponse
 from app.config import get_chatrooms, get_personas, get_settings, room_echo_enabled
 from app.models import ChatRequest
 from app.session import session
-from app.services import builtin, persona_store
+from app.services import builtin, expressive, persona_store
 from app.services.llm import chat_completion, stream_chat, stream_chat_with_tools
+from app.services.tts_client import direction_parameter, get_capabilities
 from app.services.tool_registry import get_all_tools
 
 logger = logging.getLogger(__name__)
@@ -223,6 +224,31 @@ def _with_global_system_prompt(system_prompt: str, settings) -> str:
     return system_prompt.rstrip() + "\n\n" + global_prompt
 
 
+async def _delivery_markup_prompt(settings) -> str | None:
+    """The expressive-speech markup rules, when the LLM should use them.
+
+    Only when general.expressive_speech is on AND the connected engine can
+    take a voice direction with the reference clip: teaching the markup to
+    the LLM while e.g. faster-qwen3-tts is loaded would only produce tags the TTS
+    proxy has to strip again. The capabilities doc is normally cached; a
+    cold cache costs one fetch per chat request, not per sentence.
+    """
+    if not (settings.general.expressive_speech and settings.tts.is_active):
+        return None
+    doc = await get_capabilities()
+    if direction_parameter(doc) is None:
+        logger.debug("Expressive speech: the TTS engine takes no voice direction; markup not offered")
+        return None
+    return expressive.delivery_prompt()
+
+
+def _with_delivery_markup(system_prompt: str, markup: str | None) -> str:
+    """Append the markup rules after everything else (global prompt included)."""
+    if not markup:
+        return system_prompt
+    return system_prompt.rstrip() + "\n\n" + markup
+
+
 # ---------------------------------------------------------------------------
 # SSE streaming
 # ---------------------------------------------------------------------------
@@ -243,6 +269,8 @@ async def _chat_stream(req: ChatRequest) -> AsyncIterator[str]:
 
     settings = get_settings()
     max_replies = min(settings.general.max_persona_replies, len(eligible))
+
+    delivery_markup = await _delivery_markup_prompt(settings)
 
     # Pick the first persona using the configured strategy
     first_persona_name = await _pick_persona(req.who_answers, req.message, req.chat_room)
@@ -308,8 +336,8 @@ async def _chat_stream(req: ChatRequest) -> AsyncIterator[str]:
         else:
             # Normal path: stream LLM response (history already includes prior personas' replies)
             messages = session.build_llm_messages(
-                system_prompt=_with_global_system_prompt(
-                    _system_prompt_with_memories(persona, settings), settings),
+                system_prompt=_with_delivery_markup(_with_global_system_prompt(
+                    _system_prompt_with_memories(persona, settings), settings), delivery_markup),
                 responding_persona=persona_name,
                 max_turns_for_context=settings.general.max_turns_for_context,
             )

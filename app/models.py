@@ -57,6 +57,15 @@ class TTSRequest(BaseModel):
     """Proxy request to the TTS server."""
     text: str = Field(..., min_length=1, description="Text to synthesize")
     persona_name: str = Field(..., description="Which persona to synthesize for")
+    instruction: Optional[str] = Field(
+        default=None,
+        max_length=500,
+        description=(
+            "Voice direction for this sentence (expressive speech). Used only "
+            "when general.expressive_speech is on and the engine takes an "
+            "instruction with a reference clip; ignored otherwise."
+        ),
+    )
 
 
 class STTRequest(BaseModel):
@@ -221,6 +230,7 @@ class GeneralSettingsRequest(BaseModel):
     """
     persona_name_mentions: Optional[bool] = None
     max_persona_replies: Optional[int] = Field(default=None, ge=1, le=MAX_PERSONA_REPLIES)
+    expressive_speech: Optional[bool] = None
     max_turns_for_context: Optional[int] = Field(default=None, ge=1, le=50)
     show_tool_calls: Optional[bool] = None
     enable_persona_memories: Optional[bool] = None
@@ -266,6 +276,7 @@ class GeneralSettingsResponse(BaseModel):
     """General configuration for the frontend."""
     persona_name_mentions: bool
     max_persona_replies: int
+    expressive_speech: bool
     max_turns_for_context: int
     show_tool_calls: bool
     enable_persona_memories: bool
