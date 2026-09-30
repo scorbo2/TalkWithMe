@@ -338,7 +338,8 @@ function createHarness() {
         // the inter-sentence gap and the queue re-entry delays.
         setTimeout,
         clearTimeout,
-        // sendMessage() generates the user message ID with crypto.randomUUID().
+        // sendMessage() generates the user message ID with generateMessageId()
+        // (utils.js), which uses crypto.randomUUID() when it exists.
         crypto,
         TextDecoder,
         TextEncoder,

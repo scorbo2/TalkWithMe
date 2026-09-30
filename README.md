@@ -360,7 +360,7 @@ If your reference audio is in some other language, you must specify the language
 
 ## Streaming TTS responses
 
-If `streaming` is enabled in the TTS configuration, text responses from AI personas will be chunked into sentences using common punctuation, and each sentence will be queued up as a separate TTS request. A separate audio playback queue is used to queue up and play the responses sequentially. 
+If `streaming` is enabled in the TTS configuration, text responses from AI personas will be chunked into sentences using common punctuation and line breaks (so each list item is its own chunk), and each sentence will be queued up as a separate TTS request. Periods that don't end a sentence - titles like "Mrs. Hudson", initials, "e.g.", numbered-list markers, decimals - don't split it. A separate audio playback queue is used to queue up and play the responses sequentially. 
 
 - Advantage: the initial lag time before playback begins is reduced. The user only has to wait for the first sentence to generate and not the entire text response. As each sentence plays, the next sentence is being processed by the TTS service. Ideally, the lag between sentences is minimal.
 - Disadvantage: sentence length variance can lead to large pauses between sentences. A short sentence followed by a long sentence is the worst case scenario, because the short sentence will process and play very quickly, but the longer sentence will take much longer for the TTS server to process.
@@ -676,6 +676,8 @@ standalone script under `impl/` with per-engine install notes.
   - MCP Server access control (#138)
   - Chat bubbles should "glow" when speaking (#139)
   - Add a "stop" button to halt audio output (#142)
+- **Work in progress, add release date when ready** v7.3
+  - Bug fix: Send button throws error when using http over LAN (#145)
 
 ## License
 
