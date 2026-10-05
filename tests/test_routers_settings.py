@@ -75,6 +75,7 @@ class TestGetSettings:
         assert body["general"] == {
             "persona_name_mentions": True,
             "max_persona_replies": 1,
+            "dynamic_replies": False,
             "max_turns_for_context": 6,
             "show_tool_calls": True,
             "enable_persona_memories": True,
@@ -122,6 +123,7 @@ class TestUpdateSettings:
         assert resp.json()["general"] == {
             "persona_name_mentions": False,   # preserved
             "max_persona_replies": 3,         # preserved
+            "dynamic_replies": False,         # preserved
             "max_turns_for_context": 12,      # preserved
             "show_tool_calls": False,         # updated
             "enable_persona_memories": False, # preserved
@@ -149,6 +151,7 @@ class TestUpdateSettings:
         assert resp.json()["general"] == {
             "persona_name_mentions": False,
             "max_persona_replies": 4,
+            "dynamic_replies": False,
             "max_turns_for_context": 9,
             "show_tool_calls": False,
             "enable_persona_memories": False,

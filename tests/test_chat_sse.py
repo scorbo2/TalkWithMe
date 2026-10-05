@@ -6,6 +6,8 @@ are exercised for real.
 """
 
 import uuid
+
+import pytest
 from pathlib import Path
 
 import app.config as app_config
@@ -411,6 +413,187 @@ class TestMultiPersonaReplies:
         # ...the second also saw Alex's answer, reformatted as a prefixed
         # "user" turn (another persona's words must not look like its own).
         assert seen_contexts[1] == [("user", "hello there"), ("user", "[Alex]: hi")]
+
+
+# ---------------------------------------------------------------------------
+# Dynamic replies (general.dynamic_replies — the router picks who reacts next)
+# ---------------------------------------------------------------------------
+
+def _stub_next_speakers(monkeypatch, answers, seen=None):
+    """chat_completion stub answering the next-speaker calls in order.
+
+    Only the next-speaker prompt is answered from `answers` (the first
+    persona comes from an explicit who_answers in these tests); `seen`
+    collects each prompt's system text.
+    """
+    queue = list(answers)
+
+    async def fake_completion(prompt, max_tokens=16):
+        if seen is not None:
+            seen.append(prompt[0]["content"])
+        return queue.pop(0) if queue else "NONE"
+
+    monkeypatch.setattr(chat_router, "chat_completion", fake_completion)
+
+
+class TestDynamicReplies:
+    @staticmethod
+    def _no_taper(monkeypatch):
+        # random.random() < chance always holds: the router alone decides.
+        monkeypatch.setattr(chat_router.random, "random", lambda: 0.0)
+
+    @pytest.fixture(autouse=True)
+    def _router_decides(self, monkeypatch, request):
+        if "taper" not in request.node.name:
+            self._no_taper(monkeypatch)
+
+    def _personas(self, events):
+        return [e["persona"] for e in sse_events_by_type(events, "start")]
+
+    def test_taper_chance_falls_with_each_reply(self, monkeypatch):
+        # Sweep random() over [0, 1) and count how often the round goes on.
+        chances = []
+        for n in range(1, 5):
+            hits = 0
+            for i in range(1000):
+                monkeypatch.setattr(chat_router.random, "random", lambda i=i: i / 1000)
+                hits += chat_router._round_continues(n, 4)
+            chances.append(hits / 1000)
+        assert chances == [1.0, 0.667, 0.334, 0.0]
+
+    def test_taper_no_follow_up_with_a_cap_of_one(self):
+        assert chat_router._round_continues(1, 1) is False
+
+    def test_taper_ends_the_round_without_asking_the_router(self, client, monkeypatch):
+        _patch_general(monkeypatch, max_persona_replies=4, dynamic_replies=True)
+        monkeypatch.setattr(chat_router.random, "random", lambda: 0.99)
+        seen = []
+        _stub_next_speakers(monkeypatch, ["Luna", "Alex", "Luna"], seen)
+        _stub_stream(monkeypatch, ["hi"])
+
+        events = _chat(client, who_answers="Alex", chat_room="TNG")
+
+        # Reply 1 -> always offered (Luna); reply 2 -> 0.99 >= 67 %: stop.
+        assert self._personas(events) == ["Alex", "Luna"]
+        assert len(seen) == 1
+
+    def test_router_decides_who_follows_and_none_ends_the_round(self, client, monkeypatch):
+        _patch_general(monkeypatch, max_persona_replies=4, dynamic_replies=True)
+        _stub_next_speakers(monkeypatch, ["Luna", "NONE"])
+        _stub_stream(monkeypatch, ["hi"])
+
+        events = _chat(client, who_answers="Alex", chat_room="TNG")
+
+        assert self._personas(events) == ["Alex", "Luna"]
+        assert [e["type"] for e in events][-1] == "complete"
+
+    def test_persona_may_speak_again_after_someone_else(self, client, monkeypatch):
+        _patch_general(monkeypatch, max_persona_replies=5, dynamic_replies=True)
+        _stub_next_speakers(monkeypatch, ["Luna", "Alex", "NONE"])
+        _stub_stream(monkeypatch, ["hi"])
+
+        events = _chat(client, who_answers="Alex", chat_room="TNG")
+
+        assert self._personas(events) == ["Alex", "Luna", "Alex"]
+
+    def test_max_persona_replies_is_the_upper_limit(self, client, monkeypatch):
+        # Not capped at the room size (2): re-entry makes 3 replies possible.
+        _patch_general(monkeypatch, max_persona_replies=3, dynamic_replies=True)
+        seen = []
+        _stub_next_speakers(monkeypatch, ["Luna", "Alex", "Luna", "Alex"], seen)
+        _stub_stream(monkeypatch, ["hi"])
+
+        events = _chat(client, who_answers="Alex", chat_room="TNG")
+
+        assert self._personas(events) == ["Alex", "Luna", "Alex"]
+        assert len(seen) == 2  # no pointless call once the cap is reached
+
+    def test_last_speaker_is_never_picked_again_directly(self, client, monkeypatch):
+        _patch_general(monkeypatch, max_persona_replies=4, dynamic_replies=True)
+        seen = []
+        _stub_next_speakers(monkeypatch, ["Alex"], seen)  # Alex just spoke
+        _stub_stream(monkeypatch, ["hi"])
+
+        events = _chat(client, who_answers="Alex", chat_room="TNG")
+
+        assert self._personas(events) == ["Alex"]
+        assert "Respond with ONLY one of: Luna, NONE." in seen[0]
+        assert "- Alex:" not in seen[0]  # only candidates' hints are listed
+
+    def test_unknown_name_ends_the_round(self, client, monkeypatch):
+        _patch_general(monkeypatch, max_persona_replies=4, dynamic_replies=True)
+        _stub_next_speakers(monkeypatch, ["Q"])
+        _stub_stream(monkeypatch, ["hi"])
+
+        events = _chat(client, who_answers="Alex", chat_room="TNG")
+
+        assert self._personas(events) == ["Alex"]
+
+    def test_quotes_and_trailing_dot_are_tolerated(self, client, monkeypatch):
+        _patch_general(monkeypatch, max_persona_replies=2, dynamic_replies=True)
+        _stub_next_speakers(monkeypatch, [' "Luna." '])
+        _stub_stream(monkeypatch, ["hi"])
+
+        events = _chat(client, who_answers="Alex", chat_room="TNG")
+
+        assert self._personas(events) == ["Alex", "Luna"]
+
+    def test_llm_failure_ends_the_round(self, client, monkeypatch):
+        _patch_general(monkeypatch, max_persona_replies=4, dynamic_replies=True)
+        _stub_stream(monkeypatch, ["hi"])
+        _stub_completion_error(monkeypatch)
+
+        events = _chat(client, who_answers="Alex", chat_room="TNG")
+
+        assert self._personas(events) == ["Alex"]
+        assert [e["type"] for e in events][-1] == "complete"
+
+    def test_one_persona_room_asks_nobody(self, client, monkeypatch):
+        _patch_general(monkeypatch, max_persona_replies=4, dynamic_replies=True)
+        _patch_chatrooms(monkeypatch, [ChatRoom(name="Solo", persona_names=["Luna"])])
+        seen = []
+        _stub_next_speakers(monkeypatch, ["Luna"], seen)
+        _stub_stream(monkeypatch, ["hi"])
+
+        events = _chat(client, who_answers="random", chat_room="Solo")
+
+        assert self._personas(events) == ["Luna"]
+        assert seen == []
+
+    def test_prompt_sees_the_reply_that_was_just_given(self, client, monkeypatch):
+        _patch_general(monkeypatch, max_persona_replies=2, dynamic_replies=True)
+        seen = []
+        _stub_next_speakers(monkeypatch, ["NONE"], seen)
+        _stub_stream(monkeypatch, ["the moron did it"])
+
+        _chat(client, who_answers="Alex", chat_room="TNG")
+
+        assert "Alex: the moron did it" in seen[0]
+        assert "Alex just spoke" in seen[0]
+        assert "replied 1 time(s)" in seen[0]
+
+    def test_echo_chamber_keeps_the_fixed_count(self, client, monkeypatch):
+        _patch_general(monkeypatch, max_persona_replies=2, dynamic_replies=True)
+        _patch_chatrooms(monkeypatch, [
+            ChatRoom(name="Echo", persona_names=["Alex", "Luna"], echo_chamber=True)])
+        seen = []
+        _stub_next_speakers(monkeypatch, ["NONE"], seen)
+
+        events = _chat(client, who_answers="Alex", chat_room="Echo")
+
+        assert self._personas(events) == ["Alex", "Luna"]
+        assert seen == []
+
+    def test_off_by_default_keeps_the_fixed_plan(self, client, monkeypatch):
+        _patch_general(monkeypatch, max_persona_replies=2)
+        seen = []
+        _stub_next_speakers(monkeypatch, ["NONE"], seen)
+        _stub_stream(monkeypatch, ["hi"])
+
+        events = _chat(client, who_answers="Alex", chat_room="TNG")
+
+        assert self._personas(events) == ["Alex", "Luna"]
+        assert seen == []
 
 
 # ---------------------------------------------------------------------------

@@ -221,6 +221,7 @@ class GeneralSettingsRequest(BaseModel):
     """
     persona_name_mentions: Optional[bool] = None
     max_persona_replies: Optional[int] = Field(default=None, ge=1, le=MAX_PERSONA_REPLIES)
+    dynamic_replies: Optional[bool] = None
     max_turns_for_context: Optional[int] = Field(default=None, ge=1, le=50)
     show_tool_calls: Optional[bool] = None
     enable_persona_memories: Optional[bool] = None
@@ -266,6 +267,7 @@ class GeneralSettingsResponse(BaseModel):
     """General configuration for the frontend."""
     persona_name_mentions: bool
     max_persona_replies: int
+    dynamic_replies: bool
     max_turns_for_context: int
     show_tool_calls: bool
     enable_persona_memories: bool

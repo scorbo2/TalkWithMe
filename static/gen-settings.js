@@ -1,7 +1,7 @@
 /**
  * gen-settings.js — General Settings modal: load and persist app-level config.
  *
- * Handles max_persona_replies and persona_name_mentions through the general
+ * Handles max_persona_replies, dynamic_replies and persona_name_mentions through the general
  * settings overlay. Reads/writes via the existing /api/settings endpoint.
  */
 
@@ -59,6 +59,7 @@ async function loadGenSettingsIntoForm() {
         }
         const data = await resp.json();
         gsfMaxPersonaReplies.value = data.general.max_persona_replies ?? 1;
+        gsfDynamicReplies.checked = data.general.dynamic_replies ?? false;
         gsfPersonaNameMentions.checked = data.general.persona_name_mentions ?? true;
         gsfMaxTurnsForContext.value = data.general.max_turns_for_context ?? 6;
         gsfShowToolCalls.checked = data.general.show_tool_calls ?? true;
@@ -113,6 +114,7 @@ async function submitGenSettings(e) {
         general: {
             persona_name_mentions: gsfPersonaNameMentions.checked,
             max_persona_replies: maxReplies,
+            dynamic_replies: gsfDynamicReplies.checked,
             max_turns_for_context: maxTurns,
             show_tool_calls: gsfShowToolCalls.checked,
             enable_persona_memories: gsfEnablePersonaMemories.checked,
