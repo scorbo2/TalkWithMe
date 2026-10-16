@@ -449,16 +449,25 @@ function closePersonaPicker() {
 function renderPersonaPickerList() {
     ppListEl.innerHTML = "";
 
-    // Get personas already in this room
+    // Personas already in this room are NOT offered — the whole point of
+    // the dialog is picking who is missing (the old "(already in room)"
+    // annotation just cluttered the list with unselectable rows). The
+    // exact-name match mirrors applyChatRoomFilter(): both sides come
+    // from the same canonical personas list.
     const alreadyInRoom = new Set(roomPersonas[currentChatRoom] || []);
+    const candidates = personas.filter(p => !alreadyInRoom.has(p.name));
 
     if (personas.length === 0) {
         ppListEl.innerHTML = '<p class="pp-empty">No personas configured.</p>';
         return;
     }
+    if (candidates.length === 0) {
+        ppListEl.innerHTML = '<p class="pp-empty">All configured personas are already in this room.</p>';
+        return;
+    }
 
     // Render alphabetically (case-insensitive), not in creation order.
-    const sorted = [...personas].sort(comparePersonasByName);
+    const sorted = [...candidates].sort(comparePersonasByName);
     for (const p of sorted) {
         const item = document.createElement("div");
         item.className = "pp-list-item";
@@ -489,7 +498,7 @@ function renderPersonaPickerList() {
 
         const descEl = document.createElement("div");
         descEl.className = "pp-list-item-desc";
-        descEl.textContent = alreadyInRoom.has(p.name) ? (p.description || "") + " (already in room)" : (p.description || "");
+        descEl.textContent = p.description || "";
 
         info.appendChild(nameEl);
         info.appendChild(descEl);

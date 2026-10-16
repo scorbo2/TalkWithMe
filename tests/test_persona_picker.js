@@ -6,9 +6,13 @@
  *
  *     node tests/test_persona_picker.js
  *
- * The invariant under test: the picker's avatar bubbles follow the SAME
- * rule as the sidebar and the Persona Editor list — the persona's avatar
- * image (served by the dedicated avatar endpoint) when the persona has
+ * The invariants under test: the picker offers ONLY the personas that are
+ * not already in the room (the old "(already in room)" annotation is gone
+ * — unselectable rows must not clutter the list), with a dedicated empty
+ * state when every configured persona is already present; and the
+ * picker's avatar bubbles follow the SAME rule as the sidebar and the
+ * Persona Editor list — the persona's avatar image (served by the
+ * dedicated avatar endpoint) when the persona has
  * one, and the colored first-initial bubble ONLY as a fallback: no image
  * on the server, or a stale presence flag whose endpoint errors once the
  * browser requests the file. All three lists share renderPersonaAvatar()
@@ -241,19 +245,61 @@ test("renderPersonaPickerList_avatarImageFailsToLoad_fallsBackToInitialBubble", 
     assert.equal(avatar.textContent, "A");
 });
 
-test("renderPersonaPickerList_personaAlreadyInRoom_stillShowsItsAvatarImage", async () => {
-    // The "(already in room)" annotation must not change the avatar rule:
-    // an in-room persona with an image still gets the image bubble.
+test("renderPersonaPickerList_personaAlreadyInRoom_excludedFromListEntirely", async () => {
+    // The dialog exists to pick who is MISSING: a persona already in the
+    // room must not appear at all (not even annotated) — no unselectable
+    // rows to scan past.
     const h = createPickerHarness();
 
+    // GIVEN two personas, one of which is already in the room:
     const ppListEl = renderPickerList(
         h,
-        [summaryFixture({ name: "Ada Lovelace", avatarImage: true })],
+        [summaryFixture({ name: "Ada Lovelace" }), summaryFixture({ name: "Bruno Nova" })],
         { inRoom: ["Ada Lovelace"] },
     );
 
-    const avatar = avatarBubbleOf(ppListEl, 0);
-    assert.equal(avatar.children.length, 1, "avatar bubble should contain exactly the image");
-    assert.equal(avatar.children[0].tagName, "img");
-    assert.equal(avatar.textContent, "");
+    // THEN only the not-yet-present persona is offered:
+    assert.equal(ppListEl.children.length, 1, "in-room persona must be excluded from the list");
+    const item = ppListEl.children[0];
+    assert.equal(item.dataset.name, "Bruno Nova");
+    // ...and no "(already in room)" annotation survives anywhere in its
+    // info block (name + desc live inside .pp-list-item-info):
+    const info = item.children.find((c) => c.className === "pp-list-item-info");
+    assert.ok(info, "pp-list-item has no .pp-list-item-info child");
+    const nameEl = info.children.find((c) => c.className === "pp-list-item-name");
+    assert.equal(nameEl.textContent, "Bruno Nova");
+    const descEl = info.children.find((c) => c.className === "pp-list-item-desc");
+    assert.ok(!descEl.textContent.includes("already in room"), `annotation still present: ${descEl.textContent}`);
+});
+
+test("renderPersonaPickerList_allPersonasAlreadyInRoom_showsDedicatedEmptyState", async () => {
+    // GIVEN every configured persona is already in the room:
+    const h = createPickerHarness();
+    const ppListEl = renderPickerList(
+        h,
+        [summaryFixture({ name: "Ada Lovelace" }), summaryFixture({ name: "Bruno Nova" })],
+        { inRoom: ["Ada Lovelace", "Bruno Nova"] },
+    );
+
+    // THEN the list is empty with a message that says WHY (distinct from
+    // "no personas configured" — personas exist, they're just all here):
+    assert.equal(ppListEl.children.length, 0, "no rows may be rendered");
+    assert.ok(
+        ppListEl.innerHTML.includes("already in this room"),
+        `unexpected empty state: ${ppListEl.innerHTML}`,
+    );
+});
+
+test("renderPersonaPickerList_noPersonasConfigured_showsNoPersonasEmptyState", async () => {
+    // GIVEN no personas exist at all:
+    const h = createPickerHarness();
+    const ppListEl = renderPickerList(h, []);
+
+    // THEN the original "nothing configured" message still shows (the
+    // all-in-room message must not mask it):
+    assert.equal(ppListEl.children.length, 0);
+    assert.ok(
+        ppListEl.innerHTML.includes("No personas configured"),
+        `unexpected empty state: ${ppListEl.innerHTML}`,
+    );
 });
