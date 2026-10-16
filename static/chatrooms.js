@@ -473,10 +473,12 @@ function renderPersonaPickerList() {
             togglePickerSelection(p.name, checkbox.checked, item);
         });
 
+        // Same avatar rule as the sidebar and the Persona Editor list:
+        // the persona's image when it has one, the colored first-initial
+        // bubble only as a fallback (renderPersonaAvatar in utils.js).
         const avatar = document.createElement("div");
         avatar.className = "pp-list-item-avatar";
-        avatar.style.backgroundColor = p.avatar_color;
-        avatar.textContent = p.name.charAt(0).toUpperCase();
+        renderPersonaAvatar(avatar, p);
 
         const info = document.createElement("div");
         info.className = "pp-list-item-info";

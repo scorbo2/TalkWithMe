@@ -61,24 +61,11 @@ function renderPersonaList(list, showRemoveButtons) {
         card.className = "persona-card";
         card.dataset.name = p.name;
 
-        // Avatar
+        // Avatar: image when the persona has one, colored initial otherwise
+        // (shared with the Persona Editor list via utils.js).
         const avatar = document.createElement("div");
         avatar.className = "persona-avatar";
-        avatar.style.backgroundColor = p.avatar_color;
-
-        if (p.avatar_image) {
-            const img = document.createElement("img");
-            img.src = `/api/personas/${encodeURIComponent(p.name)}/avatar`;
-            img.alt = p.name;
-            img.onerror = () => {
-                // Fallback to initial on error
-                avatar.innerHTML = "";
-                avatar.textContent = p.name.charAt(0).toUpperCase();
-            };
-            avatar.appendChild(img);
-        } else {
-            avatar.textContent = p.name.charAt(0).toUpperCase();
-        }
+        renderPersonaAvatar(avatar, p);
 
         // Mute indicator if not TTS-capable
         if (!p.tts_capable) {
@@ -217,10 +204,11 @@ async function renderPersonaEditorList() {
             const item = document.createElement("div");
             item.className = "pe-list-item";
 
+            // Same avatar rule as the sidebar: the persona's image when it
+            // has one, the colored first-initial bubble only as a fallback.
             const avatar = document.createElement("div");
             avatar.className = "pe-list-item-avatar";
-            avatar.style.backgroundColor = p.avatar_color;
-            avatar.textContent = p.name.charAt(0).toUpperCase();
+            renderPersonaAvatar(avatar, p);
 
             const info = document.createElement("div");
             info.className = "pe-list-item-info";

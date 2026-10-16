@@ -678,6 +678,8 @@ standalone script under `impl/` with per-engine install notes.
   - Add a "stop" button to halt audio output (#142)
 - **Work in progress, add release date when ready** v7.3
   - Bug fix: Send button throws error when using http over LAN (#145)
+  - Better sentence chunking in streaming mode (#153)
+  - Cosmetic improvements in Persona Editor / Add Persona dialogs (#155)
 
 ## License
 

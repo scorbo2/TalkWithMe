@@ -37,6 +37,39 @@ function extractApiErrorMessage(errBody, status) {
 }
 
 /**
+ * Fill an avatar element with the persona's avatar image, falling back to
+ * the persona's first initial on a colored bubble when no image is set.
+ * Shared by the sidebar and the Persona Editor list so the two render
+ * personas identically and can never drift apart.
+ *
+ * `avatar_image` on the summary/detail payloads is only a presence flag;
+ * the file itself is served by the dedicated avatar endpoint. The flag can
+ * be stale (file deleted behind our back), hence the onerror fallback to
+ * the initial.
+ *
+ * @param {HTMLElement} avatarEl - Round bubble container (gets the persona's
+ *        avatar_color as its background, for the initial fallback).
+ * @param {object} persona - Persona with `name`, `avatar_color`, `avatar_image`.
+ */
+function renderPersonaAvatar(avatarEl, persona) {
+    avatarEl.style.backgroundColor = persona.avatar_color;
+
+    if (persona.avatar_image) {
+        const img = document.createElement("img");
+        img.src = `/api/personas/${encodeURIComponent(persona.name)}/avatar`;
+        img.alt = persona.name;
+        img.onerror = () => {
+            // Flag said yes, endpoint said no — degrade to the initial.
+            avatarEl.innerHTML = "";
+            avatarEl.textContent = persona.name.charAt(0).toUpperCase();
+        };
+        avatarEl.appendChild(img);
+    } else {
+        avatarEl.textContent = persona.name.charAt(0).toUpperCase();
+    }
+}
+
+/**
  * Case-insensitive alphabetical comparator for personas (anything with a
  * `name` property). Pair with Array.prototype.sort, e.g.
  * `[...personas].sort(comparePersonasByName)`.
