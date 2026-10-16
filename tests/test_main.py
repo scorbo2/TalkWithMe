@@ -243,7 +243,7 @@ class TestIndex:
         resp = client.get("/")
         assert resp.status_code == 200
         assert "text/html" in resp.headers["content-type"]
-        assert "TalkWithMe v7.2" in resp.text
+        assert "TalkWithMe v7.3" in resp.text
 
     def test_static_files_mounted(self, client):
         # state.js is the shared-globals module every other frontend file depends on.

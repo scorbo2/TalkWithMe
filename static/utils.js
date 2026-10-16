@@ -37,6 +37,39 @@ function extractApiErrorMessage(errBody, status) {
 }
 
 /**
+ * Fill an avatar element with the persona's avatar image, falling back to
+ * the persona's first initial on a colored bubble when no image is set.
+ * Shared by the sidebar and the Persona Editor list so the two render
+ * personas identically and can never drift apart.
+ *
+ * `avatar_image` on the summary/detail payloads is only a presence flag;
+ * the file itself is served by the dedicated avatar endpoint. The flag can
+ * be stale (file deleted behind our back), hence the onerror fallback to
+ * the initial.
+ *
+ * @param {HTMLElement} avatarEl - Round bubble container (gets the persona's
+ *        avatar_color as its background, for the initial fallback).
+ * @param {object} persona - Persona with `name`, `avatar_color`, `avatar_image`.
+ */
+function renderPersonaAvatar(avatarEl, persona) {
+    avatarEl.style.backgroundColor = persona.avatar_color;
+
+    if (persona.avatar_image) {
+        const img = document.createElement("img");
+        img.src = `/api/personas/${encodeURIComponent(persona.name)}/avatar`;
+        img.alt = persona.name;
+        img.onerror = () => {
+            // Flag said yes, endpoint said no — degrade to the initial.
+            avatarEl.innerHTML = "";
+            avatarEl.textContent = persona.name.charAt(0).toUpperCase();
+        };
+        avatarEl.appendChild(img);
+    } else {
+        avatarEl.textContent = persona.name.charAt(0).toUpperCase();
+    }
+}
+
+/**
  * Case-insensitive alphabetical comparator for personas (anything with a
  * `name` property). Pair with Array.prototype.sort, e.g.
  * `[...personas].sort(comparePersonasByName)`.
@@ -46,6 +79,26 @@ function extractApiErrorMessage(errBody, status) {
  */
 function comparePersonasByName(a, b) {
     return a.name.localeCompare(b.name, undefined, { sensitivity: "base" });
+}
+
+/**
+ * Generate a v4 UUID for a message ID.
+ *
+ * `crypto.randomUUID()` only exists in secure contexts (HTTPS, or the
+ * browser's "localhost" exception) — it's `undefined` when the app is
+ * reached over plain HTTP by IP or hostname (e.g. from another machine on
+ * the LAN with `--host 0.0.0.0`). Falls back to `crypto.getRandomValues()`,
+ * which carries no such restriction.
+ */
+function generateMessageId() {
+    if (typeof crypto !== "undefined" && typeof crypto.randomUUID === "function") {
+        return crypto.randomUUID();
+    }
+    const bytes = crypto.getRandomValues(new Uint8Array(16));
+    bytes[6] = (bytes[6] & 0x0f) | 0x40; // version 4
+    bytes[8] = (bytes[8] & 0x3f) | 0x80; // variant 10xx
+    const hex = Array.from(bytes, (b) => b.toString(16).padStart(2, "0")).join("");
+    return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
 }
 
 /** Escape HTML special characters to prevent XSS in dynamically rendered text. */

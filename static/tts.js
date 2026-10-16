@@ -126,20 +126,63 @@ async function processAudioQueue() {
    ========================================================================== */
 
 /**
- * Split accumulated text into complete sentences (ending with . ! ?)
- * Returns the sentences found and any remaining fragment without a terminal.
+ * Words that take a "." without ending the sentence ("Mrs. Hudson", "vs. them").
+ * Matched lowercase with dots removed. Deliberately short: a missed split only
+ * makes one TTS chunk longer, while a wrong split audibly breaks a sentence.
+ * Dotted forms ("e.g.", "i.e.", "U.S.") and initials are handled by a pattern
+ * in isSentenceEnd(), so they are not listed here.
+ */
+const NON_TERMINAL_ABBREVIATIONS = new Set([
+    "mr", "mrs", "ms", "mx", "dr", "prof", "sr", "jr", "st", "mt",
+    "vs", "etc", "cf", "approx", "fig", "vol",
+]);
+
+/**
+ * Candidate sentence boundaries:
+ *   - . ! ? … (plus any closing quotes/brackets) followed by whitespace. The
+ *     whitespace is required so a streamed "3." / "Mrs." is not cut before the
+ *     next token shows whether it continues ("3.50", "Mrs. Hudson").
+ *   - CJK 。！？ (plus closers), which are not followed by spaces.
+ *   - a line break: list items and paragraphs are separate chunks even
+ *     without punctuation.
+ */
+const SENTENCE_BOUNDARY_RE = /[.!?…]+["'”’»)\]]*(?=\s)|[。！？]+["'”’」』)\]]*|\n/g;
+
+/**
+ * Decide whether the punctuation `punct` really ends the sentence whose text
+ * so far is `before`. Only a lone "." can be a false alarm.
+ */
+function isSentenceEnd(before, punct) {
+    if (punct !== ".") return true;
+    const word = (before.match(/\S+$/) || [""])[0];
+    const bare = word.replace(/^["'“‘«(\[]+/, "");
+    // "1." opening a line or chunk is a numbered-list marker, not a sentence.
+    if (/^\d+$/.test(bare) && before.trim() === word) return false;
+    // Initials and dotted abbreviations: "J. R. R. Tolkien", "U.S.", "e.g.".
+    if (/^(?:[A-Za-z]\.)*[A-Za-z]$/.test(bare)) return false;
+    return !NON_TERMINAL_ABBREVIATIONS.has(bare.replace(/\./g, "").toLowerCase());
+}
+
+/**
+ * Split accumulated text into complete sentences.
+ * Returns the sentences found and the remaining fragment, which is not yet
+ * known to be complete (the caller flushes it when the response is done).
  */
 function extractSentences(text) {
     const sentences = [];
-    const regex = /[^.!?]*[.!?]+/g;
-    let lastIndex = 0;
+    const boundary = new RegExp(SENTENCE_BOUNDARY_RE);
+    let start = 0;
     let match;
-    while ((match = regex.exec(text)) !== null) {
-        const s = match[0].trim();
+    while ((match = boundary.exec(text)) !== null) {
+        if (match[0] !== "\n" && !isSentenceEnd(text.slice(start, match.index), match[0])) {
+            continue;
+        }
+        const end = match.index + match[0].length;
+        const s = text.slice(start, end).trim();
         if (s) sentences.push(s);
-        lastIndex = regex.lastIndex;
+        start = end;
     }
-    return { sentences, remaining: text.slice(lastIndex) };
+    return { sentences, remaining: text.slice(start) };
 }
 
 /**
