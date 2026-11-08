@@ -115,7 +115,8 @@ def raw_asgi_get():
     handler through a normal request. uvicorn instead sets scope["path"]
     to the percent-decoded target and scope["raw_path"] to the raw bytes —
     that combination is what makes "..%2Fx" a traversal at all. This
-    helper reproduces uvicorn's scope construction (h11_impl.py) exactly.
+    helper reproduces uvicorn's scope construction (h11_impl.py) exactly,
+    the receive() channel included (see below).
     """
     import asyncio
 
@@ -124,7 +125,13 @@ def raw_asgi_get():
     def _raw_asgi_get(path: str, raw_path: bytes | None = None):
         scope = {
             "type": "http",
-            "asgi": {"version": "3.0"},
+            # spec_version 2.3 is what uvicorn actually sends, and it is not
+            # cosmetic: below ASGI 2.4 a FileResponse streams the file in a
+            # sibling task while this channel is watched for "http.disconnect"
+            # (starlette/responses.py, FileResponse.__call__). Omitting the key
+            # takes the same branch (it defaults to "2.0"), but naming it keeps
+            # the fake honest about which code path the app is exercising.
+            "asgi": {"version": "3.0", "spec_version": "2.3"},
             "http_version": "1.1",
             "method": "GET",
             "scheme": "http",
@@ -137,8 +144,31 @@ def raw_asgi_get():
             "server": ("testserver", 80),
         }
 
+        # The two halves of the receive() channel, in order:
+        #   1. the request body — a GET has a single empty, complete message;
+        #   2. then the connection sits open until the response is finished,
+        #      and ONLY then does the server report "http.disconnect".
+        # That is uvicorn's blocking receive_queue.get(), and Starlette's own
+        # TestClient honours the same contract (it awaits response_complete
+        # before disconnecting). Skipping step 2 — returning a body message
+        # immediately on every call — starves the sibling streaming task and
+        # never disconnects, so FileResponse spins forever: the suite hung on
+        # the first audio file served through this helper. Starlette < 1.x had
+        # no disconnect watch at all, which is why this only bites now that
+        # the unpinned starlette dependency has drifted to 1.x.
+        request_complete = False
+        # Signalled by the LAST response body message: a FileResponse larger
+        # than its chunk size sends several with more_body=True, and claiming
+        # completion earlier would cancel the transfer mid-file.
+        response_complete = asyncio.Event()
+
         async def receive():
-            return {"type": "http.request", "body": b"", "more_body": False}
+            nonlocal request_complete
+            if not request_complete:
+                request_complete = True
+                return {"type": "http.request", "body": b"", "more_body": False}
+            await response_complete.wait()
+            return {"type": "http.disconnect"}
 
         result = {"status": None, "body": b""}
 
@@ -147,6 +177,8 @@ def raw_asgi_get():
                 result["status"] = message["status"]
             elif message["type"] == "http.response.body":
                 result["body"] += message.get("body", b"")
+                if not message.get("more_body", False):
+                    response_complete.set()
 
         asyncio.run(app(scope, receive, send))
         return result["status"], result["body"]
