@@ -680,6 +680,7 @@ standalone script under `impl/` with per-engine install notes.
   - Bug fix: Send button throws error when using http over LAN (#145)
   - Better sentence chunking in streaming mode (#153)
   - Cosmetic improvements in Persona Editor / Add Persona dialogs (#155)
+  - Bug fix: unit tests can hang on a fresh clone (#159)
 
 ## License
 

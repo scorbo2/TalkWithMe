@@ -128,6 +128,30 @@ class TestServeAudio:
         assert status == 200
         assert body == AUDIO_BYTES
 
+    def test_raw_asgi_get_serves_a_file_larger_than_one_chunk(self, client, persistence_root, raw_asgi_get):
+        # A file bigger than FileResponse's 64 KiB chunk size arrives as
+        # several http.response.body messages, only the LAST one with
+        # more_body=False. The raw harness must hold the "disconnect" until
+        # that final chunk: reporting it earlier makes starlette's
+        # disconnect-watching task group cancel the transfer mid-file, and a
+        # truncated body still reports 200 — so every assertion below is
+        # load-bearing.
+        big = b"RIFF" + (b"\x00\x01\x02\x03" * 40960)  # 160 KiB: three chunks
+        assert len(big) > 64 * 1024
+
+        persist_message("TNG", ChatMessage(role="user", content="hi"), "msg-big")
+        resp = client.post("/api/persist/audio?room=TNG",
+                           json={"message_id": "msg-big", "audio_base64": b64(big),
+                                 "mime_type": "audio/webm"})
+        assert resp.status_code == 200
+        filename = resp.json()["filename"]
+
+        status, body = raw_asgi_get(f"/api/persist/audio/TNG/{filename}")
+
+        assert status == 200
+        assert len(body) == len(big)
+        assert body == big
+
     def test_serve_with_dotdot_room_segment_returns_422(self, persistence_root, raw_asgi_get):
         # A file OUTSIDE the persistence root that an unvalidated room
         # segment of ".." would let the endpoint read:
