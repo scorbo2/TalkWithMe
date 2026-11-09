@@ -120,9 +120,18 @@ function makeElement(tag) {
             return child;
         },
         insertBefore(child, ref) {
-            // The spec-faithful bit the other harnesses skip: the reference
-            // node must be a CHILD of this node, or the browser throws.
-            if (ref !== null && ref.parent !== el) {
+            // Two spec cases, spelled out because the other chat.js harnesses
+            // blur them (they append for *any* unfound reference, which
+            // happens to cover the null case but silently tolerates the
+            // second one): a null reference means append — insertBefore(node,
+            // null) is appendChild — and a non-null reference must be a CHILD
+            // of this node, or the browser throws NotFoundError.
+            if (ref === null) {
+                child.parent = el;
+                el.children.push(child);
+                return child;
+            }
+            if (ref.parent !== el) {
                 throw domError(
                     "NotFoundError",
                     "Failed to execute 'insertBefore' on 'Node': The node before " +
@@ -362,6 +371,38 @@ function recordingClipboard(calls, impl) {
         },
     };
 }
+
+/* ==========================================================================
+    0. Harness sanity check
+    ========================================================================== */
+
+test("the DOM stub is spec-faithful: insertBefore(node, null) appends, a non-child reference throws", () => {
+    // The stub exists to catch parent/child mistakes in app code, so it has
+    // to get the spec cases right itself — a stub that mis-orders on the
+    // null-ref form would hide a real bug or invent a fake one.
+    // GIVEN a parent with two children, plus a stranger that is not one:
+    const h = createHarness({ clipboard: recordingClipboard([]) });
+    const parent = h.document.createElement("div");
+    const first = h.document.createElement("span");
+    const second = h.document.createElement("span");
+    const stranger = h.document.createElement("section");
+    const newcomer = h.document.createElement("i");
+    parent.appendChild(first);
+    parent.appendChild(second);
+
+    // WHEN inserting with a null reference,
+    // THEN it appends: insertBefore(node, null) === appendChild.
+    parent.insertBefore(newcomer, null);
+    assert.deepEqual(parent.children, [first, second, newcomer]);
+
+    // WHEN inserting before a node that is not a child of the parent,
+    // THEN it throws NotFoundError, exactly like a browser does.
+    assert.throws(
+        () => parent.insertBefore(h.document.createElement("em"), stranger),
+        { name: "NotFoundError" },
+    );
+    assert.deepEqual(parent.children, [first, second, newcomer]);
+});
 
 /* ==========================================================================
     1. The action row layout

@@ -5,12 +5,11 @@ without first selecting it by hand. The button goes **in the same row as the
 existing "delete message" button** and is hidden until the bubble is hovered,
 exactly like the delete button.
 
-## Current state
+## Current state (before this change)
 
-Every message row already carries one per-message action button — the 🗑
-delete button (`addDeleteButtonToRow()` in
-`static/chat.js`, `.message-delete-btn` in `static/style.css`; see
-`docs/feature_delete_message.md`). It is created
+Every message row carried one per-message action button — the 🗑 delete
+button (`addDeleteButtonToRow()` in `static/chat.js`, `.message-delete-btn`
+in `static/style.css`; see `docs/feature_delete_message.md`). It was created
 by four different render paths (live user bubble, live/streaming assistant
 row, and the two persisted-history renderers), appended as the last child of
 the row's *content container*:
@@ -23,7 +22,7 @@ what makes audio stack under the bubble. That detail decides the shape of this
 feature: two buttons appended as siblings of that container **stack
 vertically**, not side by side.
 
-There is no clipboard support anywhere in the frontend today.
+The frontend had no clipboard support at all.
 
 ## Desired state
 
@@ -175,7 +174,7 @@ the regression testable at all.
 | `static/utils.js` | `copyTextToClipboard()` + `legacyCopyToClipboard()` — the Clipboard API with an insecure-context fallback (~50 LOC). |
 | `static/chat.js` | `addDeleteButtonToRow()` → `addMessageActionButtons()` (wrapper + copy + delete), `copyableTextOf()`, `copyMessageText()`, `flashCopyButton()`, `setCopyButtonLabel()`, `getAudioContainer()` shared by both audio-injection paths; four call sites renamed (~90 LOC changed/added). |
 | `static/style.css` | `.message-actions` flex row + `align-self` rules moved from the buttons; copy/delete share one rule set; copy button gets `min-width` so the ✅ swap does not twitch the row (~30 LOC). |
-| `tests/test_copy_button.js` | New plain-Node suite (18 tests): the action-row layout, all four render paths, copied payload, feedback + revert, insecure-origin fallback, the `navigator.clipboard` grep guard, and the audio-container insertion contract. |
+| `tests/test_copy_button.js` | New plain-Node suite (19 tests): the action-row layout, all four render paths, copied payload, feedback + revert, insecure-origin fallback, the `navigator.clipboard` grep guard, the audio-container insertion contract, and a sanity check that the stub itself honours the `insertBefore` contract (`node, null` appends; a non-child reference throws). |
 | `README.md` | Feature bullet, a "Copying a message" section, release-history line. |
 | `AGENTS.md` | Test-coverage entry + "changes to the message action buttons require `node tests/test_copy_button.js`" rule; `chat.js`/`utils.js` row updates. |
 
