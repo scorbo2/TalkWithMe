@@ -28,6 +28,7 @@ Follow the development of this app on my YouTube channel:
 - Fully local — no internet required, no authentication. You can connect to remote LLMs with an API key if you wish, but TalkWithMe can be run 100% locally. NOTE: only connect to remote LLMs that you trust.
 - Theme chooser in the top-right: Dark (default), Light, Matrix, and Blues
 - Each room persists its text and audio messages
+- Copy any message's text with one click (hover a bubble: 📋 sits beside 🗑)
 
 ## Prerequisites
 
@@ -521,6 +522,26 @@ will play the respective sentence:
 
 ![Chat replay streaming](screenshots/chat_audio_replay_streaming.png)
 
+## Copying a message
+
+Hover over any chat bubble and two small buttons appear underneath it: 📋 to
+copy that message's text to the clipboard, and 🗑 to delete the message. Both
+are hidden until you hover (on a phone or tablet they are always visible).
+
+Clicking 📋 copies the text of that one bubble - nothing else. The persona's
+name, the tool chips, and the audio replay buttons are not included. The
+button then shows a brief ✅ so you know the text actually landed.
+
+A couple of details worth knowing:
+
+- If you reach TalkWithMe over plain HTTP from another device (e.g.
+  `http://192.168.1.20:8000`), browsers hide their modern clipboard API for
+  security reasons. Copying still works there via a fallback path, but if a
+  browser blocks both paths you will see ❌ instead of ✅.
+- Copying a message that is still streaming copies whatever has been written
+  so far. A bubble that has no text yet is not copied at all - it would
+  otherwise replace whatever you had previously copied with nothing.
+
 ## Echo chamber
 
 Enabling the "echo chamber" option in a chat room will cause the responding persona to simply echo back
@@ -681,6 +702,7 @@ standalone script under `impl/` with per-engine install notes.
   - Better sentence chunking in streaming mode (#153)
   - Cosmetic improvements in Persona Editor / Add Persona dialogs (#155)
   - Bug fix: unit tests can hang on a fresh clone (#159)
+  - Add a "copy to clipboard" button beside every chat bubble (#158)
 
 ## License
 

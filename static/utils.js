@@ -101,6 +101,70 @@ function generateMessageId() {
     return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
 }
 
+/**
+ * Copy text to the system clipboard, with a fallback for insecure origins.
+ *
+ * `navigator.clipboard` only exists in a secure context (HTTPS, or the
+ * browser's "localhost" exception) — it is `undefined` when the app is
+ * reached over plain HTTP by IP or hostname, exactly the LAN gotcha that
+ * made `crypto.randomUUID()` unusable (see generateMessageId() above, and
+ * the #145 "send button throws over http" fix). So: use the Clipboard API
+ * when the browser offers it, otherwise fall back to a hidden textarea +
+ * `document.execCommand("copy")`, which works in insecure contexts too.
+ *
+ * Resolves to a boolean instead of rejecting: the caller has no recovery
+ * path other than telling the user, so it gets a yes/no it can paint from.
+ *
+ * @param {string} text - The text to put on the clipboard.
+ * @returns {Promise<boolean>} true when the browser reports the copy landed.
+ */
+async function copyTextToClipboard(text) {
+    const clipboard = typeof navigator !== "undefined" ? navigator.clipboard : null;
+    if (clipboard && typeof clipboard.writeText === "function") {
+        try {
+            await clipboard.writeText(text);
+            return true;
+        } catch (err) {
+            // Permission denied (or the browser simply refused the write) is
+            // not fatal: the legacy path below frequently still succeeds.
+            console.warn("Clipboard API write failed, trying legacy copy:", err);
+        }
+    }
+    return legacyCopyToClipboard(text);
+}
+
+/**
+ * execCommand("copy") fallback for browsers with no Clipboard API.
+ *
+ * The scratch textarea must be *off-screen*, not `display: none` / not
+ * `hidden`: an element that is not rendered cannot be selected, and the
+ * whole trick is a selection followed by a copy command.
+ */
+function legacyCopyToClipboard(text) {
+    if (typeof document === "undefined" || typeof document.execCommand !== "function") {
+        console.warn("This browser exposes no clipboard API; cannot copy text.");
+        return false;
+    }
+
+    const scratch = document.createElement("textarea");
+    scratch.value = text;
+    scratch.setAttribute("readonly", "");   // avoids the mobile keyboard popping up
+    scratch.style.position = "fixed";
+    scratch.style.top = "-1000px";
+    scratch.style.opacity = "0";
+    document.body.appendChild(scratch);
+    scratch.select();
+
+    let copied = false;
+    try {
+        copied = document.execCommand("copy");
+    } catch (err) {
+        console.warn("Legacy clipboard copy failed:", err);
+    }
+    scratch.remove();
+    return copied;
+}
+
 /** Escape HTML special characters to prevent XSS in dynamically rendered text. */
 function escapeHtml(str) {
     if (typeof str !== 'string') return str;
