@@ -224,6 +224,9 @@ function handleSSEEvent(event) {
             if (ttsStreaming) {
                 currentStreamingPersona = event.persona;
                 sentenceBuffer = "";
+                // A new reply gets a fresh voice: drop the previous reply's
+                // "this engine cannot voice this persona" circuit-breaker.
+                resetTtsReplyState();
             }
             break;
         }

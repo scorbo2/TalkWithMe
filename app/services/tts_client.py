@@ -11,8 +11,9 @@ STT client code lives in its own module: app.services.stt_client
 import base64
 import json
 import logging
+from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, List, Optional
+from typing import Any, Callable, List, Optional
 
 import httpx
 
@@ -32,10 +33,11 @@ _CAPABILITIES_TIMEOUT_S = 3.0
 # Single slot: (base_url it was fetched for, doc-or-None). The document is
 # static for the server's lifetime and carries no Cache-Control (the tts-serve
 # design answers this explicitly), so freshness is a closed set of events:
-# warm at startup, invalidate on a settings save, self-heal on a 422.
-# A *failure* is cached just like a document (negative cache): streaming TTS
-# issues one /synthesize per sentence, and each of those must not retry a
-# dead /capabilities endpoint.
+# warm at startup, invalidate on a settings save, self-heal on any 422 that is
+# NOT a content refusal (a content refusal says nothing about the document —
+# see _is_content_refusal). A *failure* is cached just like a document
+# (negative cache): streaming TTS issues one /synthesize per sentence, and
+# each of those must not retry a dead /capabilities endpoint.
 
 _capabilities_cache: Optional[dict] = None
 _capabilities_base_url: Optional[str] = None
@@ -52,8 +54,11 @@ def invalidate_capabilities() -> None:
     """Drop the cached capabilities document (or a cached fetch failure).
 
     Call after a settings save that may have changed the TTS base_url, or
-    after a /synthesize 422 (the cached doc may be stale). Also resets the
-    one-per-base_url "no doc" fallback warning (see above).
+    after a /synthesize 422 that is not a **content** refusal (the cached doc
+    may be stale). A content 422 must NOT invalidate: refetching the document
+    cannot make an unvoiceable request voiceable, and streaming TTS would then
+    refetch /capabilities for every remaining sentence of the reply. Also resets
+    the one-per-base_url "no doc" fallback warning (see above).
     """
     global _capabilities_cache, _capabilities_base_url, _no_doc_fallback_warned_for
     _capabilities_cache = None
@@ -511,16 +516,93 @@ def build_synthesis_payload(
 
 
 def _response_detail(response: httpx.Response) -> str:
-    """Human-readable body of an error response; a FastAPI 422 body yields
-    the JSON of its `detail` (it names the offending field — the diagnostic
-    that matters)."""
+    """Human-readable body of an error response.
+
+    A FastAPI validation 422 yields the JSON of its `detail` list — it names
+    the offending field, which is the diagnostic that matters there. A string
+    `detail` (every tts-serve content pre-flight) is returned **verbatim**:
+    the router shows it to the user, and json.dumps'ing it makes the UI read
+    `"text contains nothing this engine can speak: ..."` — quotes and all.
+    """
     try:
         body = response.json()
     except Exception:
         return response.text[:500]
-    if isinstance(body, dict) and "detail" in body:
-        return json.dumps(body["detail"])
+    if isinstance(body, dict):
+        detail = body.get("detail")
+        if isinstance(detail, str):
+            return detail
+        if detail is not None:
+            return json.dumps(detail)
     return json.dumps(body)
+
+
+def _is_content_refusal(response: httpx.Response) -> bool:
+    """Is this 422 a verdict on the request's CONTENT, not on its shape?
+
+    Inverting the question is the point: the content case is the narrow, fully
+    specified one. Every tts-serve schema v2 pre-flight answers with a JSON
+    object carrying a **string** `detail` sentence — LuxTTS text its tokenizer
+    empties, VoxCPM's transcript-without-clip, PocketTTS clip+voice, Breeze's
+    `cfg_scale` without an instruction, and the cross-field rules.
+
+    Nothing else a 422 can mean is specified that well, so everything else
+    keeps the stale-document self-heal it always had:
+
+    - FastAPI request validation answers with a `detail` **list** of
+      `{type, loc, msg, input}` entries — exactly the `extra="forbid"` payload
+      mismatch the self-heal exists for.
+    - A reverse proxy in front of the engine replaces the body with an HTML
+      error page (not JSON at all).
+    - A non-tts-serve server answers in its own envelope (`{"error": {...}}`,
+      a bare list, an empty body).
+
+    Acting on the stale-document theory costs one /capabilities fetch plus one
+    retry, and the negative cache keeps that from becoming a storm. Skipping it
+    for the content sentence is the whole point: refetching a document cannot
+    make unvoiceable text voiceable, and streaming TTS issues one /synthesize
+    per sentence, so a retried content refusal doubles the load on an engine
+    (LuxTTS) whose synthesis is serialized behind a lock.
+    """
+    try:
+        body = response.json()
+    except Exception:
+        # Not JSON at all: a proxy's error page, an empty body. It cannot be a
+        # tts-serve content sentence, so let the self-heal run.
+        return False
+    return isinstance(body, dict) and isinstance(body.get("detail"), str)
+
+
+@dataclass(frozen=True)
+class SynthesisResult:
+    """Outcome of one synthesis, self-heal retry included.
+
+    `audio` is the engine's JSON body on success. On failure, `status` and
+    `detail` carry the engine's own verdict, which the router must propagate:
+    tts-serve's content pre-flights answer 400/422 with a detail naming what
+    the caller can change (this persona's reference clip has no speech in the
+    transcribable window; this text has nothing this engine can speak).
+    Dropping it turns a fixable configuration problem into permanent silence.
+    """
+
+    audio: Optional[dict] = None
+    status: Optional[int] = None
+    detail: Optional[str] = None
+
+    @property
+    def succeeded(self) -> bool:
+        return self.audio is not None
+
+    def reason(self) -> str:
+        """The explanation for the app's client and the logs.
+
+        The engine's own sentence verbatim when there is one — its HTTP status
+        is already the status of the response the router builds, and the
+        synthesis failure is logged with status + detail, so prefixing
+        "TTS engine (HTTP 422)" here would only make the UI line harder to
+        read. The generic line covers the paths that never reached the engine.
+        """
+        return self.detail or "TTS server returned no audio"
 
 
 async def _post_synthesis(url: str, payload: dict, timeout: float) -> httpx.Response:
@@ -533,11 +615,13 @@ async def synthesize(
     reference_text: str,
     audio_base64: str,
     language: str = "en",
-) -> Optional[dict]:
+) -> SynthesisResult:
     """Call the TTS server's /synthesize endpoint with a doc-driven payload.
 
-    Returns the server's raw response dict (engine extras pass through; the
-    frontend only reads `audio_base64`) or None on failure.
+    Returns a SynthesisResult: the server's raw response dict on success
+    (engine extras pass through; the frontend only reads `audio_base64`), or
+    the engine's status + detail on failure — the router propagates them, and
+    tts-serve's content pre-flights name exactly what the caller can fix.
 
     The payload is built from the cached capabilities document (plan T4):
     only fields the engine advertises are sent. If no document is available
@@ -545,19 +629,23 @@ async def synthesize(
     plus all configured parameters are sent unfiltered, with one warning
     per base_url.
 
-    A 422 from /synthesize triggers the self-heal (plan T3): the cached
-    document may have gone stale (e.g. the engine behind base_url was
-    replaced), so the cache is invalidated, the document refetched, the
-    payload rebuilt, and the request retried EXACTLY ONCE. The server's 422
-    detail is logged at warning in either case — it names the offending
-    field.
+    Every 422 except a **content refusal** triggers the self-heal (plan T3):
+    the cached document may have gone stale (the engine behind base_url was
+    replaced), so the cache is invalidated, the document refetched, the payload
+    rebuilt, and the request retried EXACTLY ONCE. A content refusal (a JSON
+    object with a string `detail`: text this engine cannot voice, a field
+    combination it refuses) is a verdict on the request, not on the document —
+    logged and returned, never retried. Streaming TTS issues one /synthesize
+    per sentence, and a retried content rejection doubles the load on an engine
+    whose synthesis is serialized.
     """
     settings = get_settings()
     if not settings.tts.is_active:
         logger.warning("TTS synthesis skipped: feature not active (no base_url or disabled)")
-        return None
+        return SynthesisResult(detail="TTS is not active (disabled or no base_url)")
     base_url = settings.tts.base_url
     url = f"{base_url}/synthesize"
+    timeout = settings.tts.timeout
 
     def payload_for(doc: Optional[dict]) -> dict:
         return build_synthesis_payload(
@@ -583,33 +671,65 @@ async def synthesize(
                 "is unavailable",
                 base_url,
             )
-            return None
-        response = await _post_synthesis(url, payload_for(doc), settings.tts.timeout)
-        if response.status_code == 422:
+            return SynthesisResult(
+                detail="the connected engine does not support reference-audio voice cloning"
+            )
+        response = await _post_synthesis(url, payload_for(doc), timeout)
+        if response.status_code == 422 and _is_content_refusal(response):
             logger.warning(
-                "TTS /synthesize rejected the payload (422) from %s: %s",
+                "TTS /synthesize refused the CONTENT of a request to %s: %s "
+                "(not retried: the request is unvoiceable, the cached "
+                "capabilities document is not implicated)",
                 url, _response_detail(response),
             )
-            # Self-heal: the cached doc may be stale — drop it, refetch,
-            # rebuild, and retry exactly once.
-            invalidate_capabilities()
-            doc = await get_capabilities()
-            if doc is None:
-                _warn_no_capabilities_doc(base_url)
-            response = await _post_synthesis(url, payload_for(doc), settings.tts.timeout)
-            if response.status_code == 422:
-                logger.warning(
-                    "TTS /synthesize rejected the payload (422) again from %s "
-                    "after refetching the capabilities document: %s",
-                    url, _response_detail(response),
-                )
+        elif response.status_code == 422:
+            response = await _self_heal_retry(url, base_url, timeout, payload_for, response)
         if response.status_code != 200:
-            logger.warning("TTS synthesis failed: HTTP %d from %s", response.status_code, url)
-            return None
-        return response.json()
+            detail = _response_detail(response)
+            logger.warning(
+                "TTS synthesis failed: HTTP %d from %s: %s",
+                response.status_code, url, detail,
+            )
+            return SynthesisResult(status=response.status_code, detail=detail)
+        return SynthesisResult(audio=response.json())
     except Exception as exc:
         logger.warning("TTS synthesis failed: %s", exc)
-        return None
+        return SynthesisResult(detail=str(exc))
+
+
+async def _self_heal_retry(
+    url: str,
+    base_url: str,
+    timeout: float,
+    payload_for: Callable[[Optional[dict]], dict],
+    rejection: httpx.Response,
+) -> httpx.Response:
+    """Refetch the capabilities doc, rebuild the payload, retry exactly once.
+
+    For every 422 that is not a content refusal (see _is_content_refusal): the
+    engine behind base_url may have been replaced, leaving tts.parameters in
+    settings.yaml that the new engine never advertised. Exactly one retry: a
+    422 that survives a payload rebuilt from a fresh document is genuinely bad
+    input, and looping here would stall every sentence of a streamed reply.
+    """
+    logger.warning(
+        "TTS /synthesize rejected the payload (422) from %s: %s",
+        url, _response_detail(rejection),
+    )
+    # Self-heal: the cached doc may be stale — drop it, refetch, rebuild,
+    # and retry exactly once.
+    invalidate_capabilities()
+    doc = await get_capabilities()
+    if doc is None:
+        _warn_no_capabilities_doc(base_url)
+    retry = await _post_synthesis(url, payload_for(doc), timeout)
+    if retry.status_code == 422:
+        logger.warning(
+            "TTS /synthesize rejected the payload (422) again from %s "
+            "after refetching the capabilities document: %s",
+            url, _response_detail(retry),
+        )
+    return retry
 
 
 def encode_reference_audio(audio_path: Optional[str]) -> Optional[str]:

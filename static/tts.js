@@ -202,8 +202,130 @@ function enqueueStreamingTTS(personaName, text) {
     // Stamp the current message ID at enqueue time. It was issued by the
     // server in the "start" event, so it is already correct for this
     // response — no backfilling needed when "done" arrives.
-    ttsRequestQueue.push({ personaName, text, messageId: currentAssistantMessageId });
+    const messageId = currentAssistantMessageId;
+    // The engine has already refused THIS message's voice: its verdict is
+    // about the engine/persona pairing, not about this sentence, so asking
+    // again buys the same answer at the price of a serialized synthesis slot.
+    // Messages with no verdict of their own are untouched — a late 422 from an
+    // earlier responder must not mute the one currently streaming.
+    if (messageId && ttsBrokenMessageIds.has(messageId)) {
+        console.warn("streaming TTS skipped (voice already refused for this message):",
+                     previewForLog(text));
+        return;
+    }
+    // No round trip for a chunk no engine can voice — see isSpeakableText.
+    if (!isSpeakableText(text)) {
+        console.warn("streaming TTS skipped (nothing this engine can voice):", previewForLog(text));
+        return;
+    }
+    ttsRequestQueue.push({ personaName, text, messageId });
     processTTSRequests();
+}
+
+/**
+ * Can any supported engine voice this text at all?
+ *
+ * LuxTTS' tokenizer keeps ASCII letters and CJK ideographs and drops every
+ * other character (tts-serve impl/server_luxTTS.md, "Nothing to speak"), so a
+ * chunk made only of punctuation, digits, Markdown fences, table rules,
+ * timestamps, emoji, or other scripts has nothing to speak and the server
+ * answers 422. The streaming splitter breaks on "." AND on every newline, so
+ * such a chunk arrives as a whole request: a closing code fence, a `|---|`
+ * table rule, a bare "...", an emoji-only line.
+ *
+ * Deliberately NARROWER than the engine's rule — it asks only "is there a
+ * character any of them can pronounce?". The engine's own tokenizer stays the
+ * authority (it additionally catches e.g. a lone `[laughs]`). A chunk this
+ * calls speakable costs at most the request we would have made anyway; a chunk
+ * it wrongly calls unspeakable silently deletes words from the user's audio,
+ * so the bias towards "speakable" is the point.
+ */
+function isSpeakableText(text) {
+    const s = String(text ?? "");
+    return /[A-Za-z\u00C0-\u024F\u4E00-\u9FFF]/.test(s);
+}
+
+/** A chunk preview for the console: long LLM replies are not log material. */
+function previewForLog(text) {
+    const oneLine = String(text ?? "").replace(/\s+/g, " ").trim();
+    return oneLine.length > 60 ? `${oneLine.slice(0, 60)}…` : oneLine;
+}
+
+/**
+ * Forget the resilience verdicts of the previous reply.
+ *
+ * Called on the "start" event, next to the sentence-buffer reset: a new
+ * assistant reply is a fresh chance, so one persona's broken voice never
+ * mutes the session. Clearing the whole set is safe because verdicts are only
+ * ever useful for the reply they were earned by: a later reply of the same
+ * persona re-asks once and, if the voice is still broken, re-earns the
+ * verdict for its own message ID.
+ */
+function resetTtsReplyState() {
+    ttsBrokenMessageIds.clear();
+}
+
+/**
+ * Apply one engine "this voice cannot be had" verdict to one message.
+ *
+ * Records the verdict against the message that ASKED, drops that message's
+ * queued sentences, and shows the engine's reason on that message's row. All
+ * three are keyed to the asking message on purpose: the fetch that failed can
+ * resolve long after the LLM stream moved on to the next responder, so the
+ * "current" row/ID at verdict time belongs to somebody else's reply.
+ */
+function handleUnvoiceableVerdict(item, err) {
+    if (item.messageId) ttsBrokenMessageIds.add(item.messageId);
+    dropQueuedSentencesOfMessage(item.messageId);
+    noteTtsUnavailableForReply(item.messageId, err.detail || err.message);
+}
+
+/**
+ * Drop the queued sentences of one message; every other message's sentences
+ * stay queued (this verdict says nothing about them). Splice backwards so the
+ * remaining indexes stay valid as items are removed.
+ */
+function dropQueuedSentencesOfMessage(messageId) {
+    for (let i = ttsRequestQueue.length - 1; i >= 0; i -= 1) {
+        if (ttsRequestQueue[i].messageId === messageId) ttsRequestQueue.splice(i, 1);
+    }
+}
+
+/**
+ * One muted line under the reply whose audio died. The alternative is a
+ * silently half-spoken reply plus a 422 in a console nobody opens; the
+ * engine's own words ("...speech other than English / Chinese cannot be
+ * cloned") are actionable.
+ *
+ * Best-effort by design: a missing row (deleted mid-playback, room switched
+ * away) or a stub DOM without createElement is not an error worth throwing
+ * inside a fetch chain. Message IDs are server-issued UUIDs, so they are safe
+ * inside the attribute selector unescaped.
+ */
+function noteTtsUnavailableForReply(messageId, reason) {
+    if (!messageId || typeof document === "undefined" || !document.createElement) return;
+    const row = typeof messagesEl !== "undefined" && messagesEl
+        ? messagesEl.querySelector(`.message-row[data-message-id="${messageId}"]`)
+        : null;
+    if (!row || !row.appendChild) return;
+    // Anchor on the row's .bubble-content column, not on the row itself: the
+    // row is a flex ROW (avatar | content), so a direct child renders beside
+    // the bubble as a squeezed third column, not under it. This is also where
+    // .message-actions and .message-audio live.
+    const content = row.querySelector(".bubble-content") || row;
+    const note = document.createElement("div");
+    note.className = "tts-note";
+    note.textContent = `Voice unavailable for this reply: ${reason}`;
+    // Keep the line under the bubble text and above the copy/delete row: the
+    // same anchor getAudioContainer() uses, because insertBefore needs a direct
+    // child of the container and .message-actions is one.
+    const anchor = content.querySelector(".message-actions")
+        || content.querySelector(".message-delete-btn");
+    if (anchor) {
+        content.insertBefore(note, anchor);
+    } else {
+        content.appendChild(note);
+    }
 }
 
 /**
@@ -225,6 +347,15 @@ async function processTTSRequests() {
             processAudioBufferQueue();
         }
     } catch (err) {
+        // A 422 is the engine's verdict on the voice itself, not on this
+        // sentence: its own script coverage, this persona's reference clip, or
+        // a parameter the rebuilt payload still carries. Every remaining
+        // sentence of this message would hear the same answer, so drop them
+        // and show the engine's reason. A 5xx stays transient: the engine
+        // hiccuped, and the next sentence is worth asking again.
+        if (err && err.status === 422) {
+            handleUnvoiceableVerdict(item, err);
+        }
         console.warn("TTS streaming fetch error:", err);
     } finally {
         isFetchingTTS = false;
@@ -275,6 +406,30 @@ async function processAudioBufferQueue() {
    ========================================================================== */
 
 /**
+ * Build the error a failed /synthesize carries: the HTTP status (the pipeline
+ * distinguishes "cannot be voiced" from "the engine hiccuped" by it) and the
+ * engine's own detail, which the tts-serve pre-flights write for the user.
+ */
+function ttsRequestError(status, detail) {
+    const err = new Error(`TTS request failed: HTTP ${status}`);
+    err.status = status;
+    err.detail = detail;
+    return err;
+}
+
+/** The `detail` of an error body, verbatim when it is a sentence. */
+async function readErrorDetail(resp) {
+    try {
+        const body = await resp.json();
+        if (body && typeof body.detail === "string") return body.detail;
+        return JSON.stringify(body);
+    } catch (err) {
+        // Non-JSON body (a proxy's HTML error page, an empty 502).
+        return `HTTP ${resp.status}`;
+    }
+}
+
+/**
  * Fetch TTS audio from the server and persist it to disk.
  *
  * @param {string} personaName - Which persona to synthesize for.
@@ -282,6 +437,8 @@ async function processAudioBufferQueue() {
  * @param {string|null} messageId - The message ID this audio belongs to.
  *   Stamped at enqueue time from the "start" event, so it is correct
  *   regardless of when this fetch resolves.
+ * @throws {Error} with `.status` and `.detail` on a non-2xx response, so the
+ *   streaming pipeline can tell a content rejection from a hiccup.
  */
 async function fetchTTS(personaName, text, messageId) {
     const resp = await fetch("/api/tts", {
@@ -291,8 +448,9 @@ async function fetchTTS(personaName, text, messageId) {
     });
 
     if (!resp.ok) {
-        console.warn("TTS request failed:", resp.status);
-        return null;
+        const detail = await readErrorDetail(resp);
+        console.warn("TTS request failed:", resp.status, detail);
+        throw ttsRequestError(resp.status, detail);
     }
 
     const data = await resp.json();

@@ -114,6 +114,45 @@ class TestServeAudio:
         resp = client.get("/api/persist/audio/NoRoom/nope_0.webm")
         assert resp.status_code == 404
 
+    def test_history_json_is_not_serveable_as_audio(self, client, persistence_root):
+        # GIVEN a room directory holding its history.json — a perfectly plain
+        # filename by the join-safety rule, which is why the audio endpoint
+        # used to hand the room's whole transcript back with a confident
+        # media_type="audio/*" on it.
+        persist_message("TNG", ChatMessage(role="user", content="TOP SECRET transcript"), "msg-1")
+        assert (persistence_root / "TNG" / "history.json").exists()
+
+        # WHEN the audio endpoint is asked for it by name,
+        resp = client.get("/api/persist/audio/TNG/history.json")
+
+        # THEN it is a missing clip as far as this endpoint is concerned, and
+        # none of the transcript leaks on the way to the 404.
+        assert resp.status_code == 404
+        assert "TOP SECRET" not in resp.text
+
+    def test_symlink_out_of_the_room_dir_is_not_serveable(self, client, persistence_root):
+        # GIVEN a symlink inside the room directory pointing at a file outside
+        # it: the name is plain and join-safe, and FileResponse follows
+        # symlinks, so the containment check has to happen after resolve().
+        try:
+            secret = persistence_root / "secret.txt"
+            secret.write_bytes(b"not audio, not yours")
+            room = persistence_root / "TNG"
+            room.mkdir(parents=True, exist_ok=True)
+            (room / "link.wav").symlink_to(secret)
+        except OSError:
+            # Platforms without symlink support (unprivileged Windows): the
+            # containment rule is unexercisable here, not broken.
+            print("  [symlink] filesystem does not support symlinks; containment case unexercised")
+            return
+
+        # WHEN the audio endpoint is asked for the link,
+        resp = client.get("/api/persist/audio/TNG/link.wav")
+
+        # THEN it 404s and never reads the target.
+        assert resp.status_code == 404
+        assert b"not audio, not yours" not in resp.content
+
     def test_raw_asgi_get_serves_a_legit_file(self, client, persistence_root, raw_asgi_get):
         # Sanity check for the raw_asgi_get fixture itself: a normal path
         # must work through the raw scope, proving the harness drives the
