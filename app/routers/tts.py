@@ -171,5 +171,8 @@ async def tts_proxy(req: TTSRequest):
     # else is 502: an engine hiccup, a connection failure, a 500 from an engine
     # too old to pre-flight (tts-serve < 1.5) — all worth asking about again on
     # the next sentence.
+    if result.detail == "TTS is not active (disabled or no base_url)":
+        return JSONResponse(status_code=503, content={"detail": result.reason()})
+
     status = 422 if result.status in ENGINE_REFUSAL_STATUSES else 502
     return JSONResponse(status_code=status, content={"detail": result.reason()})

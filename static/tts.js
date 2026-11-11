@@ -241,7 +241,8 @@ function enqueueStreamingTTS(personaName, text) {
  * so the bias towards "speakable" is the point.
  */
 function isSpeakableText(text) {
-    return /[A-Za-z\u4E00-\u9FA5]/.test(text);
+    const s = String(text ?? "");
+    return /[A-Za-z\u00C0-\u024F\u4E00-\u9FFF]/.test(s);
 }
 
 /** A chunk preview for the console: long LLM replies are not log material. */
