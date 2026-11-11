@@ -54,6 +54,11 @@ _HISTORY_LOCK = threading.Lock()
 _pending_audio: Dict[Tuple[str, str], List[str]] = {}
 
 
+# The room's own bookkeeping file, by name (the audio endpoint has to be able
+# to name it: see is_serveable_audio_filename).
+HISTORY_FILENAME = "history.json"
+
+
 def _room_dir(room_name: str) -> Path:
     """Return the path to a chat room's persistence subdirectory."""
     return _PERSISTENCE_ROOT / room_name
@@ -61,7 +66,7 @@ def _room_dir(room_name: str) -> Path:
 
 def _history_path(room_name: str) -> Path:
     """Return the path to the JSON history file for a room."""
-    return _room_dir(room_name) / "history.json"
+    return _room_dir(room_name) / HISTORY_FILENAME
 
 
 def _audio_file_extension(mime_type: Optional[str]) -> str:
@@ -105,6 +110,19 @@ def _is_plain_filename(value: Any) -> bool:
         and value not in (".", "..")
         and not any(sep in value for sep in ("/", "\\", "\x00"))
     )
+
+
+def is_serveable_audio_filename(value: Any) -> bool:
+    """True when *value* names a file the audio playback endpoint may serve.
+
+    _is_plain_filename() only answers "is this safe to JOIN onto a room dir",
+    and history.json passes that test with flying colours — so the audio
+    endpoint, whose job is a persisted clip, would hand back the room's entire
+    transcript with a confident media_type="audio/*" on it. The name check is
+    the cheap half; the router also re-checks containment after resolve()
+    because a symlink planted in a room dir is a perfectly plain filename too.
+    """
+    return _is_plain_filename(value) and value != HISTORY_FILENAME
 
 
 def _find_message(data: Dict[str, Any], message_id: str) -> Optional[Dict[str, Any]]:

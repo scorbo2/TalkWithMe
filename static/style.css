@@ -581,6 +581,19 @@ html, body {
     border-color: #ff6b6b;
 }
 
+/* One muted line under a reply whose streaming voice died (noteTtsUnavailable
+   -ForReply in tts.js). It is appended to the row's .bubble-content column,
+   NOT to the row: .message-row is a flex row (avatar | content), so a direct
+   row child renders beside the bubble as a squeezed third column. Muted, not
+   red: it reports "this reply has no audio", not a broken app. */
+.tts-note {
+    font-size: 0.8rem;
+    line-height: 1.4;
+    margin-top: 6px;
+    padding: 0 4px;
+    color: var(--text-secondary);
+}
+
 /* Loading indicator */
 .loading-bubble {
     display: flex;

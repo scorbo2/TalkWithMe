@@ -29,6 +29,19 @@ from app.services.tts_client import (
 logger = logging.getLogger(__name__)
 router = APIRouter(tags=["tts"])
 
+# Engine statuses that mean "this will never be voiceable as configured":
+# 422 (this text has nothing the engine can speak) and 400 (this persona's
+# reference clip has no recognizable speech inside the transcribable window).
+# Both are permanent verdicts about app-side configuration, so both are
+# forwarded as an app 422 — the frontend's "show the engine's reason, stop
+# asking for the rest of this reply" signal. Mapping the clip 400 to 502 kept
+# it out of that signal path, and LuxTTS raises it *after* encode_prompt
+# (Whisper ASR, inside the synthesis lock), so a client that kept asking paid
+# a near-full synthesis slot per sentence, per reply, forever. The engine's
+# own sentence carries the fix ("raise prompt_duration"), so the status only
+# has to classify permanence, not blame.
+ENGINE_REFUSAL_STATUSES = (400, 422)
+
 
 @router.get("/api/tts/health", response_model=TTSHealthResponse)
 async def tts_health():
@@ -144,7 +157,19 @@ async def tts_proxy(req: TTSRequest):
         language=persona.reference_audio_language,
     )
 
-    if not result:
-        return JSONResponse(status_code=502, content={"detail": "TTS server returned no audio"})
+    if result.succeeded:
+        return result.audio
 
-    return result
+    # Propagate the engine's verdict. Its content pre-flights answer 422 (the
+    # text has nothing this engine can speak) and 400 (the persona's reference
+    # clip has no recognizable speech inside the transcribable window) with a
+    # detail naming what the caller can change. Collapsing every failure into
+    # "returned no audio" leaves the user with silence and no lead to follow,
+    # and the front end logs nothing more than a status code.
+    #
+    # Permanent refusals keep 422 (see ENGINE_REFUSAL_STATUSES); everything
+    # else is 502: an engine hiccup, a connection failure, a 500 from an engine
+    # too old to pre-flight (tts-serve < 1.5) — all worth asking about again on
+    # the next sentence.
+    status = 422 if result.status in ENGINE_REFUSAL_STATUSES else 502
+    return JSONResponse(status_code=status, content={"detail": result.reason()})

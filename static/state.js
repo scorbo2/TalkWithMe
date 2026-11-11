@@ -51,6 +51,25 @@ const audioBufferQueue = [];
 let isFetchingTTS = false;
 let isPlayingAudioBuffer = false;
 
+// Streaming TTS resilience: the message IDs whose voice the engine has
+// refused for good (the app's 422: text this engine has nothing to speak, or
+// this persona's reference clip has no recognizable speech inside the
+// transcribable window). The verdict is about the engine/persona pairing, not
+// about the sentence, so every remaining sentence of THAT message would burn a
+// serialized synthesis slot to hear the same answer.
+//
+// Keyed by message ID, deliberately NOT a single "this reply" flag: a TTS
+// fetch is in flight for as long as one synthesis (seconds), so a verdict for
+// persona A lands while persona B's row is already the current one. A shared
+// flag let A's late 422 mute B's whole reply and print A's explanation under
+// B's bubble — with max_persona_replies > 1, and routinely in the echo
+// chamber, where the LLM emits every responder long before the first
+// synthesis finishes. Each message is judged on its own verdict only.
+//
+// resetTtsReplyState() clears it on every "start" event, so the set stays
+// bounded to one reply and a broken voice never mutes the session.
+const ttsBrokenMessageIds = new Set();
+
 // Every BufferSource currently producing sound. A Set rather than a
 // single "current source" reference, because two sources can legitimately
 // overlap (a double-clicked play button, or a manual play while the

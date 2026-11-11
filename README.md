@@ -372,6 +372,51 @@ If you want to hear each sentence as soon as it has been synthesized, without ha
 
 For lowest lag time, consider OmniVoice as the TTS server. It is considerably faster than `dots.tts` or `Qwen3-TTS`.
 
+### When a sentence has nothing to speak
+
+**Needs tts-serve 1.5 or newer.** Older tts-serve servers crash the vocoder on
+unvoiceable text and answer 500, which TalkWithMe can only report as a generic
+engine hiccup (every sentence is retried, nothing is explained). The
+plain-language behaviour below is the 1.5 pre-flight.
+
+Some engines can only voice certain text. LuxTTS, for example, speaks English
+and Chinese. A chunk made only of punctuation, digits, Markdown (a closing code
+fence, a `|---|` table rule), a timestamp, emoji, or Cyrillic / Japanese /
+Korean text has nothing for it to say, and its tts-serve server answers with a
+plain-language refusal. Because streaming mode asks for one sentence per
+request, the client handles that per sentence:
+
+- A chunk that plainly contains nothing any engine can voice is skipped before
+  a request is even made (a console line, no audio, no waiting).
+- If the server refuses a sentence, its own reason is shown under that reply as
+  one muted line — `Voice unavailable for this reply: text contains nothing
+  this engine can speak: …` — and the rest of *that reply* stops asking for
+  audio. The verdict is about the engine and the voice, not the sentence, and
+  each sentence is a full synthesis slot on engines like LuxTTS (they serialize
+  synthesis, so a queued sentence is a queue-jump, not a freebie).
+- Each reply is judged on its own verdict. In a multi-reply turn (or the echo
+  chamber) a voice that refuses one persona does not mute the others, and a
+  refusal is never printed on somebody else's bubble — a synthesis is still in
+  flight long after the next persona has started answering.
+- The next reply starts fresh. One persona's broken voice never mutes the
+  session.
+
+An engine *hiccup* (the TTS server restarting, a network blip) is deliberately
+treated differently: every remaining sentence is still requested, and nothing
+is printed.
+
+If the refusal is about the **reference clip** instead —
+`reference audio contains no recognizable speech in its first 5 s` — the fix is
+in the persona, not the prompt: `ref.wav` must begin with audible speech, and
+the window the engine listens to is the `prompt_duration` parameter (5 seconds
+by default), which you can raise in the Servers dialog while a LuxTTS engine is
+selected. LuxTTS never reads `ref.txt`: it transcribes the clip itself with
+Whisper, and only English / Chinese speech survives that transcription, so a
+silent or music-only clip gives it no voice to clone. That refusal is shown
+under the reply like any other, and TalkWithMe stops asking for the rest of the
+reply: the clip is the same for every sentence, so every sentence would hear the
+same answer (and cost the same synthesis slot).
+
 ## Persona-to-persona chat
 
 By default, only one AI persona in the current chat room will answer your prompt. You can make it feel more like a group chat by turning up the `max_persona_replies` option in `settings.yaml` (or by visiting the settings dialog). You can choose any number between 1 and 12. The given number of AI personas will answer your prompt (or reply to the persona who responded before them). Your personas may argue amongst themselves, depending on their respective system prompts!
