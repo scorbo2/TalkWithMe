@@ -748,6 +748,8 @@ standalone script under `impl/` with per-engine install notes.
   - Cosmetic improvements in Persona Editor / Add Persona dialogs (#155)
   - Bug fix: unit tests can hang on a fresh clone (#159)
   - Add a "copy to clipboard" button beside every chat bubble (#158)
+  - Better handling of "unspeakable" text (#162)
+  - Some fixes for Windows users (#166)
 
 ## License
 
