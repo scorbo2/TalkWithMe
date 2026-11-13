@@ -749,6 +749,7 @@ standalone script under `impl/` with per-engine install notes.
   - Bug fix: unit tests can hang on a fresh clone (#159)
   - Add a "copy to clipboard" button beside every chat bubble (#158)
   - Better handling of "unspeakable" text (#162)
+  - Better mouse handling on modals (#165)
   - Some fixes for Windows users (#166)
 
 ## License
