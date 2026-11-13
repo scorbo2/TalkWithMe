@@ -170,6 +170,79 @@ class TestSaveYamlFileAtomicity:
 
 
 # ---------------------------------------------------------------------------
+# The Windows emulator fixture must actually emulate something
+# ---------------------------------------------------------------------------
+
+class TestAnsiCodepageFixtureIsReal:
+    """Meta-guard for `ansi_codepage_io_default` itself.
+
+    Every encoding test in the suite depends on that fixture really making a
+    bare text write come out as cp1252. If the emulation ever goes soft — a
+    CPython upgrade resolving the default encoding somewhere the patch cannot
+    reach, or a well-meant refactor back to `setdefault` — each of those tests
+    keeps passing while proving nothing at all. So the emulation is pinned
+    here, entry point by entry point.
+    """
+
+    def test_fixture_makes_bare_open_write_the_ansi_codepage(self, tmp_path, ansi_codepage_io_default):
+        # WHEN a text file is written with no encoding argument,
+        path = tmp_path / "bare.txt"
+        with open(path, "w") as f:
+            f.write("caf\u00e9")
+
+        # THEN the bytes are cp1252 (\xe9), not the runner's UTF-8 (\xc3\xa9):
+        assert path.read_bytes() == b"caf\xe9"
+
+    def test_fixture_makes_bare_open_read_the_ansi_codepage(self, tmp_path, ansi_codepage_io_default):
+        # GIVEN a cp1252-encoded file (what a Windows box wrote before the fix),
+        path = tmp_path / "bare.txt"
+        path.write_bytes(b"caf\xe9")
+
+        # WHEN it is read with no encoding argument,
+        with open(path) as f:
+            text = f.read()
+
+        # THEN the codepage is what gets used:
+        assert text == "caf\u00e9"
+
+    def test_fixture_makes_path_write_text_without_encoding_use_the_ansi_codepage(self, tmp_path, ansi_codepage_io_default):
+        # The pathlib entry point: Path.write_text() resolves the interpreter
+        # default via io.text_encoding() BEFORE Path.open is called, which is
+        # how the fixture silently stopped covering it once (PR #167 review).
+        path = tmp_path / "pathtext.txt"
+        path.write_text("caf\u00e9")
+        assert path.read_bytes() == b"caf\xe9"
+
+    def test_fixture_makes_path_read_text_without_encoding_use_the_ansi_codepage(self, tmp_path, ansi_codepage_io_default):
+        path = tmp_path / "pathtext.txt"
+        path.write_bytes(b"caf\xe9")
+        assert path.read_text() == "caf\u00e9"
+
+    def test_fixture_makes_path_open_without_encoding_use_the_ansi_codepage(self, tmp_path, ansi_codepage_io_default):
+        path = tmp_path / "pathopen.txt"
+        with path.open("w") as f:
+            f.write("caf\u00e9")
+        assert path.read_bytes() == b"caf\xe9"
+
+    def test_fixture_leaves_an_explicit_utf8_call_alone(self, tmp_path, ansi_codepage_io_default):
+        # The fixture overrides the DEFAULT, never a pinned encoding — the app
+        # pins UTF-8 everywhere, and that must stay UTF-8 under the emulation
+        # (otherwise the encoding tests would be asserting nothing).
+        path = tmp_path / "pinned.txt"
+        path.write_text("caf\u00e9", encoding="utf-8")
+        assert path.read_bytes() == b"caf\xc3\xa9"
+        assert path.read_text(encoding="utf-8") == "caf\u00e9"
+
+    def test_fixture_leaves_binary_modes_alone(self, tmp_path, ansi_codepage_io_default):
+        # Binary I/O (audio, avatars) has no text encoding; injecting one would
+        # raise TypeError, so those calls must pass through untouched.
+        path = tmp_path / "binary.bin"
+        with open(path, "wb") as f:
+            f.write("caf\u00e9".encode("utf-8"))
+        assert path.read_bytes() == b"caf\xc3\xa9"
+
+
+# ---------------------------------------------------------------------------
 # Poison guard: no text-mode file I/O in app/ may omit an explicit encoding
 # ---------------------------------------------------------------------------
 
