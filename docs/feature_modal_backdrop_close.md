@@ -84,7 +84,10 @@ ancestor of the modal box — so the flag is re-armed on every press, and a pres
 released outside the browser window (where no `mouseup` is delivered at all) can
 never leave a stale "close me" behind.
 
-All six backdrop-closable modals share it:
+Every backdrop-closable modal in the app shares it. The authoritative list is
+**derived from `templates/index.html`** by the test suite (every `id` on a
+`class="modal-overlay"` element), not hand-maintained — the table below is a
+snapshot for readers, and the tests are what complains if it stops matching:
 
 | Modal | Module |
 |-------|--------|
@@ -94,7 +97,9 @@ All six backdrop-closable modals share it:
 | `gen-settings-overlay` | `static/gen-settings.js` |
 
 **Do not** write a per-modal `click`-on-overlay handler; the grep guard in the
-test suite fails the build if one comes back.
+test suite scans **every** module in `static/` and fails the build if one comes
+back, and a second, behavioural check asserts that each overlay in the template
+ended up with the press-pair listeners and no `click` listener at all.
 
 ## Tests
 
@@ -104,10 +109,25 @@ test suite fails the build if one comes back.
 node tests/test_modal_backdrop.js
 ```
 
-It drives the real listeners of all four modal modules through four press
-shapes per modal — backdrop/backdrop (closes), control→backdrop (the reported
+It drives the real listeners of every modal in the app through four press
+shapes each — backdrop/backdrop (closes), control→backdrop (the reported
 bug), backdrop→control, and backdrop→off-window — and asserts the flag re-arms
 so a skipped `mouseup` never sticks.
+
+The set of modals those loops run over is derived from the markup rather than
+written out (this file, `AGENTS.md` and the test all used to carry a hand-typed
+count, which is exactly how "six modals" survived the arrival of a seventh).
+Each id's `owner` is resolved from the `installBackdropClose()` call that wires
+it, so:
+
+- adding a modal to `templates/index.html` gets it every backdrop test
+  automatically — nothing else has to be edited;
+- adding one **without** wiring it, or wiring it in a module the harness does
+  not load, fails the suite with that element id in the message (a commented-out
+  `installBackdropClose()` does not count as wiring — that was verified);
+- the scraper that builds the list has its own self-check test, because a
+  scraper that quietly returned nothing would leave the per-modal loops
+  registering zero tests: green, and covering nothing.
 
 The harness part matters more than the assertions: a naive stub that only
 dispatches the events you name would make every drag test pass against the
