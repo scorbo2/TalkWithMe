@@ -23,9 +23,9 @@ document.getElementById("gen-settings-btn-close").addEventListener("click", clos
 document.getElementById("gen-settings-btn-cancel").addEventListener("click", closeGenSettings);
 genSettingsForm.addEventListener("submit", submitGenSettings);
 
-genSettingsOverlay.addEventListener("click", (e) => {
-    if (e.target === genSettingsOverlay) closeGenSettings();
-});
+// Close on a genuine backdrop click (press + release on the backdrop,
+// see installBackdropClose() in utils.js).
+installBackdropClose(genSettingsOverlay, closeGenSettings);
 
 /* ==========================================================================
    Modal lifecycle

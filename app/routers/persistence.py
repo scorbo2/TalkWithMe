@@ -16,6 +16,7 @@ from app.persistence import (
     _PERSISTENCE_ROOT,
     _is_plain_filename,
     delete_message,
+    is_serveable_audio_filename,
     load_history,
     persist_audio,
 )
@@ -78,15 +79,21 @@ def serve_audio(room_name: str, filename: str):
     The frontend uses this to replay audio from previous messages.
     """
     _require_valid_room_name(room_name)
-    if not _is_plain_filename(filename):
+    if not is_serveable_audio_filename(filename):
         # 404, not 422: an unmatchable filename is indistinguishable from
         # a missing one, and there is no reason to reveal which check
-        # tripped.
+        # tripped. This also covers the room's own history.json, which is
+        # join-safe but is emphatically not a clip to replay.
         raise HTTPException(status_code=404, detail="Audio file not found.")
     audio_path = _PERSISTENCE_ROOT / room_name / filename
-    if not audio_path.exists() or not audio_path.is_file():
+    # A plain name is not the same as a contained file: a symlink inside the
+    # room directory (or a hand-edited history.json audio entry pointing at
+    # one) resolves outside it, and FileResponse would follow it happily.
+    room_dir = (_PERSISTENCE_ROOT / room_name).resolve()
+    resolved = audio_path.resolve()
+    if not resolved.is_relative_to(room_dir) or not resolved.is_file():
         raise HTTPException(status_code=404, detail="Audio file not found.")
-    return FileResponse(audio_path, media_type="audio/*")
+    return FileResponse(resolved, media_type="audio/*")
 
 
 @router.delete("/message/{room_name}/{message_id}")

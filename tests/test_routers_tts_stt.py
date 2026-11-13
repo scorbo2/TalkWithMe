@@ -13,6 +13,7 @@ import app.config as app_config
 import app.routers.stt as stt_router
 import app.routers.tts as tts_router
 import app.services.tts_client as tts_client
+from app.services.tts_client import SynthesisResult
 from app.config import Persona, PersonasConfig
 from tests.factories import (
     FakeAsyncClient,
@@ -111,12 +112,76 @@ class TestTTSProxy:
         _persona_cache(monkeypatch, PersonasConfig(personas=[self._tts_capable_persona(tmp_path)]))
 
         async def failing_synthesize(**kwargs):
-            return None
+            return SynthesisResult(status=500, detail="CUDA out of memory")
 
         monkeypatch.setattr(tts_router, "synthesize", failing_synthesize)
 
         resp = client.post("/api/tts", json={"text": "hi", "persona_name": "Luna"})
         assert resp.status_code == 502
+        # The engine's own words survive the proxy: the app's client (and the
+        # log) get "CUDA out of memory", not a bare "returned no audio".
+        assert "CUDA out of memory" in resp.json()["detail"]
+
+    def test_engine_content_rejection_422_propagates_the_detail(self, client, monkeypatch, tmp_path):
+        # LuxTTS (and VoxCPM / PocketTTS / Breeze) answer 422 for text the
+        # engine cannot voice, with a detail naming the engine's script
+        # coverage. It is the caller's to fix, so it keeps 422 and its words.
+        _persona_cache(monkeypatch, PersonasConfig(personas=[self._tts_capable_persona(tmp_path)]))
+
+        engine_detail = (
+            "text contains nothing this engine can speak: LuxTTS keeps "
+            "only ASCII letters, Chinese characters and <pinyin>/[tag] "
+            "parts, and drops punctuation, digits, emoji and every "
+            "other script (Cyrillic, Greek, Japanese, Korean, Arabic, "
+            "...).  Send at least one English or Chinese word."
+        )
+
+        async def refusing_synthesize(**kwargs):
+            return SynthesisResult(status=422, detail=engine_detail)
+
+        monkeypatch.setattr(tts_router, "synthesize", refusing_synthesize)
+
+        resp = client.post("/api/tts", json={"text": "...", "persona_name": "Luna"})
+
+        assert resp.status_code == 422
+        # The body is the engine's sentence VERBATIM: the status is the HTTP
+        # status asserted above, so the line the browser prints under the
+        # reply reads as prose, not as a log record.
+        assert resp.json()["detail"] == engine_detail
+
+    def test_engine_reference_clip_rejection_propagates_the_prompt_duration_advice(
+        self, client, monkeypatch, tmp_path
+    ):
+        # The 400 is about the PERSONA's reference clip (no speech inside the
+        # transcribable window). It is a permanent verdict about app-side
+        # configuration — every sentence of every reply for this persona fails
+        # identically — so it reaches the client as an app 422: the status the
+        # frontend reads as "show the reason, stop asking for this reply".
+        # Mapping it to 502 hid the engine's advice in a console and let the
+        # client re-pay a near-full synthesis slot per sentence forever.
+        _persona_cache(monkeypatch, PersonasConfig(personas=[self._tts_capable_persona(tmp_path)]))
+
+        async def refusing_synthesize(**kwargs):
+            return SynthesisResult(
+                status=400,
+                detail=(
+                    "reference audio contains no recognizable speech in its "
+                    "first 5 s: the engine transcribes only that window with "
+                    "Whisper and conditions on the transcript, so silence, "
+                    "music, or speech other than English / Chinese cannot be "
+                    "cloned.  Start the clip with speech, or raise "
+                    "prompt_duration."
+                ),
+            )
+
+        monkeypatch.setattr(tts_router, "synthesize", refusing_synthesize)
+
+        resp = client.post("/api/tts", json={"text": "hello there", "persona_name": "Luna"})
+
+        assert resp.status_code == 422
+        detail = resp.json()["detail"]
+        assert "no recognizable speech" in detail
+        assert "prompt_duration" in detail
 
     def test_success_forwards_reference_data_and_returns_audio(self, client, monkeypatch, tmp_path):
         _persona_cache(monkeypatch, PersonasConfig(personas=[self._tts_capable_persona(tmp_path)]))
@@ -125,7 +190,7 @@ class TestTTSProxy:
         async def fake_synthesize(text, reference_text, audio_base64, language):
             seen.update(text=text, reference_text=reference_text,
                         audio_base64=audio_base64, language=language)
-            return {"audio_base64": "QUJD", "sample_rate": 24000}
+            return SynthesisResult(audio={"audio_base64": "QUJD", "sample_rate": 24000})
 
         monkeypatch.setattr(tts_router, "synthesize", fake_synthesize)
 
@@ -172,7 +237,7 @@ class TestTTSProxy:
 
         async def fake_synthesize(text, reference_text, audio_base64, language):
             seen["called"] = True
-            return {"audio_base64": "QUJD", "sample_rate": 24000}
+            return SynthesisResult(audio={"audio_base64": "QUJD", "sample_rate": 24000})
 
         monkeypatch.setattr(tts_router, "synthesize", fake_synthesize)
 

@@ -105,7 +105,7 @@ async function sendMessage() {
     // Generate a UUID for this user message (used for audio association).
     // If STT already generated one (for audio upload), reuse it.
     if (!pendingUserMessageId) {
-        pendingUserMessageId = crypto.randomUUID();
+        pendingUserMessageId = generateMessageId();
     }
 
     // Append user bubble with the message ID
@@ -224,6 +224,9 @@ function handleSSEEvent(event) {
             if (ttsStreaming) {
                 currentStreamingPersona = event.persona;
                 sentenceBuffer = "";
+                // A new reply gets a fresh voice: drop the previous reply's
+                // "this engine cannot voice this persona" circuit-breaker.
+                resetTtsReplyState();
             }
             break;
         }
@@ -317,7 +320,7 @@ function appendUserBubble(text, messageId) {
 
     wrapper.appendChild(bubble);
     row.appendChild(wrapper);
-    addDeleteButtonToRow(row, messageId);
+    addMessageActionButtons(row, messageId);
     messagesEl.appendChild(row);
     scrollToBottom();
 }
@@ -349,12 +352,14 @@ function createAssistantBubble(whoHint) {
     row.appendChild(avatar);
     row.appendChild(content);
 
-    // Delete button from birth, disabled until the reply is persisted:
-    // the server writes the row only at the end of the stream ("done"),
-    // so a live button mid-stream would have nothing to delete yet.
+    // Copy + delete buttons from birth, the delete one disabled until the
+    // reply is persisted: the server writes the row only at the end of the
+    // stream ("done"), so a live delete button mid-stream would have nothing
+    // to delete yet. The copy button is live from the start — half a reply
+    // is still worth copying.
     // The message ID is not known until the "start" event; the click
     // handler falls back to row.dataset.messageId at click time.
-    addDeleteButtonToRow(row, null, true);
+    addMessageActionButtons(row, null, true);
 
     return row;
 }
@@ -458,37 +463,147 @@ function appendErrorBubble(text) {
 }
 
 /* ==========================================================================
-    Message deletion
+    Message actions: copy + delete
     ========================================================================== */
 
+/** The copy button's resting glyph, restored after its confirmation. */
+const COPY_ICON = "\u{1F4CB}";
+/** Confirmation glyphs: the Clipboard API acknowledges a write with nothing. */
+const COPIED_ICON = "\u{2705}";
+const COPY_FAILED_ICON = "\u{274C}";
+/** How long the copy button shows its confirmation before reverting. */
+const COPY_FEEDBACK_MS = 1500;
+
 /**
- * Attach a delete button to a message row.
+ * Attach the copy and delete buttons to a message row, side by side.
  *
- * The button lands in the row's content container (the
- * .user-message-content wrapper for user rows, .bubble-content for persona
- * rows), as the last child — below the bubble and any audio buttons.
+ * Both buttons go into one .message-actions wrapper, appended as the last
+ * child of the row's content container (the .user-message-content wrapper
+ * for user rows, .bubble-content for persona rows). The wrapper is not
+ * decoration: both containers are column flex boxes, so two bare buttons
+ * would stack vertically instead of sitting in one row.
+ *
+ * Creating both in a single call is deliberate. Four render paths build
+ * rows, and one call site per button is one forgotten call away from a
+ * half-rendered action row.
  *
  * @param {HTMLElement} row - The .message-row element.
  * @param {string|null} messageId - The row's message ID, if known. Live
  *     assistant rows are created before the "start" event issues one, so
  *     this may be null; the click handler then falls back to the
  *     row's data-message-id attribute (read at click time).
- * @param {boolean} [disabled=false] - Start disabled (live assistant rows:
- *     the reply is not persisted until the stream finishes).
+ * @param {boolean} [disabled=false] - Start the DELETE button disabled
+ *     (live assistant rows: the reply is not persisted until the stream
+ *     finishes). The copy button is never disabled — copying half a reply is
+ *     harmless, and waiting for the stream would only make it harder to
+ *     grab text while it is still scrolling past.
  */
-function addDeleteButtonToRow(row, messageId, disabled = false) {
+function addMessageActionButtons(row, messageId, disabled = false) {
     const container = row.querySelector(".user-message-content")
         || row.querySelector(".bubble-content");
     if (!container) return;
 
-    const btn = document.createElement("button");
-    btn.className = "message-delete-btn";
-    btn.textContent = "\u{1F5D1}"; // trash icon
-    btn.title = "Delete message";
-    btn.setAttribute("aria-label", "Delete message");
-    btn.disabled = disabled;
-    btn.addEventListener("click", () => deleteMessageFromChat(row, messageId));
-    container.appendChild(btn);
+    const actions = document.createElement("div");
+    actions.className = "message-actions";
+
+    const copyBtn = document.createElement("button");
+    copyBtn.className = "message-copy-btn";
+    setCopyButtonLabel(copyBtn, COPY_ICON, "Copy text");
+    copyBtn.addEventListener("click", () => copyMessageText(row, copyBtn));
+    actions.appendChild(copyBtn);
+
+    const delBtn = document.createElement("button");
+    delBtn.className = "message-delete-btn";
+    delBtn.textContent = "\u{1F5D1}"; // trash icon
+    delBtn.title = "Delete message";
+    delBtn.setAttribute("aria-label", "Delete message");
+    delBtn.disabled = disabled;
+    delBtn.addEventListener("click", () => deleteMessageFromChat(row, messageId));
+    actions.appendChild(delBtn);
+
+    container.appendChild(actions);
+}
+
+/**
+ * The text a row's copy button should put on the clipboard, or "" when there
+ * is nothing worth copying.
+ *
+ * An assistant row's loading placeholder IS a .bubble (class
+ * "bubble loading-bubble"), so a row can have a bubble and still have no
+ * text: copying that would replace whatever the user had on their clipboard
+ * with an empty string, for no reason at all.
+ */
+function copyableTextOf(row) {
+    const bubble = row.querySelector(".bubble");
+    if (!bubble) return "";
+    const text = bubble.textContent;
+    return text.trim() ? text : "";
+}
+
+/**
+ * Copy a message row's visible bubble text, then confirm the result on the
+ * button.
+ *
+ * The bubble's textContent is copied verbatim, including the "[Error: ...]"
+ * trailer the SSE error path appends to it: that text is on screen, so it
+ * is what the user expects to get. The persona name, the tool chips and the
+ * audio replay buttons all live outside .bubble, so they are excluded for
+ * free (and deliberately: streaming tokens are appended to bubble.textContent
+ * itself, which is why nothing else was ever allowed inside it).
+ */
+async function copyMessageText(row, btn) {
+    const text = copyableTextOf(row);
+    if (!text) {
+        // Nothing there yet (loading placeholder, first token not arrived),
+        // or the row was torn down mid-click. Say so rather than click a
+        // button that silently does nothing.
+        flashCopyButton(btn, false, "Nothing to copy yet");
+        return;
+    }
+    flashCopyButton(btn, await copyTextToClipboard(text));
+}
+
+/**
+ * Paint the copy button ✅ (copied) or ❌ (nothing landed), then revert.
+ *
+ * The Clipboard API acknowledges a write with nothing visible, and over
+ * plain HTTP it is not even available — without feedback a failed copy is
+ * indistinguishable from a successful one.
+ *
+ * The pending revert timer is stored on the button: clearTimeout() first,
+ * because otherwise an older timer wipes a newer confirmation early when
+ * the button is clicked twice inside the window.
+ *
+ * @param {HTMLElement} btn - The copy button.
+ * @param {boolean} copied - true when the text reached the clipboard.
+ * @param {string} [label] - Override the tooltip/accessible name (used for
+ *     "nothing to copy", which is not a clipboard failure).
+ */
+function flashCopyButton(btn, copied, label) {
+    if (!btn) return;
+    clearTimeout(btn._copyFlashTimer);
+    setCopyButtonLabel(
+        btn,
+        copied ? COPIED_ICON : COPY_FAILED_ICON,
+        label || (copied ? "Copied!" : "Copy failed: no clipboard access in this browser"),
+    );
+    btn._copyFlashTimer = setTimeout(
+        () => setCopyButtonLabel(btn, COPY_ICON, "Copy text"),
+        COPY_FEEDBACK_MS,
+    );
+}
+
+/**
+ * Set a copy button's glyph and label together.
+ *
+ * aria-label is updated as well as title: the button's accessible name comes
+ * from aria-label, so a swapped emoji alone would leave a screen reader
+ * announcing "Copy text" after a failure.
+ */
+function setCopyButtonLabel(btn, glyph, label) {
+    btn.textContent = glyph;
+    btn.title = label;
+    btn.setAttribute("aria-label", label);
 }
 
 /**
@@ -679,7 +794,7 @@ function appendPersistedUserBubble(msg, roomName) {
     }
 
     row.appendChild(wrapper);
-    addDeleteButtonToRow(row, msg.id);
+    addMessageActionButtons(row, msg.id);
     messagesEl.appendChild(row);
 }
 
@@ -744,7 +859,7 @@ function appendPersistedAssistantBubble(msg, roomName) {
 
     row.appendChild(avatar);
     row.appendChild(content);
-    addDeleteButtonToRow(row, msg.id);
+    addMessageActionButtons(row, msg.id);
     messagesEl.appendChild(row);
 }
 
@@ -804,6 +919,38 @@ async function playPersistedAudio(roomName, filename, row) {
 }
 
 /**
+ * Return (creating it on first use) the .message-audio container that holds
+ * a row's replay buttons, keeping it above the copy/delete action row.
+ *
+ * The choice of anchor is the whole point: insertBefore() only accepts a
+ * direct child, and the copy/delete buttons live *inside* the .message-actions
+ * wrapper — anchoring on the delete button itself throws NotFoundError. Both
+ * callers run inside unawaited fetch chains whose catch logs "failed to
+ * persist audio", so that exception would surface as replay buttons that
+ * simply never appear on live rows, plus a misleading warning (#158).
+ *
+ * @param {HTMLElement} container - .user-message-content or .bubble-content.
+ * @returns {HTMLElement} the row's .message-audio container.
+ */
+function getAudioContainer(container) {
+    let audioContainer = container.querySelector(".message-audio");
+    if (!audioContainer) {
+        audioContainer = document.createElement("div");
+        audioContainer.className = "message-audio";
+        // .message-actions is the modern anchor; the bare delete button is
+        // kept as a fallback for rows built without an action wrapper.
+        const anchor = container.querySelector(".message-actions")
+            || container.querySelector(".message-delete-btn");
+        if (anchor) {
+            container.insertBefore(audioContainer, anchor);
+        } else {
+            container.appendChild(audioContainer);
+        }
+    }
+    return audioContainer;
+}
+
+/**
  * Inject an audio playback button into a live assistant bubble.
  * Called from tts.js after each audio file is persisted.
  *
@@ -820,20 +967,7 @@ function addAudioButtonToAssistantMessage(messageId, filename) {
     const content = row.querySelector(".bubble-content");
     if (!content) return;
 
-    // Lazily create the audio container on first button. Insert it before
-    // the delete button (if present) so the delete button stays the last
-    // child of .bubble-content.
-    let audioContainer = content.querySelector(".message-audio");
-    if (!audioContainer) {
-        audioContainer = document.createElement("div");
-        audioContainer.className = "message-audio";
-        const deleteBtn = content.querySelector(".message-delete-btn");
-        if (deleteBtn) {
-            content.insertBefore(audioContainer, deleteBtn);
-        } else {
-            content.appendChild(audioContainer);
-        }
-    }
+    const audioContainer = getAudioContainer(content);
 
     const playBtn = document.createElement("button");
     playBtn.className = "audio-play-btn";
@@ -865,20 +999,7 @@ function addAudioButtonToUserMessage(messageId, filename, retries = 3) {
     const wrapper = row.querySelector(".user-message-content");
     if (!wrapper) return;
 
-    // Lazily create the audio container on first button. Insert it before
-    // the delete button (if present) so the delete button stays the last
-    // child of .user-message-content.
-    let audioContainer = wrapper.querySelector(".message-audio");
-    if (!audioContainer) {
-        audioContainer = document.createElement("div");
-        audioContainer.className = "message-audio";
-        const deleteBtn = wrapper.querySelector(".message-delete-btn");
-        if (deleteBtn) {
-            wrapper.insertBefore(audioContainer, deleteBtn);
-        } else {
-            wrapper.appendChild(audioContainer);
-        }
-    }
+    const audioContainer = getAudioContainer(wrapper);
 
     const playBtn = document.createElement("button");
     playBtn.className = "audio-play-btn";

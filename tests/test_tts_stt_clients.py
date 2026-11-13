@@ -127,7 +127,7 @@ class TestSynthesize:
 
         _patch_http(monkeypatch, fail)
         result = _run(tts_client.synthesize("hi", "p", "QUJD"))
-        assert result is None
+        assert result.audio is None
 
     def test_synthesize_posts_doc_driven_payload_and_returns_body(self, monkeypatch):
         # The payload is built from the capabilities doc (plan T4): the
@@ -146,7 +146,7 @@ class TestSynthesize:
         _patch_http(monkeypatch, responder)
         result = _run(tts_client.synthesize("hello", "prompt text", "QUJD", language="de"))
 
-        assert result == {"audio_base64": "QUJD", "sample_rate": 24000}
+        assert result.audio == {"audio_base64": "QUJD", "sample_rate": 24000}
         assert seen["url"] == "http://tts.local:5500/synthesize"
         assert seen["payload"] == {
             "text": "hello",
@@ -196,7 +196,7 @@ class TestSynthesize:
 
         _patch_http(monkeypatch, responder)
         with caplog.at_level(logging.WARNING, logger="app.services.tts_client"):
-            assert _run(tts_client.synthesize("hi", "p", "QUJD")) is None
+            assert _run(tts_client.synthesize("hi", "p", "QUJD")).audio is None
 
         assert calls == []
         assert "cloning" in caplog.text
@@ -324,8 +324,8 @@ class TestSynthesize:
 
         _patch_http(monkeypatch, responder)
         with caplog.at_level(logging.WARNING, logger="app.services.tts_client"):
-            assert _run(tts_client.synthesize("hi", "p", "QUJD")) is not None
-            assert _run(tts_client.synthesize("hi", "p", "QUJD")) is not None
+            assert _run(tts_client.synthesize("hi", "p", "QUJD")).audio is not None
+            assert _run(tts_client.synthesize("hi", "p", "QUJD")).audio is not None
 
         assert seen["payload"] == {
             "text": "hi",
@@ -390,7 +390,7 @@ class TestSynthesize:
         with caplog.at_level(logging.WARNING, logger="app.services.tts_client"):
             result = _run(tts_client.synthesize("hi", "p", "QUJD"))
 
-        assert result == {"audio_base64": "QUJD", "sample_rate": 24000}
+        assert result.audio == {"audio_base64": "QUJD", "sample_rate": 24000}
         assert len(posts) == 2
         assert posts[0]["speaker_scale"] == 1.5  # built from the stale doc
         assert "speaker_scale" not in posts[1]  # rebuilt from the fresh doc
@@ -412,7 +412,7 @@ class TestSynthesize:
 
         _patch_http(monkeypatch, responder)
         with caplog.at_level(logging.WARNING, logger="app.services.tts_client"):
-            assert _run(tts_client.synthesize("hi", "p", "QUJD")) is None
+            assert _run(tts_client.synthesize("hi", "p", "QUJD")).audio is None
 
         assert len(posts) == 2
         assert caplog.text.count("rejected the payload (422)") == 2
@@ -429,7 +429,7 @@ class TestSynthesize:
             return json_response(500, {"detail": "boom"})
 
         _patch_http(monkeypatch, responder)
-        assert _run(tts_client.synthesize("hi", "p", "QUJD")) is None
+        assert _run(tts_client.synthesize("hi", "p", "QUJD")).audio is None
         assert calls == [("POST", "http://tts.local:5500/synthesize")]
 
     def test_synthesize_connection_error_returns_none(self, monkeypatch):
@@ -440,7 +440,189 @@ class TestSynthesize:
             raise httpx.ConnectError("refused")
 
         _patch_http(monkeypatch, refuse)
-        assert _run(tts_client.synthesize("hi", "p", "QUJD")) is None
+        assert _run(tts_client.synthesize("hi", "p", "QUJD")).audio is None
+
+    # -----------------------------------------------------------------------
+    # Content rejections — the 422 self-heal exists for a STALE DOCUMENT, not
+    # for a request the engine refuses to voice.
+    #
+    # The discriminator is the 422 body, and it is written the narrow way
+    # round: only a JSON object with a STRING `detail` is a tts-serve content
+    # pre-flight (LuxTTS text its tokenizer empties, VoxCPM transcript-without-
+    # clip, PocketTTS clip+voice, Breeze cfg_scale-without-instruction).
+    # Everything else keeps the self-heal it always had, because "the cached
+    # document may describe a retired engine" is the only theory worth acting
+    # on for them: FastAPI validation (detail is a LIST of {type, loc, msg,
+    # input}), a reverse proxy's HTML error page (not JSON at all), and a
+    # non-tts-serve server's own envelope ({"error": {...}}, {}, a bare list).
+    #
+    # Why it matters: streaming TTS issues one /synthesize per sentence. The
+    # self-heal invalidates the capabilities cache, so a retried content 422
+    # costs two synthesis slots on an engine whose synthesis is serialized AND
+    # a /capabilities refetch for every remaining sentence of the reply.
+    # -----------------------------------------------------------------------
+
+    UNSPEAKABLE_TEXT_DETAIL = (
+        "text contains nothing this engine can speak: LuxTTS keeps only ASCII "
+        "letters, Chinese characters and <pinyin>/[tag] parts, and drops "
+        "punctuation, digits, emoji and every other script (Cyrillic, Greek, "
+        "Japanese, Korean, Arabic, ...).  Send at least one English or Chinese "
+        "word."
+    )
+    NO_SPEECH_IN_CLIP_DETAIL = (
+        "reference audio contains no recognizable speech in its first 5 s: the "
+        "engine transcribes only that window with Whisper and conditions on "
+        "the transcript, so silence, music, or speech other than English / "
+        "Chinese cannot be cloned.  Start the clip with speech, or raise "
+        "prompt_duration."
+    )
+
+    def test_synthesize_422_with_string_detail_does_not_refetch_or_retry(self, monkeypatch, caplog):
+        # GIVEN a 422 that is a content verdict (string detail), not a
+        # field-shape complaint:
+        _active_tts(monkeypatch)
+        _cache_capabilities(monkeypatch, make_capabilities_doc(engine="dots.tts"))
+        calls = []
+
+        def responder(method, url, **kw):
+            calls.append(url)
+            return json_response(422, {"detail": self.UNSPEAKABLE_TEXT_DETAIL})
+
+        _patch_http(monkeypatch, responder)
+        with caplog.at_level(logging.WARNING, logger="app.services.tts_client"):
+            result = _run(tts_client.synthesize("...", "p", "QUJD"))
+
+        # THEN exactly one POST and no /capabilities refetch...
+        assert calls == ["http://tts.local:5500/synthesize"]
+        # ...the cached document survives, so the reply's next sentence does
+        # not refetch it (an invalidated cache makes every sentence pay)...
+        assert tts_client._capabilities_cache is not None
+        # ...the engine's own wording reaches the caller...
+        assert result.audio is None
+        assert result.status == 422
+        assert "nothing this engine can speak" in result.detail
+        # ...and the two 422 classes read differently in the log.
+        assert "refused the CONTENT" in caplog.text
+        assert "rejected the payload (422)" not in caplog.text
+
+    def test_synthesize_422_with_list_detail_still_self_heals(self, monkeypatch):
+        # The list shape is the self-heal's trigger and stays untouched: a
+        # content-only change must not silence the stale-document recovery.
+        _active_tts(monkeypatch)
+        _cache_capabilities(monkeypatch, make_capabilities_doc(engine="dots.tts"))
+        posts = []
+
+        def responder(method, url, **kw):
+            if url.endswith("/capabilities"):
+                return json_response(200, make_capabilities_doc(engine="dots.tts"))
+            posts.append(kw.get("json"))
+            if len(posts) == 1:
+                return json_response(422, make_unexpected_field_422("speaker_scale", 1.5))
+            return json_response(200, {"audio_base64": "QUJD", "sample_rate": 48000})
+
+        _patch_http(monkeypatch, responder)
+        result = _run(tts_client.synthesize("hello", "p", "QUJD"))
+
+        assert result.audio == {"audio_base64": "QUJD", "sample_rate": 48000}
+        assert len(posts) == 2
+
+    def test_synthesize_reference_clip_without_speech_keeps_the_engine_400_detail(self, monkeypatch):
+        # The 400 is the persona's reference clip, and the engine names the
+        # window the user can act on: that sentence must reach the caller.
+        _active_tts(monkeypatch)
+        _cache_capabilities(monkeypatch, make_capabilities_doc(engine="dots.tts"))
+
+        def responder(method, url, **kw):
+            return json_response(400, {"detail": self.NO_SPEECH_IN_CLIP_DETAIL})
+
+        _patch_http(monkeypatch, responder)
+        result = _run(tts_client.synthesize("hello there", "p", "QUJD"))
+
+        assert result.audio is None
+        assert result.status == 400
+        assert "prompt_duration" in result.detail
+        # reason() is what the browser prints under the reply, so it is the
+        # engine's sentence VERBATIM: no "TTS engine (HTTP 400):" prefix, and
+        # no JSON quoting of a string detail.
+        assert result.reason() == self.NO_SPEECH_IN_CLIP_DETAIL
+
+    def test_content_refusal_recognizes_the_string_sentence_only(self):
+        # GIVEN the responses a 422 can arrive as:
+        schema_422 = json_response(422, make_unexpected_field_422("speaker_scale", 1.5))
+        content_422 = json_response(422, {"detail": self.UNSPEAKABLE_TEXT_DETAIL})
+        bodyless_422 = json_response(422, {})
+        envelope_422 = json_response(422, {"error": {"message": "nope"}})
+        html_422 = httpx.Response(
+            422, text="<html>502 proxy</html>",
+            headers={"content-type": "text/html"},
+            request=httpx.Request("POST", "http://tts.local:5500/synthesize"),
+        )
+
+        # THEN only the JSON object with a string detail is a content refusal:
+        # every other shape keeps the stale-document self-heal, so a proxy that
+        # rewrites the body or a non-tts-serve engine cannot quietly lose it.
+        assert tts_client._is_content_refusal(content_422) is True
+        assert tts_client._is_content_refusal(schema_422) is False
+        assert tts_client._is_content_refusal(bodyless_422) is False
+        assert tts_client._is_content_refusal(envelope_422) is False
+        assert tts_client._is_content_refusal(html_422) is False
+
+    def test_synthesize_422_from_a_proxy_html_body_still_self_heals(self, monkeypatch):
+        # A reverse proxy in front of the engine turns the 422 body into HTML.
+        # That is not a tts-serve content sentence, so the self-heal must run:
+        # losing it here is how a stale document becomes sticky behind a proxy.
+        _active_tts(monkeypatch)
+        _cache_capabilities(monkeypatch, make_capabilities_doc(engine="dots.tts"))
+        posts = []
+
+        def responder(method, url, **kw):
+            if url.endswith("/capabilities"):
+                return json_response(200, make_capabilities_doc(engine="dots.tts"))
+            posts.append(kw.get("json"))
+            if len(posts) == 1:
+                return httpx.Response(
+                    422, text="<html>gateway rejected the request</html>",
+                    headers={"content-type": "text/html"},
+                    request=httpx.Request("POST", url),
+                )
+            return json_response(200, {"audio_base64": "QUJD", "sample_rate": 48000})
+
+        _patch_http(monkeypatch, responder)
+        result = _run(tts_client.synthesize("hello", "p", "QUJD"))
+
+        assert result.audio == {"audio_base64": "QUJD", "sample_rate": 48000}
+        assert len(posts) == 2
+
+    def test_synthesize_422_from_a_non_fastapi_server_still_self_heals(self, monkeypatch):
+        # Same reasoning for a server that answers in its own envelope: the
+        # payload came from the cached document, so refetch it and retry once.
+        _active_tts(monkeypatch)
+        _cache_capabilities(monkeypatch, make_capabilities_doc(engine="dots.tts"))
+        posts = []
+
+        def responder(method, url, **kw):
+            if url.endswith("/capabilities"):
+                return json_response(200, make_capabilities_doc(engine="dots.tts"))
+            posts.append(kw.get("json"))
+            if len(posts) == 1:
+                return json_response(422, {"error": {"message": "unexpected field"}})
+            return json_response(200, {"audio_base64": "QUJD", "sample_rate": 48000})
+
+        _patch_http(monkeypatch, responder)
+        result = _run(tts_client.synthesize("hello", "p", "QUJD"))
+
+        assert result.audio == {"audio_base64": "QUJD", "sample_rate": 48000}
+        assert len(posts) == 2
+
+    def test_string_detail_is_not_json_quoted_for_the_user(self):
+        # The router shows this string in the UI. json.dumps'ing it makes the
+        # bubble read '"text contains nothing this engine can speak: ..."'.
+        response = json_response(422, {"detail": self.UNSPEAKABLE_TEXT_DETAIL})
+
+        assert tts_client._response_detail(response) == self.UNSPEAKABLE_TEXT_DETAIL
+
+        listed = json_response(422, make_unexpected_field_422("num_steps", 999))
+        assert "num_steps" in tts_client._response_detail(listed)
 
 
 class TestLanguageFit:

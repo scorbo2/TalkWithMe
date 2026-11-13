@@ -139,6 +139,28 @@ class TestAudioFilenames:
         assert persistence._audio_filename("abc", 1, "audio/webm") == "abc_1.webm"
 
 
+class TestServeableAudioFilenames:
+    """is_serveable_audio_filename: join-safe is not the same as serveable."""
+
+    def test_persisted_clip_name_is_serveable(self):
+        # GIVEN the names the app itself writes:
+        # THEN they are serveable.
+        assert persistence.is_serveable_audio_filename("d4ee3044_1.wav") is True
+        assert persistence.is_serveable_audio_filename("d4ee3044_pending_a1b2c3d4.webm") is True
+
+    def test_history_json_is_join_safe_but_not_serveable(self):
+        # GIVEN the room's own bookkeeping file: it passes the join-safety rule
+        # (no separators, not "."/".."), which is exactly why the audio
+        # endpoint served the room's whole transcript when that was the only
+        # check — the transcript is not a clip to replay.
+        assert persistence._is_plain_filename(persistence.HISTORY_FILENAME) is True
+        assert persistence.is_serveable_audio_filename(persistence.HISTORY_FILENAME) is False
+
+    @pytest.mark.parametrize("name", ["../secrets.txt", "..\\secrets.txt", "nested/x.wav", "\x00.wav", "..", ".", 42, None])
+    def test_path_shaped_or_untrusted_names_are_neither_join_safe_nor_serveable(self, name):
+        assert persistence.is_serveable_audio_filename(name) is False
+
+
 class TestPersistAudio:
     def test_persist_audio_existing_row_names_by_index(self):
         persistence.persist_message("room1", ChatMessage(role="user", content="hi"), "m-1")

@@ -120,7 +120,7 @@ async function toggleMicrophone() {
                 // message is sent, but we need it here *before* sendMessage().
                 // So we generate it now if it's not already set.
                 if (!pendingUserMessageId) {
-                    pendingUserMessageId = crypto.randomUUID();
+                    pendingUserMessageId = generateMessageId();
                 }
 
                 try {

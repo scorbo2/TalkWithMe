@@ -86,6 +86,80 @@ def tmp_project_root(tmp_path) -> Path:
 
 
 @pytest.fixture
+def ansi_codepage_io_default(monkeypatch):
+    """Make text-mode I/O that omits `encoding=` behave like a Windows box.
+
+    Issue #166: the interpreter's default text encoding is the *locale* —
+    UTF-8 on Linux/macOS, the ANSI codepage (cp1252 on a Western Windows
+    install) elsewhere. Every config file here is written with
+    allow_unicode=True, i.e. non-ASCII stored raw, so a loader or saver that
+    forgets to pin the encoding either raises (bytes the codepage leaves
+    undefined) or — the nastier case — silently decodes "Björk" as "BjÃ¶rk"
+    and feeds that to the UI, the router and the LLM.
+
+    Injecting cp1252 as the default is how a Windows run would have behaved,
+    so this fixture turns that whole bug class into a loud failure on any
+    runner. Binary modes are passed through untouched: they legitimately have
+    no text encoding (and injecting one would raise TypeError).
+
+    Three entry points need covering, because a caller does not always reach
+    open() with the encoding left out (a single `setdefault` on the kwargs
+    missed the pathlib half of the suite entirely — Copilot caught that on
+    PR #167):
+      * `open(...)` with no `encoding=` keyword -> injected below;
+      * `Path.read_text()` / `Path.write_text()` — CPython 3.11+ resolves the
+        default with io.text_encoding() BEFORE Path.open is called, so the
+        keyword arrives already filled in with the runner's real encoding.
+        io.text_encoding gets patched so that resolution yields cp1252;
+      * any caller passing `encoding=None` explicitly (the pre-3.11 pathlib
+        shape, and hand-written calls) -> the None check below.
+
+    New tests that read or write a config/persona file should use this if
+    they care about the encoding invariant; the app itself routes all YAML I/O
+    through app/services/yaml_io.py, which pins UTF-8.
+
+    The fixture's own teeth are pinned by TestAnsiCodepageFixtureIsReal in
+    tests/test_yaml_io.py: if a Python upgrade ever moves default-encoding
+    resolution somewhere this fixture cannot reach, THAT test fails — instead
+    of every encoding test quietly proving nothing.
+    """
+    import builtins
+    import io
+
+    real_open = builtins.open
+    ansi_codepage = "cp1252"
+
+    def open_with_codepage_default(*args, **kwargs):
+        mode = kwargs.get("mode") or (args[1] if len(args) > 1 else "r")
+        if "b" in mode:
+            return real_open(*args, **kwargs)
+        # An absent key and an explicit None mean the same thing: "use the
+        # interpreter default" — exactly what is being overridden here.
+        if kwargs.get("encoding") is None:
+            kwargs["encoding"] = ansi_codepage
+        return real_open(*args, **kwargs)
+
+    # builtins.open covers `open(...)`; Path.open covers `path.open(...)`.
+    monkeypatch.setattr(builtins, "open", open_with_codepage_default)
+    monkeypatch.setattr(Path, "open", open_with_codepage_default)
+    # Path.read_text()/write_text() resolve the default through io.text_encoding
+    # before Path.open is ever reached, so patching Path.open alone leaves them
+    # on the runner's real locale. (io.text_encoding does not exist before
+    # 3.11; there those methods pass encoding=None down to Path.open, which the
+    # None check above handles.)
+    if hasattr(io, "text_encoding"):
+        def text_encoding_with_codepage(encoding=None):
+            # None is the pre-3.15 "use the default" argument, "locale" is the
+            # PEP 686 (3.15+) one. Both mean the same thing here — and both
+            # must resolve to the codepage, or the emulation goes soft.
+            if encoding is None or encoding == "locale":
+                return ansi_codepage
+            return encoding
+
+        monkeypatch.setattr(io, "text_encoding", text_encoding_with_codepage)
+
+
+@pytest.fixture
 def persistence_root(tmp_path) -> Path:
     """The tmp directory standing in for the chatrooms/ persistence root."""
     return tmp_path / "chatrooms"
@@ -115,7 +189,8 @@ def raw_asgi_get():
     handler through a normal request. uvicorn instead sets scope["path"]
     to the percent-decoded target and scope["raw_path"] to the raw bytes —
     that combination is what makes "..%2Fx" a traversal at all. This
-    helper reproduces uvicorn's scope construction (h11_impl.py) exactly.
+    helper reproduces uvicorn's scope construction (h11_impl.py) exactly,
+    the receive() channel included (see below).
     """
     import asyncio
 
@@ -124,7 +199,13 @@ def raw_asgi_get():
     def _raw_asgi_get(path: str, raw_path: bytes | None = None):
         scope = {
             "type": "http",
-            "asgi": {"version": "3.0"},
+            # spec_version 2.3 is what uvicorn actually sends, and it is not
+            # cosmetic: below ASGI 2.4 a FileResponse streams the file in a
+            # sibling task while this channel is watched for "http.disconnect"
+            # (starlette/responses.py, FileResponse.__call__). Omitting the key
+            # takes the same branch (it defaults to "2.0"), but naming it keeps
+            # the fake honest about which code path the app is exercising.
+            "asgi": {"version": "3.0", "spec_version": "2.3"},
             "http_version": "1.1",
             "method": "GET",
             "scheme": "http",
@@ -137,8 +218,31 @@ def raw_asgi_get():
             "server": ("testserver", 80),
         }
 
+        # The two halves of the receive() channel, in order:
+        #   1. the request body — a GET has a single empty, complete message;
+        #   2. then the connection sits open until the response is finished,
+        #      and ONLY then does the server report "http.disconnect".
+        # That is uvicorn's blocking receive_queue.get(), and Starlette's own
+        # TestClient honours the same contract (it awaits response_complete
+        # before disconnecting). Skipping step 2 — returning a body message
+        # immediately on every call — starves the sibling streaming task and
+        # never disconnects, so FileResponse spins forever: the suite hung on
+        # the first audio file served through this helper. Starlette < 1.x had
+        # no disconnect watch at all, which is why this only bites now that
+        # the unpinned starlette dependency has drifted to 1.x.
+        request_complete = False
+        # Signalled by the LAST response body message: a FileResponse larger
+        # than its chunk size sends several with more_body=True, and claiming
+        # completion earlier would cancel the transfer mid-file.
+        response_complete = asyncio.Event()
+
         async def receive():
-            return {"type": "http.request", "body": b"", "more_body": False}
+            nonlocal request_complete
+            if not request_complete:
+                request_complete = True
+                return {"type": "http.request", "body": b"", "more_body": False}
+            await response_complete.wait()
+            return {"type": "http.disconnect"}
 
         result = {"status": None, "body": b""}
 
@@ -147,6 +251,8 @@ def raw_asgi_get():
                 result["status"] = message["status"]
             elif message["type"] == "http.response.body":
                 result["body"] += message.get("body", b"")
+                if not message.get("more_body", False):
+                    response_complete.set()
 
         asyncio.run(app(scope, receive, send))
         return result["status"], result["body"]

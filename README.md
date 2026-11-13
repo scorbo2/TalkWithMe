@@ -28,6 +28,7 @@ Follow the development of this app on my YouTube channel:
 - Fully local — no internet required, no authentication. You can connect to remote LLMs with an API key if you wish, but TalkWithMe can be run 100% locally. NOTE: only connect to remote LLMs that you trust.
 - Theme chooser in the top-right: Dark (default), Light, Matrix, and Blues
 - Each room persists its text and audio messages
+- Copy any message's text with one click (hover a bubble: 📋 sits beside 🗑)
 
 ## Prerequisites
 
@@ -360,7 +361,7 @@ If your reference audio is in some other language, you must specify the language
 
 ## Streaming TTS responses
 
-If `streaming` is enabled in the TTS configuration, text responses from AI personas will be chunked into sentences using common punctuation, and each sentence will be queued up as a separate TTS request. A separate audio playback queue is used to queue up and play the responses sequentially. 
+If `streaming` is enabled in the TTS configuration, text responses from AI personas will be chunked into sentences using common punctuation and line breaks (so each list item is its own chunk), and each sentence will be queued up as a separate TTS request. Periods that don't end a sentence - titles like "Mrs. Hudson", initials, "e.g.", numbered-list markers, decimals - don't split it. A separate audio playback queue is used to queue up and play the responses sequentially. 
 
 - Advantage: the initial lag time before playback begins is reduced. The user only has to wait for the first sentence to generate and not the entire text response. As each sentence plays, the next sentence is being processed by the TTS service. Ideally, the lag between sentences is minimal.
 - Disadvantage: sentence length variance can lead to large pauses between sentences. A short sentence followed by a long sentence is the worst case scenario, because the short sentence will process and play very quickly, but the longer sentence will take much longer for the TTS server to process.
@@ -370,6 +371,51 @@ If you prefer to hear the persona's response in one clear, contiguous audio play
 If you want to hear each sentence as soon as it has been synthesized, without having to wait for the ENTIRE response to be synthesized, and you don't mind the occasional pause in between sentences, then enable streaming mode in configuration.
 
 For lowest lag time, consider OmniVoice as the TTS server. It is considerably faster than `dots.tts` or `Qwen3-TTS`.
+
+### When a sentence has nothing to speak
+
+**Needs tts-serve 1.5 or newer.** Older tts-serve servers crash the vocoder on
+unvoiceable text and answer 500, which TalkWithMe can only report as a generic
+engine hiccup (every sentence is retried, nothing is explained). The
+plain-language behaviour below is the 1.5 pre-flight.
+
+Some engines can only voice certain text. LuxTTS, for example, speaks English
+and Chinese. A chunk made only of punctuation, digits, Markdown (a closing code
+fence, a `|---|` table rule), a timestamp, emoji, or Cyrillic / Japanese /
+Korean text has nothing for it to say, and its tts-serve server answers with a
+plain-language refusal. Because streaming mode asks for one sentence per
+request, the client handles that per sentence:
+
+- A chunk that plainly contains nothing any engine can voice is skipped before
+  a request is even made (a console line, no audio, no waiting).
+- If the server refuses a sentence, its own reason is shown under that reply as
+  one muted line — `Voice unavailable for this reply: text contains nothing
+  this engine can speak: …` — and the rest of *that reply* stops asking for
+  audio. The verdict is about the engine and the voice, not the sentence, and
+  each sentence is a full synthesis slot on engines like LuxTTS (they serialize
+  synthesis, so a queued sentence is a queue-jump, not a freebie).
+- Each reply is judged on its own verdict. In a multi-reply turn (or the echo
+  chamber) a voice that refuses one persona does not mute the others, and a
+  refusal is never printed on somebody else's bubble — a synthesis is still in
+  flight long after the next persona has started answering.
+- The next reply starts fresh. One persona's broken voice never mutes the
+  session.
+
+An engine *hiccup* (the TTS server restarting, a network blip) is deliberately
+treated differently: every remaining sentence is still requested, and nothing
+is printed.
+
+If the refusal is about the **reference clip** instead —
+`reference audio contains no recognizable speech in its first 5 s` — the fix is
+in the persona, not the prompt: `ref.wav` must begin with audible speech, and
+the window the engine listens to is the `prompt_duration` parameter (5 seconds
+by default), which you can raise in the Servers dialog while a LuxTTS engine is
+selected. LuxTTS never reads `ref.txt`: it transcribes the clip itself with
+Whisper, and only English / Chinese speech survives that transcription, so a
+silent or music-only clip gives it no voice to clone. That refusal is shown
+under the reply like any other, and TalkWithMe stops asking for the rest of the
+reply: the clip is the same for every sentence, so every sentence would hear the
+same answer (and cost the same synthesis slot).
 
 ## Persona-to-persona chat
 
@@ -520,6 +566,26 @@ In streaming mode, there will be one replay icon per sentence in the response. C
 will play the respective sentence:
 
 ![Chat replay streaming](screenshots/chat_audio_replay_streaming.png)
+
+## Copying a message
+
+Hover over any chat bubble and two small buttons appear underneath it: 📋 to
+copy that message's text to the clipboard, and 🗑 to delete the message. Both
+are hidden until you hover (on a phone or tablet they are always visible).
+
+Clicking 📋 copies the text of that one bubble - nothing else. The persona's
+name, the tool chips, and the audio replay buttons are not included. The
+button then shows a brief ✅ so you know the text actually landed.
+
+A couple of details worth knowing:
+
+- If you reach TalkWithMe over plain HTTP from another device (e.g.
+  `http://192.168.1.20:8000`), browsers hide their modern clipboard API for
+  security reasons. Copying still works there via a fallback path, but if a
+  browser blocks both paths you will see ❌ instead of ✅.
+- Copying a message that is still streaming copies whatever has been written
+  so far. A bubble that has no text yet is not copied at all - it would
+  otherwise replace whatever you had previously copied with nothing.
 
 ## Echo chamber
 
@@ -676,6 +742,15 @@ standalone script under `impl/` with per-engine install notes.
   - MCP Server access control (#138)
   - Chat bubbles should "glow" when speaking (#139)
   - Add a "stop" button to halt audio output (#142)
+- **Work in progress, add release date when ready** v7.3
+  - Bug fix: Send button throws error when using http over LAN (#145)
+  - Better sentence chunking in streaming mode (#153)
+  - Cosmetic improvements in Persona Editor / Add Persona dialogs (#155)
+  - Bug fix: unit tests can hang on a fresh clone (#159)
+  - Add a "copy to clipboard" button beside every chat bubble (#158)
+  - Better handling of "unspeakable" text (#162)
+  - Better mouse handling on modals (#165)
+  - Some fixes for Windows users (#166)
 
 ## License
 
