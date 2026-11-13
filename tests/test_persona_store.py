@@ -396,6 +396,25 @@ class TestLoadPersonasYaml:
         ])
         assert [p.name for p in load_personas_yaml(path)] == ["Alex"]
 
+    def test_utf8_file_with_non_ascii_names_parses_verbatim(self, tmp_path):
+        # The one-time migration reads a user's real personas.yaml, which may
+        # hold any name/prompt they typed.
+        path = write_legacy_yaml(tmp_path / "personas.yaml", [
+            {"name": "Bj\u00f6rk", "system_prompt": "Caf\u00e9 \u4f50\u85e4"},
+        ])
+        assert load_personas_yaml(path)[0].name == "Bj\u00f6rk"
+        assert load_personas_yaml(path)[0].system_prompt == "Caf\u00e9 \u4f50\u85e4"
+
+    def test_utf8_file_with_non_ascii_names_parses_verbatim_under_ansi_codepage_default(self, tmp_path, ansi_codepage_io_default):
+        """Issue #166: this loader was the one site in persona_store.py that
+        still opened the file with the locale default — on Windows it either
+        raised at startup (CJK/emoji) or migrated "Björk" into a directory
+        whose frontmatter said "BjÃ¶rk"."""
+        path = write_legacy_yaml(tmp_path / "personas.yaml", [
+            {"name": "Bj\u00f6rk \U0001f643", "system_prompt": "p"},
+        ])
+        assert [p.name for p in load_personas_yaml(path)] == ["Bj\u00f6rk \U0001f643"]
+
     def test_missing_personas_key_returns_empty_list(self, tmp_path):
         (tmp_path / "personas.yaml").write_text("{}")
         assert load_personas_yaml(tmp_path / "personas.yaml") == []
@@ -462,6 +481,28 @@ class TestMigrateFromLegacyYaml:
         assert (luna_dir / "language.txt").read_text() == "en"
         assert (luna_dir / "ref.wav").read_bytes() == b"wav-bytes"
         assert (luna_dir / "ref.txt").read_text() == "a transcript"
+
+    def test_non_ascii_persona_name_survives_migration_under_ansi_codepage_default(self, tmp_path, ansi_codepage_io_default):
+        """The whole migration path — read the YAML, write prompt.md — must be
+        encoding-pinned: a name outside the interpreter default used to be
+        corrupted before it ever reached the persona directory."""
+        # GIVEN a legacy personas.yaml whose name has no directory-usable
+        # characters at all (so the directory falls back to 'persona' and the
+        # frontmatter is the only place the real name lives):
+        path = write_legacy_yaml(tmp_path / "personas.yaml", [
+            {"name": "\u4f50\u85e4", "system_prompt": "System prompt \u4f50\u85e4"},
+        ])
+        root = tmp_path / "Personas"
+
+        # WHEN the one-time migration runs under a cp1252 interpreter default,
+        migrate_from_legacy_yaml(path, root)
+
+        # THEN the persona keeps its real name and prompt (sanitized dir name,
+        # frontmatter identity — see sanitize_persona_dirname):
+        persona = load_persona_from_dir(root / "persona")
+        assert persona.name == "\u4f50\u85e4"
+        assert persona.system_prompt == "System prompt \u4f50\u85e4"
+        assert (root / "persona" / "prompt.md").read_bytes().count("\u4f50\u85e4".encode("utf-8")) == 2
 
     def test_missing_referenced_file_is_a_minor_error(self, tmp_path, caplog):
         path = write_legacy_yaml(tmp_path / "personas.yaml", [

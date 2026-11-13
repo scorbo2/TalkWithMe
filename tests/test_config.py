@@ -796,6 +796,136 @@ class TestSaveLoadRoundTrip:
 
 
 # ---------------------------------------------------------------------------
+# Config-file encoding — issue #166 (Windows ANSI codepage)
+# ---------------------------------------------------------------------------
+
+# Accented Latin (present in cp1252: a wrong default corrupts it silently),
+# CJK + emoji (absent from cp1252: a wrong default raises on read AND write).
+UNICODE_TEXT = "Bj\u00f6rk \u4f50\u85e4 \U0001f643"
+
+
+class TestConfigFileEncoding:
+    """settings.yaml / chatrooms.yaml must always be UTF-8 on disk.
+
+    Both files hold user text (persona names, system prompts, room names) and
+    are written with allow_unicode=True. Before the yaml_io chokepoint they
+    were opened with the interpreter's locale default — UTF-8 on Linux/macOS,
+    the ANSI codepage on Windows — which corrupted values or raised. The
+    ansi_codepage_io_default fixture reproduces the Windows default here so a
+    regression fails on any runner.
+    """
+
+    def test_save_settings_with_non_ascii_global_prompt_writes_raw_utf8(self, tmp_path):
+        # WHEN a global system prompt with non-ASCII is saved,
+        path = tmp_path / "settings.yaml"
+        app_config.save_settings(
+            make_settings(general=GeneralConfig(global_system_prompt=UNICODE_TEXT)), path)
+
+        # THEN the bytes on disk are raw UTF-8 (never \u escapes, never a
+        # codepage translation) and no temp file survives the atomic swap:
+        raw = path.read_bytes()
+        assert "Björk".encode("utf-8") in raw
+        assert "佐藤".encode("utf-8") in raw
+        assert b"\\u" not in raw
+        assert list(tmp_path.glob("*.tmp")) == []
+
+    def test_save_settings_with_ansi_codepage_default_still_writes_utf8(self, tmp_path, ansi_codepage_io_default):
+        # GIVEN a cp1252 interpreter default (a Western Windows install):
+        # WHEN the General settings dialog saves an emoji-bearing prompt —
+        # pre-fix this raised UnicodeEncodeError *after* open(..., "w") had
+        # truncated settings.yaml, so the config was half-gone afterwards —
+        path = tmp_path / "settings.yaml"
+        app_config.save_settings(
+            make_settings(general=GeneralConfig(global_system_prompt=UNICODE_TEXT)), path)
+
+        # THEN the file is intact UTF-8 and reloads verbatim:
+        assert app_config.load_settings(path).general.global_system_prompt == UNICODE_TEXT
+
+    def test_load_settings_with_ansi_codepage_default_reads_utf8_file_verbatim(self, tmp_path, ansi_codepage_io_default):
+        # GIVEN a UTF-8 settings.yaml as any correct writer produces:
+        path = tmp_path / "settings.yaml"
+        path.write_text(
+            f"general:\n  global_system_prompt: '{UNICODE_TEXT}'\n", encoding="utf-8")
+
+        # WHEN it is loaded on a machine whose default encoding is cp1252,
+        # THEN the prompt is not mojibaked into 'BjÃ¶rk' on the way in (the
+        # silent half of the bug — the value goes straight to the LLM):
+        assert app_config.load_settings(path).general.global_system_prompt == UNICODE_TEXT
+
+    def test_load_settings_with_utf8_file_outside_the_codepage_does_not_crash_startup(self, tmp_path, ansi_codepage_io_default):
+        # GIVEN a UTF-8 settings.yaml with characters cp1252 cannot decode:
+        path = tmp_path / "settings.yaml"
+        path.write_text("general:\n  global_system_prompt: '\u4f50\u85e4'\n", encoding="utf-8")
+
+        # WHEN the startup loader runs (it is called unguarded in the app
+        # lifespan, so an exception here means the app never starts):
+        loaded = app_config.load_settings(path)
+
+        # THEN startup survives:
+        assert loaded.general.global_system_prompt == "\u4f50\u85e4"
+
+    def test_save_chatrooms_with_non_ascii_persona_names_writes_raw_utf8(self, tmp_path):
+        # GIVEN a room holding a persona whose name is not ASCII (persona
+        # names are free text — only room names are restricted to ASCII):
+        path = tmp_path / "chatrooms.yaml"
+        rooms = ChatRoomsConfig(
+            chat_rooms=[ChatRoom(name="Lounge", persona_names=["Alex", "\u4f50\u85e4"])]
+        )
+
+        # WHEN it is saved (the room-create / assign / rename-cascade paths),
+        app_config.save_chatrooms(rooms, path)
+
+        # THEN the name is stored raw and reads back identical:
+        assert "\u4f50\u85e4".encode("utf-8") in path.read_bytes()
+        reloaded = app_config.load_chatrooms(path)
+        assert reloaded.chat_rooms[0].persona_names == ["Alex", "\u4f50\u85e4"]
+
+    def test_save_chatrooms_with_ansi_codepage_default_still_writes_utf8(self, tmp_path, ansi_codepage_io_default):
+        # GIVEN the cp1252 default, WHEN a CJK-named persona is assigned to a
+        # room — pre-fix this was a 500 on every room mutation in a room that
+        # contained such a persona —
+        path = tmp_path / "chatrooms.yaml"
+        rooms = ChatRoomsConfig(chat_rooms=[ChatRoom(name="Lounge", persona_names=["\u4f50\u85e4"])])
+        app_config.save_chatrooms(rooms, path)
+
+        # THEN the file is UTF-8 and the name survives the round trip:
+        assert app_config.load_chatrooms(path).chat_rooms[0].persona_names == ["\u4f50\u85e4"]
+
+    def test_load_chatrooms_with_ansi_codepage_default_reads_utf8_file_verbatim(self, tmp_path, ansi_codepage_io_default):
+        # GIVEN a UTF-8 chatrooms.yaml (written by an earlier run, or by the
+        # app on another machine):
+        path = tmp_path / "chatrooms.yaml"
+        path.write_text(
+            "chat_rooms:\n- name: Lounge\n  persona_names:\n  - Bj\u00f6rk\n"
+            "  echo_chamber: false\ndefault_echo_chamber: false\n",
+            encoding="utf-8",
+        )
+
+        # WHEN it is read at startup under a cp1252 default,
+        rooms = app_config.load_chatrooms(path)
+
+        # THEN the persona name is intact — it is what the room-membership
+        # comparison (and therefore eligibility) is keyed on:
+        assert rooms.chat_rooms[0].persona_names == ["Bj\u00f6rk"]
+
+    def test_config_yaml_is_written_utf8_regardless_of_the_reader_locale(self, tmp_path, ansi_codepage_io_default):
+        # The point of pinning the encoding: a file saved by this app must be
+        # readable identically on a box whose locale disagrees with the
+        # writer's. GIVEN a save under a cp1252 default and a read under a
+        # UTF-8 default (the same interpreter, fixture torn down in between):
+        path = tmp_path / "chatrooms.yaml"
+        app_config.save_chatrooms(
+            ChatRoomsConfig(chat_rooms=[ChatRoom(name="Kitchen", persona_names=["café"])]), path)
+
+        # WHEN the same bytes are read back with no fixture active,
+        rooms = app_config.load_chatrooms(path)
+
+        # THEN they match, and the on-disk form is UTF-8, not an escape soup:
+        assert rooms.chat_rooms[0].persona_names == ["caf\u00e9"]
+        assert "caf\u00e9".encode("utf-8") in path.read_bytes()
+
+
+# ---------------------------------------------------------------------------
 # Cache semantics
 # ---------------------------------------------------------------------------
 

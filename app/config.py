@@ -15,8 +15,11 @@ import re
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-import yaml
 from pydantic import BaseModel, Field, field_validator, model_validator
+
+# All YAML file I/O goes through yaml_io (UTF-8 pinned + atomic writes) — see
+# app/services/yaml_io.py for why a bare open() here broke Windows.
+from app.services import yaml_io
 
 logger = logging.getLogger(__name__)
 
@@ -409,8 +412,7 @@ def load_settings(path: Optional[Path] = None) -> AppSettings:
     target = path or _PROJECT_ROOT / "settings.yaml"
     if not target.exists():
         return AppSettings()
-    with open(target) as f:
-        raw = yaml.safe_load(f) or {}
+    raw = yaml_io.load_yaml_file(target) or {}
     _settings_cache = AppSettings(
         llm=LLMSettings(**raw.get("llm", {})),
         tts=TTSConfig(**raw.get("tts", {})),
@@ -550,8 +552,7 @@ def save_settings(config: AppSettings, path: Optional[Path] = None) -> None:
         "general": config.general.model_dump(exclude_none=False),
         "mcp": config.mcp.model_dump(exclude_none=False),
     }
-    with open(target, "w") as f:
-        yaml.dump(raw, f, default_flow_style=False, allow_unicode=True, sort_keys=False)
+    yaml_io.save_yaml_file(target, raw)
     _settings_cache = config
 
 
@@ -568,8 +569,7 @@ def load_chatrooms(path: Optional[Path] = None) -> ChatRoomsConfig:
     target = path or _PROJECT_ROOT / "chatrooms.yaml"
     if not target.exists():
         return ChatRoomsConfig()
-    with open(target) as f:
-        raw = yaml.safe_load(f) or {}
+    raw = yaml_io.load_yaml_file(target) or {}
     _chatrooms_cache = ChatRoomsConfig(
         chat_rooms=[ChatRoom(**cr) for cr in raw.get("chat_rooms", [])],
         # A bare key ("default_echo_chamber:") is YAML null — treat it as
@@ -593,8 +593,7 @@ def save_chatrooms(config: ChatRoomsConfig, path: Optional[Path] = None) -> None
         # serializes every field.
         "default_echo_chamber": config.default_echo_chamber,
     }
-    with open(target, "w") as f:
-        yaml.dump(raw, f, default_flow_style=False, allow_unicode=True, sort_keys=False)
+    yaml_io.save_yaml_file(target, raw)
     _chatrooms_cache = config
 
 
