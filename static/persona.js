@@ -152,13 +152,11 @@ document.getElementById("pe-confirm-cancel").addEventListener("click", () => {
     peConfirmOverlay.classList.add("hidden");
 });
 
-// Close modals on overlay backdrop click
-personaEditorOverlay.addEventListener("click", (e) => {
-    if (e.target === personaEditorOverlay) closePersonaEditor();
-});
-peConfirmOverlay.addEventListener("click", (e) => {
-    if (e.target === peConfirmOverlay) peConfirmOverlay.classList.add("hidden");
-});
+// Close modals on a genuine backdrop click (press AND release on the
+// backdrop — see installBackdropClose() in utils.js for why a plain
+// "click" handler made a drag off a checkbox close the whole modal).
+installBackdropClose(personaEditorOverlay, closePersonaEditor);
+installBackdropClose(peConfirmOverlay, () => peConfirmOverlay.classList.add("hidden"));
 
 /* ==========================================================================
    Persona Editor — modal lifecycle
