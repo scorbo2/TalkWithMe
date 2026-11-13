@@ -86,6 +86,44 @@ def tmp_project_root(tmp_path) -> Path:
 
 
 @pytest.fixture
+def ansi_codepage_io_default(monkeypatch):
+    """Make text-mode I/O that omits `encoding=` behave like a Windows box.
+
+    Issue #166: the interpreter's default text encoding is the *locale* —
+    UTF-8 on Linux/macOS, the ANSI codepage (cp1252 on a Western Windows
+    install) elsewhere. Every config file here is written with
+    allow_unicode=True, i.e. non-ASCII stored raw, so a loader or saver that
+    forgets to pin the encoding either raises (bytes the codepage leaves
+    undefined) or — the nastier case — silently decodes "Björk" as "BjÃ¶rk"
+    and feeds that to the UI, the router and the LLM.
+
+    Injecting cp1252 as the default is how a Windows run would have behaved,
+    so this fixture turns that whole bug class into a loud failure on any
+    runner. Binary modes are passed through untouched: they legitimately have
+    no text encoding (and injecting one would raise TypeError).
+
+    New tests that read or write a config/persona file should use this if
+    they care about the encoding invariant; the app itself routes all YAML I/O
+    through app/services/yaml_io.py, which pins UTF-8.
+    """
+    import builtins
+
+    real_open = builtins.open
+
+    def open_with_codepage_default(*args, **kwargs):
+        mode = kwargs.get("mode") or (args[1] if len(args) > 1 else "r")
+        if "b" in mode:
+            return real_open(*args, **kwargs)
+        kwargs.setdefault("encoding", "cp1252")
+        return real_open(*args, **kwargs)
+
+    # builtins.open covers `open(...)`; pathlib.Path.open is what Path's
+    # read_text()/write_text() go through, so both need the same patch.
+    monkeypatch.setattr(builtins, "open", open_with_codepage_default)
+    monkeypatch.setattr(Path, "open", open_with_codepage_default)
+
+
+@pytest.fixture
 def persistence_root(tmp_path) -> Path:
     """The tmp directory standing in for the chatrooms/ persistence root."""
     return tmp_path / "chatrooms"
