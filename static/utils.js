@@ -165,6 +165,47 @@ function legacyCopyToClipboard(text) {
     return copied;
 }
 
+/**
+ * Close a modal when its dark backdrop is clicked — but only when the
+ * whole press happened on the backdrop.
+ *
+ * Why not the obvious `overlay.addEventListener("click", ...)` with an
+ * `e.target === overlay` test: the browser fires `click` on the nearest
+ * common ancestor of the mousedown target and the mouseup target. Press
+ * a checkbox (or a colour picker, slider, button, file input) inside the
+ * modal, drag left onto the backdrop, release — mousedown target: the
+ * control, mouseup target: the overlay, so the common ancestor IS the
+ * overlay, `e.target === overlay` looks exactly like a backdrop click,
+ * and the modal vanishes mid-drag with the half-filled form inside it.
+ * Text inputs dodge that synthesis because there the drag is a text
+ * selection gesture and no click is generated at all — which is what made
+ * the bug look like a browser gremlin: only the non-text controls
+ * triggered it.
+ *
+ * So the decision is made from the press pair, never from the synthetic
+ * click: close only when the pointer went DOWN and UP on the backdrop
+ * itself. Presses that start inside the modal still bubble here (the
+ * overlay is an ancestor of the modal box), which re-arms the flag on
+ * every press — so a press released outside the window, where no mouseup
+ * is delivered at all, can never leave a stale "close me" behind.
+ *
+ * @param {HTMLElement} overlay - The full-viewport .modal-overlay element.
+ * @param {function} closeFn - Called when a genuine backdrop click completes.
+ */
+function installBackdropClose(overlay, closeFn) {
+    let pressStartedOnBackdrop = false;
+
+    overlay.addEventListener("mousedown", (e) => {
+        pressStartedOnBackdrop = e.target === overlay;
+    });
+
+    overlay.addEventListener("mouseup", (e) => {
+        const clickCompletedOnBackdrop = pressStartedOnBackdrop && e.target === overlay;
+        pressStartedOnBackdrop = false;
+        if (clickCompletedOnBackdrop) closeFn();
+    });
+}
+
 /** Escape HTML special characters to prevent XSS in dynamically rendered text. */
 function escapeHtml(str) {
     if (typeof str !== 'string') return str;

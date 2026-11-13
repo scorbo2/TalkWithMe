@@ -154,23 +154,15 @@ function setupChatRoomEventListeners() {
         crConfirmOverlay.classList.add("hidden");
     });
 
-    // Backdrop click to close
-    chatroomsOverlay.addEventListener("click", (e) => {
-        if (e.target === chatroomsOverlay) closeChatRoomsEditor();
-    });
-    crConfirmOverlay.addEventListener("click", (e) => {
-        if (e.target === crConfirmOverlay) {
-            crConfirmOverlay.classList.add("hidden");
-        }
-    });
+    // Backdrop click to close (press + release on the backdrop itself).
+    installBackdropClose(chatroomsOverlay, closeChatRoomsEditor);
+    installBackdropClose(crConfirmOverlay, () => crConfirmOverlay.classList.add("hidden"));
 
     // Persona picker
     document.getElementById("pp-btn-close").addEventListener("click", closePersonaPicker);
     document.getElementById("pp-btn-cancel").addEventListener("click", closePersonaPicker);
     document.getElementById("pp-btn-add").addEventListener("click", addSelectedPersonasToRoom);
-    personaPickerOverlay.addEventListener("click", (e) => {
-        if (e.target === personaPickerOverlay) closePersonaPicker();
-    });
+    installBackdropClose(personaPickerOverlay, closePersonaPicker);
 }
 
 /* ==========================================================================
