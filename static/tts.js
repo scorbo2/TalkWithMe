@@ -223,9 +223,9 @@ function enqueueStreamingTTS(personaName, text) {
                      previewForLog(text));
         return;
     }
-    // No round trip for a chunk no engine can voice — see isSpeakableText.
+    // No round trip for a chunk with no letters in it at all — see isSpeakableText.
     if (!isSpeakableText(text)) {
-        console.warn("streaming TTS skipped (nothing this engine can voice):", previewForLog(text));
+        console.warn("streaming TTS skipped (no letters to voice):", previewForLog(text));
         return;
     }
     ttsRequestQueue.push({ personaName, text, messageId });
@@ -233,26 +233,32 @@ function enqueueStreamingTTS(personaName, text) {
 }
 
 /**
- * Can any supported engine voice this text at all?
+ * Does this chunk contain anything at all that a TTS engine could voice?
  *
- * LuxTTS' tokenizer keeps ASCII letters and CJK ideographs and drops every
- * other character (tts-serve impl/server_luxTTS.md, "Nothing to speak"), so a
- * chunk made only of punctuation, digits, Markdown fences, table rules,
- * timestamps, emoji, or other scripts has nothing to speak and the server
- * answers 422. The streaming splitter breaks on "." AND on every newline, so
- * such a chunk arrives as a whole request: a closing code fence, a `|---|`
- * table rule, a bare "...", an emoji-only line.
+ * The streaming splitter breaks on "." AND on every newline, so a fragment of
+ * reply scaffolding arrives as its own whole request: a closing code fence, a
+ * `|---|` table rule, a bare "...", a timestamp line, an emoji-only line.
+ * None of those contains a single letter, and no engine in the tts-serve
+ * catalogue speaks them, so the round trip is worthless — drop the chunk with
+ * a console line instead of paying for it.
  *
- * Deliberately NARROWER than the engine's rule — it asks only "is there a
- * character any of them can pronounce?". The engine's own tokenizer stays the
- * authority (it additionally catches e.g. a lone `[laughs]`). A chunk this
- * calls speakable costs at most the request we would have made anyway; a chunk
- * it wrongly calls unspeakable silently deletes words from the user's audio,
- * so the bias towards "speakable" is the point.
+ * This test is about FORM, never about SCRIPT (issue #169). It used to hard-
+ * code LuxTTS' tokenizer (`[A-Za-z\u00C0-\u024F\u4E00-\u9FFF]`) as an app-wide
+ * rule, and one engine's script coverage is not every engine's spec: a persona
+ * answering in Cyrillic, kana, Hangul, Greek or Arabic had every sentence
+ * dropped client-side — zero `/api/tts` requests, no `.tts-note`, no 422, only
+ * a console line — on engines that advertise exactly those languages
+ * (server_qwen3TTS ships ru/ja/ko, server_indexTTS ships ar, server_ming3TTS
+ * ships ja/ko). Which scripts a voice can carry is a property of the ENGINE,
+ * and the engine is the authority here: it answers its own coverage with a 422
+ * sentence, and handleUnvoiceableVerdict turns that into the user-facing note.
+ *
+ * Bias towards "speakable", same as ever: a chunk this calls speakable costs
+ * at most the request we would have made anyway; a chunk it wrongly calls
+ * unspeakable silently deletes words from the user's audio.
  */
 function isSpeakableText(text) {
-    const s = String(text ?? "");
-    return /[A-Za-z\u00C0-\u024F\u4E00-\u9FFF]/.test(s);
+    return /\p{L}/u.test(String(text ?? ""));
 }
 
 /** A chunk preview for the console: long LLM replies are not log material. */
@@ -264,9 +270,11 @@ function previewForLog(text) {
 /**
  * Forget the resilience verdicts of the previous reply.
  *
- * Called on the "start" event, next to the sentence-buffer reset: a new
- * assistant reply is a fresh chance, so one persona's broken voice never
- * mutes the session. Clearing the whole set is safe because verdicts are only
+ * Called on every "start" event, in BOTH modes (the call sits outside the
+ * `ttsStreaming` guard in chat.js): a new assistant reply is a fresh chance,
+ * so one persona's broken voice never mutes the session. Non-streaming has to
+ * be included because `processAudioQueue` feeds this same set and nothing else
+ * ever drains it. Clearing the whole set is safe because verdicts are only
  * ever useful for the reply they were earned by: a later reply of the same
  * persona re-asks once and, if the voice is still broken, re-earns the
  * verdict for its own message ID.
@@ -283,6 +291,14 @@ function resetTtsReplyState() {
  * three are keyed to the asking message on purpose: the fetch that failed can
  * resolve long after the LLM stream moved on to the next responder, so the
  * "current" row/ID at verdict time belongs to somebody else's reply.
+ *
+ * The WHOLE message pays for one refusal. For a reply in a language the
+ * connected engine has no voice for, that is the point. For a mixed-script
+ * reply it is a real cost (the refusal was about one sentence's script, and
+ * the sibling sentences never got to argue), and it is accepted rather than
+ * worked around: any client-side rule fine enough to tell those two cases
+ * apart is a script table again, which is the bug #169 was. Pinned by
+ * tests/test_tts_resilience.js — see the note on ttsBrokenMessageIds.
  */
 function handleUnvoiceableVerdict(item, err) {
     if (item.messageId) ttsBrokenMessageIds.add(item.messageId);
