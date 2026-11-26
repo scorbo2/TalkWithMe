@@ -794,6 +794,7 @@ standalone script under `impl/` with per-engine install notes.
   - Better mouse handling on modals (#165)
   - Some fixes for Windows users (#166)
   - Better handling of reference transcript per-engine (#164)
+  - Bug fix: isSpeakableText() was over-zealous (#169)
 
 ## License
 

@@ -8,9 +8,12 @@
  *
  * Background: LuxTTS' tokenizer keeps only ASCII letters, CJK ideographs and
  * <pinyin>/[tag] parts, so a chunk of pure punctuation / digits / Markdown
- * fences / emoji / other scripts has nothing to speak, and the server answers
- * 422 with the reason (docs/02 language contract, schema_version 2 — the
- * schema itself is fine). A silent reference clip is a 400 there, which the
+ * fences / emoji — or text in a script that engine has no phonemes for — has
+ * nothing to speak, and the server answers 422 with the reason (docs/02
+ * language contract, schema_version 2 — the schema itself is fine). That is
+ * LuxTTS' coverage, not a spec: other shipped engines advertise ru/ja/ko/ar,
+ * which is why the client-side pre-filter may only test a chunk's FORM (see
+ * invariant 1). A silent reference clip is a 400 there, which the
  * TalkWithMe router forwards as an app 422 too: both are permanent verdicts
  * about app-side configuration, and the client's axis is permanent vs
  * transient. One sentence of a reply must not eat the reply's audio, and one
@@ -18,11 +21,14 @@
  *
  * Invariants under test:
  *
- * 1. isSpeakableText is deliberately NARROWER than the engine's tokenizer:
- *    any Latin letter or CJK ideograph counts as voiceable, so the client-side
- *    pre-filter can only ever skip chunks no engine can voice. Punctuation,
- *    digits, timestamps, Markdown fences/table rules, emoji, Cyrillic, Korean,
- *    kana and Thai are skipped; accented Latin and mixed CJK/Latin are not.
+ * 1. isSpeakableText tests FORM, never SCRIPT (issue #169): only a chunk with
+ *    no letter at all (`\p{L}`) is skipped client-side — punctuation, digits
+ *    (of any script), timestamps, Markdown fences/table rules, emoji. Any
+ *    chunk carrying a letter of ANY script is sent and the ENGINE decides:
+ *    accented Latin, mixed CJK/Latin, Cyrillic, Greek, kana, Hangul, Arabic
+ *    and Thai all go out on the wire. The pre-filter used to hard-code
+ *    LuxTTS' script coverage, which silently deleted whole-language replies
+ *    with no request, no 422 and no note.
  * 2. enqueueStreamingTTS drops an unspeakable chunk WITHOUT a /api/tts request
  *    and logs the reason; a speakable chunk is queued unchanged, with the
  *    message ID stamped at enqueue time.
@@ -32,6 +38,19 @@
  *    engine's own sentence reaches the user as one muted line anchored on
  *    that message's .bubble-content (the row is a flex row: a direct row
  *    child renders beside the bubble, not under it).
+ *
+ *    3b. ACCEPTED CONSEQUENCE of 3, pinned rather than discovered later
+ *        (issue #169): ONE refusal condemns the whole message, so a
+ *        mixed-script reply on a narrow engine can lose audio the pre-#169
+ *        letter table kept — a refused sentence that lands FIRST mutes its
+ *        reply's remaining (perfectly voiceable) sentences, and one that
+ *        lands LAST prints "voice unavailable for this reply" under a reply
+ *        that mostly spoke. Both shapes are pinned below. They are not bugs
+ *        to fix here: any client-side rule fine enough to separate "this
+ *        language has no voice here" from "this one sentence has no letters
+ *        this engine can speak" is a script table again — the #169 bug. A
+ *        change that wants different behaviour must argue with those tests,
+ *        not with a user report.
  * 4. A 5xx (engine hiccup) does NOT trip anything: every later sentence is
  *    still requested, and no note is shown.
  * 5. The verdict is keyed by MESSAGE ID, never by "the current reply": a TTS
@@ -41,8 +60,10 @@
  * 6. fetchTTS throws with `.status` and `.detail` (verbatim engine sentence)
  *    on a non-2xx response, degrades to "HTTP <status>" on a non-JSON body,
  *    and keeps returning null for a successful response that carries no audio.
- * 7. resetTtsReplyState (the "start" event) clears the verdicts, so the next
- *    reply gets a fresh voice.
+ * 7. resetTtsReplyState (the "start" event — STREAMING OR NOT, since the
+ *    non-streaming queue feeds the same verdict set and nothing else ever
+ *    drained it) clears the verdicts, so the next reply gets a fresh voice
+ *    and the set stays bounded to one reply.
  * 8. The two engine sentences pinned below are VERBATIM from the tts-serve
  *    server that produces them, checked against the checkout when one sits
  *    beside this repo (a pre-merge copy of them pinned a wording the merged
@@ -224,6 +245,21 @@ function detailBody(detail) {
     return { detail };
 }
 
+/**
+ * A fake ENGINE with a narrow script coverage (LuxTTS-shaped): refuses every
+ * sentence of one script with the engine's own 422 sentence, voices the rest.
+ * The script test deliberately lives HERE, in the stub: emulating what one
+ * engine's phonemes carry is the stub's job, while static/tts.js must stay
+ * script-blind (issue #169). Used by the mixed-script pins below.
+ */
+function engineThatRefuses(scriptRe) {
+    return (call) => (scriptRe.test(JSON.parse(call.body).text)
+        ? ttsErrorResponse(422, detailBody(UNSPEAKABLE_TEXT_DETAIL))
+        : ttsSuccessResponse());
+}
+
+const CYRILLIC = /\p{Script=Cyrillic}/u;
+
 /** A FastAPI validation failure: `detail` is a list, not a sentence. */
 function validationBody(field) {
     return {
@@ -253,9 +289,14 @@ function createHarness() {
 
     const fetchStub = async (url, options = {}) => {
         const u = String(url);
-        fetchStub.calls.push({ url: u, method: (options && options.method) || "GET", body: options ? options.body : undefined });
+        const call = { url: u, method: (options && options.method) || "GET", body: options ? options.body : undefined };
+        fetchStub.calls.push(call);
+        // A route is called with its own recorded request, so a stub can answer
+        // BY CONTENT ("this sentence's script is refused, that one is fine")
+        // instead of counting calls. Routes that ignore the argument are
+        // unaffected.
         const route = fetchStub.routes.get(u) || fetchStub.routes.get("*");
-        return route ? route() : { ok: true, status: 200, json: async () => ({}) };
+        return route ? route(call) : { ok: true, status: 200, json: async () => ({}) };
     };
     fetchStub.calls = [];
     fetchStub.routes = new Map();
@@ -403,20 +444,30 @@ test("isSpeakableText_withVoiceableCharacters_returnsTrue", () => {
     const voiceable = [
         "Hello there.",
         "Sure — here is the answer: 42.",
-        "café über straße", // accents: the tokenizer keeps the letters
+        "café über straße", // accents: letters are letters
         "你好，世界",
         "Sure, 这里 is mixed 中文 and English.",
         "Mix of 中文 and english, 123 numbers",
+        // Issue #169: these were the silent-language cases. Whatever the
+        // connected engine makes of them, it is the one that gets to say so —
+        // every script below but Thai is advertised by a shipped tts-serve
+        // engine (qwen3TTS ru/ja/ko, indexTTS ar, ming3TTS ja/ko).
+        "Привет мир", // ru — server_qwen3TTS
+        "こんにちは", // ja — server_qwen3TTS, server_indexTTS, server_ming3TTS
+        "한국어", // ko — server_qwen3TTS, server_ming3TTS
+        "مرحبا بالعالم", // ar — server_indexTTS
+        "Ελληνικά", // the Greek LuxTTS drops but no client rule may
+        "สวัสดี", // th — no shipped engine, still the engine's call
     ];
 
-    // GIVEN chunks that contain at least one character some engine can voice,
+    // GIVEN chunks that carry at least one letter of any script,
     // WHEN the pre-filter classifies each, THEN none is skipped.
     for (const text of voiceable) {
         assert.equal(h.get(`isSpeakableText(${JSON.stringify(text)})`), true, `expected voiceable: ${text}`);
     }
 });
 
-test("isSpeakableText_withNoVoiceableCharacters_returnsFalse", () => {
+test("isSpeakableText_withNoLetters_returnsFalse", () => {
     const h = createHarness();
     const unvoiceable = [
         "",
@@ -427,14 +478,17 @@ test("isSpeakableText_withNoVoiceableCharacters_returnsFalse", () => {
         "| --- | --- |",
         "2026-11-10 08:30",
         "→ ❤ 😀",
-        "Привет мир",
-        "こんにちは", // kana: the CJK range is ideographs only, as in the engine
-        "한국어",
-        "สวัสดี",
         "!!! ???",
+        // Form, not script: these are non-ASCII and non-Latin and still carry
+        // nothing a TTS engine can voice. A rule that let them through "out of
+        // script-fairness" would be back to paying for the fence.
+        "١٢٣٤", // Arabic-Indic digits — Nd, not Lo
+        "½¼", // symbols
+        "※・", // CJK symbols/punctuation, no ideographs
+        "«» ― …", // punctuation only
     ];
 
-    // GIVEN chunks no supported engine can voice,
+    // GIVEN chunks with no letter anywhere in them,
     // WHEN the pre-filter classifies each, THEN all are skipped.
     for (const text of unvoiceable) {
         assert.equal(h.get(`isSpeakableText(${JSON.stringify(text)})`), false, `expected unvoiceable: ${text}`);
@@ -460,6 +514,94 @@ test("enqueueStreamingTTS_withUnvoiceableChunks_queuesNothingAndSendsNoRequest",
     assert.equal(h.ttsCalls().length, 0, "no request may be made for them");
     assert.equal(h.refused("M1"), false, "skipping is not a voice verdict");
     assert.equal(h.notes().length, 0, "no user-facing note for a skipped chunk");
+});
+
+test("enqueueStreamingTTS_withANonLatinReply_asksTheEngineAndShowsItsRefusal", async () => {
+    const h = createHarness();
+    // The client is not the authority on scripts (issue #169). A Russian reply
+    // on LuxTTS — the one engine that pre-flights its own coverage — must
+    // reach the server and come back as the engine's 422 sentence, which the
+    // verdict path puts under the bubble. Before the fix it died in a
+    // console.warn nobody opens: the resilience machinery never saw it.
+    h.fetchStub.routes.set("/api/tts", () => ttsErrorResponse(422, detailBody(UNSPEAKABLE_TEXT_DETAIL)));
+
+    h.run(`
+        enqueueStreamingTTS("boris", "Привет мир.");
+        enqueueStreamingTTS("boris", "Как дела?");
+    `);
+    await pipelineIdle(h);
+
+    // THEN the first sentence went out (the engine answered, not the client),
+    assert.equal(h.ttsCalls().length, 1, "a non-Latin sentence must reach the engine");
+    assert.equal(JSON.parse(h.ttsCalls()[0].body).text, "Привет мир.");
+    // AND the engine's verdict is recorded against this message, so the rest
+    // of the reply is not re-paid for,
+    assert.equal(h.refused("M1"), true, "the engine's verdict is recorded");
+    assert.equal(h.get("ttsRequestQueue.length"), 0, "the rest of the reply is dropped");
+    // AND the reason reaches the user.
+    const notes = h.notes();
+    assert.equal(notes.length, 1, "exactly one note line");
+    assert.ok(notes[0].textContent.includes(UNSPEAKABLE_TEXT_DETAIL), notes[0].textContent);
+});
+
+test("processTTSRequests_onARefusedFirstSentenceOfAMixedReply_mutesTheRestOfThatReply", async () => {
+    // PINS AN ACCEPTED TRADE-OFF (see invariant 3b), not a desired behaviour.
+    // A mixed-script reply on LuxTTS: a Russian greeting, then two English
+    // sentences the engine voices happily. The greeting is refused, the
+    // verdict condemns the message, and the English sentences never get asked
+    // — audio the pre-#169 client DID play, because it dropped the Cyrillic
+    // line itself and never told the pipeline. #169 chose "one engine verdict
+    // per reply, explained" over "a client-side script table that decides
+    // which languages deserve a voice", and this test is the price tag.
+    const h = createHarness();
+    h.fetchStub.routes.set("/api/tts", engineThatRefuses(CYRILLIC));
+
+    h.run(`
+        enqueueStreamingTTS("boris", "Привет мир.");
+        enqueueStreamingTTS("boris", "Here is the answer.");
+        enqueueStreamingTTS("boris", "And here is the second one.");
+    `);
+    await pipelineIdle(h);
+
+    // THEN only the refused sentence was ever requested — the reply's
+    // voiceable half is muted by its voiceless one,
+    assert.equal(h.ttsCalls().length, 1, "the refused sentence is the only request the reply ever makes");
+    assert.equal(JSON.parse(h.ttsCalls()[0].body).text, "Привет мир.");
+    assert.equal(h.refused("M1"), true, "one refusal condemns the message");
+    assert.equal(h.get("ttsRequestQueue.length"), 0, "the voiceable sentences are dropped, not deferred");
+    assert.equal(h.audioCtx.sources.length, 0, "and nothing plays");
+    // AND the user is told, which is what was bought for that audio.
+    assert.equal(h.notes().length, 1, "one note line");
+});
+
+test("processTTSRequests_onAMixedReplyWithTheRefusalLast_spokeTheRestAndStillPrintedOneNote", async () => {
+    // THE OTHER HALF of the accepted trade-off (invariant 3b): the refusal
+    // lands on the reply's closing line, after the voiceable sentences have
+    // already been synthesized and played. The reply speaks almost entirely —
+    // and still carries a "Voice unavailable for this reply" line, which
+    // overstates it. Accepted: the alternative is the client deciding, per
+    // sentence, which scripts the engine can carry.
+    const h = createHarness();
+    h.fetchStub.routes.set("/api/tts", engineThatRefuses(CYRILLIC));
+
+    h.run(`
+        enqueueStreamingTTS("boris", "Here is the answer.");
+        enqueueStreamingTTS("boris", "And here is the second one.");
+        enqueueStreamingTTS("boris", "Пока.");
+    `);
+    await pipelineIdle(h);
+    await waitUntil(() => h.get("audioBufferQueue.length") === 0 && h.get("isPlayingAudioBuffer") === false);
+
+    // THEN every sentence of the reply was asked (the verdict arrived too late
+    // to spare anything) and the two voiceable ones played,
+    assert.equal(h.ttsCalls().length, 3, "three asks: the verdict came last");
+    assert.ok(h.audioCtx.sources.length >= 2, "the voiceable sentences were played");
+    // AND the note still lands under a reply that mostly spoke — the wording
+    // this shape is known to produce, pinned so a reword is a decision.
+    const notes = h.notes();
+    assert.equal(notes.length, 1, "exactly one note line");
+    assert.ok(notes[0].textContent.includes("Voice unavailable for this reply"), notes[0].textContent);
+    assert.equal(h.refused("M1"), true);
 });
 
 test("enqueueStreamingTTS_withAVoiceableChunk_queuesItWithTheStampedMessageId", async () => {
@@ -717,6 +859,32 @@ test("handleSSEEvent_onStartEvent_clearsTheBreakerOfThePreviousReply", async () 
     h.run('enqueueStreamingTTS("aria", "A fresh reply sentence.")');
     await sleep(20);
     assert.equal(h.ttsCalls().length, 2, "the next reply is requested");
+});
+
+test("handleSSEEvent_onStartEventInNonStreamingMode_stillClearsTheBreaker", async () => {
+    // ttsBrokenMessageIds is fed by BOTH queues: processAudioQueue's 422
+    // branch records a verdict per non-streaming reply just like the streaming
+    // pipeline does. resetTtsReplyState() used to sit inside the
+    // `if (ttsStreaming)` guard of the "start" handler, so with streaming off
+    // (the DEFAULT) every refused reply added a message ID that nothing ever
+    // removed — a set that only grows for the session, and a state.js comment
+    // describing a clear site that did not run.
+    const h = createHarness();
+    h.fetchStub.routes.set("/api/tts", () => ttsErrorResponse(422, detailBody(MISSING_TRANSCRIPT_DETAIL)));
+
+    // GIVEN a non-streaming reply whose voice the app refused,
+    h.run('enqueueTTS("Alex", "The whole reply, spoken in one piece.")');
+    await playbackIdle(h);
+    assert.equal(h.get("ttsStreaming"), false, "streaming off — the default configuration");
+    assert.equal(h.refused("M1"), true, "the non-streaming queue recorded the verdict");
+
+    // WHEN the server opens the next reply, through the real "start" handler
+    // with streaming still off,
+    h.run('handleSSEEvent({ type: "start", persona: "Alex", message_id: "M2" })');
+
+    // THEN the verdict set is drained, so it stays bounded to one reply in
+    // both modes.
+    assert.equal(h.get("ttsBrokenMessageIds.size"), 0, "start cleared the verdicts with streaming off");
 });
 
 /* ==========================================================================

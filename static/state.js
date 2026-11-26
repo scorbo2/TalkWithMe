@@ -71,8 +71,16 @@ let isPlayingAudioBuffer = false;
 // chamber, where the LLM emits every responder long before the first
 // synthesis finishes. Each message is judged on its own verdict only.
 //
-// resetTtsReplyState() clears it on every "start" event, so the set stays
-// bounded to one reply and a broken voice never mutes the session.
+// resetTtsReplyState() clears it on every "start" event — streaming or not,
+// because processAudioQueue records verdicts into this same set and has no
+// other clear site — so the set stays bounded to one reply and a broken voice
+// never mutes the session.
+//
+// ACCEPTED CONSEQUENCE of reading a 422 as a statement about the pairing
+// (issue #169): a mixed-script reply on a narrow engine can lose audio the
+// old letter-table pre-filter kept, because ONE refused sentence condemns the
+// whole message. Deliberate — the alternative was the client-side script table
+// that caused #169 — and pinned by tests/test_tts_resilience.js.
 const ttsBrokenMessageIds = new Set();
 
 // Every BufferSource currently producing sound. A Set rather than a
