@@ -114,6 +114,16 @@ async function processAudioQueue() {
             }
         }
     } catch (err) {
+        // Same verdict path the streaming queue uses. A 422 here is a
+        // permanent statement about this persona's voice as configured (no
+        // transcript while the connected engine demands one, an unclonable
+        // clip), and the reason belongs under the bubble where the user can
+        // read it — not in a console nobody opens. Nothing to drop: this
+        // queue holds one item per reply, but the verdict set and the note are
+        // keyed by item.messageId, which enqueueTTS already captured.
+        if (err && err.status === 422) {
+            handleUnvoiceableVerdict(item, err);
+        }
         console.warn("TTS playback error:", err);
     } finally {
         isPlayingAudio = false;

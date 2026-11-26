@@ -223,7 +223,7 @@ Personas/Alex/
 ├── prompt.md        # YAML frontmatter + system prompt body
 ├── language.txt     # reference-audio language code (optional)
 ├── ref.wav          # TTS reference audio (optional, fixed name)
-├── ref.txt          # transcript of ref.wav (optional)
+├── ref.txt          # transcript of ref.wav (optional for most engines, required by a few)
 └── image.png        # avatar (optional, png/jpg/jpeg/gif/webp)
 ```
 
@@ -278,12 +278,12 @@ sanitized form is already the directory's name has nothing to move either.
 | `avatar_color` | `prompt.md` frontmatter | Hex color for the avatar circle fallback |
 | avatar image | `image.<ext>` file | Uploaded image for the persona (optional) |
 | reference audio | `ref.wav` file | WAV for TTS voice cloning (optional) |
-| reference transcript | `ref.txt` file | Transcript of the reference audio (required for TTS) |
+| reference transcript | `ref.txt` file | Transcript of the reference audio (required by some TTS engines, optional for others — see **TTS support** below) |
 | reference audio language | `language.txt` file | Two-letter code describing the reference audio |
 | `memory_size` | `prompt.md` frontmatter | If 0, memories are disabled for this persona. Otherwise, maximum byte size of the memories file. |
 | `allow_tool_calls` | `prompt.md` frontmatter | If `true`, this persona may call MCP tools while replying (if at least one MCP server is configured) |
 
-**TTS support**: Both `ref.wav` and a non-blank `ref.txt` must be present for a persona to have TTS capability.
+**TTS support**: a persona can speak when it has a `ref.wav` reference clip — that is the only requirement the *persona* owns. Whether a `ref.txt` transcript is also mandatory is a property of the connected TTS **engine**, not of the persona, and the two never travel together: a persona directory outlives whichever engine you happen to have configured tomorrow. TalkWithMe therefore never demands a transcript the engine never wanted (that combination used to mean absolute silence — see [Which TTS engines need a transcript?](#which-tts-engines-need-a-transcript)).
 
 #### Who answers next?
 
@@ -358,6 +358,48 @@ Moved to [AGENTS.md](AGENTS.md)
 If your reference audio is in English, you're all set.
 
 If your reference audio is in some other language, you must specify the language code in the `reference_audio_language` field for the persona in question. This helps the voice cloner understand the reference audio. This may also prevent the cloned voice from speaking in languages other than the reference audio language, but your mileage may vary.
+
+## Which TTS engines need a transcript?
+
+Short answer: **it depends on the engine, and you never have to decide.** The Persona form
+will never block you on it.
+
+The transcript of the reference clip (`ref.txt`, "Reference Audio Transcript" in the Persona
+editor) tells a cloning engine what words its reference audio contains. Some engines need that
+to build a clean voice embedding, most treat it as a nice-to-have, and a few have no use for it
+at all because they transcribe the clip themselves with Whisper:
+
+| The engine's `reference_text` field | Example engines | What happens if `ref.txt` is missing |
+|---|---|---|
+| not offered at all | chatterbox, indexTTS, LuxTTS, PocketTTS | Nothing — the transcript is never sent (sending it would actually be rejected). The engine transcribes `ref.wav` itself; only its first `prompt_duration` seconds are heard |
+| optional | dots.tts, OmniVoice, Qwen3-TTS, VoxCPM, KittenTTS, Ming3-TTS, audio8TTS, faster-Qwen3 | Nothing — the engine falls back to auto-transcription or a speaker-embedding-only clone. Quality may drop slightly |
+| **required** | Breeze Blue, Ming3-TTS-MoE, Qwen3-TTS-MLX | That persona stays silent, **and says why**: the reply appears with one line under it — `Voice unavailable for this reply: Persona 'Alex' has no reference-audio transcript, and the 'breeze-blue' engine requires one…` — and the rest of that reply stops asking for audio. Add the transcript in the Persona editor and the voice comes back |
+
+Each tts-serve engine publishes its own answer in its `/capabilities` document, and TalkWithMe
+reads that document to decide — which is why the requirement cannot live in the persona. Your
+personas are permanent; your TTS server is whatever is running today, and the Servers dialog can
+swap one engine for another between two messages. Asking a persona for a transcript that the
+connected engine would have ignored is how a perfectly good voice ends up permanently mute, so
+TalkWithMe never out-of-rules the engine: it sends the transcript when the engine advertises a
+slot for it, and refuses a request only when the document proves the engine will refuse it.
+
+**The sidebar tells you, before you ask.** Each persona's 🔇 badge now means one of two things,
+and hovering says which: the persona has no reference clip at all, or it has one that the
+*currently connected* engine cannot use because that engine demands a transcript this persona does
+not have. Switch to a different TTS server and the badge can disappear without a single change to
+the persona — that asymmetry is the whole point. The badge is a hint, not a switch: the reply is
+still attempted, so you always get the plain-language reason under it rather than quiet.
+
+**Gotchas:**
+
+- If no `/capabilities` document is available at all (a hand-rolled or pre-ported TTS server,
+  not a tts-serve release), TalkWithMe cannot know the rule. It then sends whatever the persona
+  has and lets the server decide; if that server does require a transcript you get its own
+  error text under the reply instead of the friendly sentence above. The sidebar shows no
+  transcript badge in that state — an unknown requirement is never drawn as a confident 🔇.
+- The engine's requirement is checked *before* any synthesis is requested, so a persona that is
+  missing a required transcript costs zero GPU time — no audio is generated and thrown away.
+- A transcript that is blank (whitespace only) is stored as no transcript at all.
 
 ## Streaming TTS responses
 
@@ -751,6 +793,7 @@ standalone script under `impl/` with per-engine install notes.
   - Better handling of "unspeakable" text (#162)
   - Better mouse handling on modals (#165)
   - Some fixes for Windows users (#166)
+  - Better handling of reference transcript per-engine (#164)
 
 ## License
 

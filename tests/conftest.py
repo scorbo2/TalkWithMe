@@ -52,6 +52,10 @@ def isolated_app_state(tmp_path, monkeypatch):
     # The TTS capabilities cache (single slot, docs and failures alike):
     # a doc cached by one test must not leak into the next.
     tts_client.invalidate_capabilities()
+    # The once-per-(engine, persona) "this persona needs a transcript" log
+    # dedupe. invalidate_capabilities() clears it as part of its job; saying
+    # it out loud keeps the invariant visible if that coupling ever moves.
+    tts_client.reset_reference_text_verdict_warnings()
     # The LLM API key: never read the real llm_api_key file or the
     # developer's TALKWITHME_LLM_API_KEY, and never let a key cached by an
     # earlier test leak into the next one.
@@ -72,6 +76,7 @@ def isolated_app_state(tmp_path, monkeypatch):
     persistence._pending_audio.clear()
     tool_registry.reset()
     tts_client.invalidate_capabilities()
+    tts_client.reset_reference_text_verdict_warnings()
     llm_auth.invalidate_llm_api_key()
     llm_module._warned_plaintext_urls.clear()
     global_session._history.clear()

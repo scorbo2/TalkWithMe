@@ -49,6 +49,15 @@ _capabilities_base_url: Optional[str] = None
 # swapped behind the same base_url, server back up) can warn again.
 _no_doc_fallback_warned_for: Optional[str] = None
 
+# (base_url, persona) pairs already warned about in
+# warn_missing_reference_text(). Same spam problem as the fallback warning
+# above (one /synthesize per sentence) with a sharper edge: this refusal fires
+# BEFORE the request, so an undeduped warning would print once per sentence of
+# every reply from a persona that is merely missing one text file. Cleared by
+# invalidate_capabilities() — an engine swap changes which personas the verdict
+# applies to.
+_reference_text_verdict_warned_for: set[tuple[str, str]] = set()
+
 
 def invalidate_capabilities() -> None:
     """Drop the cached capabilities document (or a cached fetch failure).
@@ -64,6 +73,17 @@ def invalidate_capabilities() -> None:
     _capabilities_cache = None
     _capabilities_base_url = None
     _no_doc_fallback_warned_for = None
+    _reference_text_verdict_warned_for.clear()
+
+
+def reset_reference_text_verdict_warnings() -> None:
+    """Forget the dedupe set of "this persona cannot be voiced" log lines.
+
+    Exposed for the test-isolation fixture (module-level global, so it must be
+    re-pointed at per-test state like every other one in this module). Runtime
+    code goes through invalidate_capabilities(), which clears it too.
+    """
+    _reference_text_verdict_warned_for.clear()
 
 
 def cached_capabilities() -> tuple[Optional[str], Optional[dict]]:
@@ -88,6 +108,81 @@ def doc_supports_reference_audio(doc: Optional[dict]) -> bool:
     must distinguish the two check for a real doc before acting on this.
     """
     return doc is not None and doc.get("reference_audio") is not None
+
+
+def doc_requires_reference_text(doc: Optional[dict]) -> bool:
+    """Does this engine DEMAND a transcript of the persona's reference clip?
+
+    True only when the document advertises a `reference_text` parameter AND
+    marks it required. That flag is derived from the presence of a default in
+    the server's Pydantic request model (tts_engine_common.models.ParamSpec),
+    so it cannot drift from what the server actually enforces — it is the
+    machine-readable half of what the issue asked for. In the tts-serve fleet:
+    breeze-blue, ming3-tts-moe and qwen3-tts-mlx require it; dots / omnivoice
+    / qwen3 / voxcpm / kitten / audio8 / faster-qwen3 / ming3 accept it
+    optionally; chatterbox, indexTTS, luxTTS and pocketTTS never advertise it
+    at all (they condition on the clip alone and transcribe it themselves).
+
+    A doc that omits the parameter is NOT a requirement — it is proof the
+    transcript would be rejected (`extra="forbid"`). And `doc is None` is
+    "no evidence", never "known requirement" (same polarity rule as
+    doc_supports_reference_audio): TalkWithMe must never be stricter than the
+    engine it is talking to.
+    """
+    if doc is None:
+        return False
+    spec = _advertised_parameter_specs(doc).get("reference_text")
+    return isinstance(spec, dict) and spec.get("required") is True
+
+
+def reference_text_refusal(
+    persona_name: str,
+    doc: Optional[dict],
+    transcript: Optional[str],
+) -> Optional[str]:
+    """The refusal sentence when the engine demands a transcript there isn't one.
+
+    Returns None when the request may proceed. Deliberately pure — no cache
+    read, no logging, no network — so the callers own the HTTP status and the
+    (deduped) log line, and the sentence itself is testable without either.
+
+    The wording is user-facing: the browser shows it verbatim under the reply
+    whose audio died ("Voice unavailable for this reply: <this>"), so it names
+    the persona, the engine, and the fix. Persona-level absence is a permanent
+    verdict about local configuration, which is why the callers answer 422 —
+    see ENGINE_REFUSAL_STATUSES in app.routers.tts.
+    """
+    if transcript:
+        return None
+    if not doc_requires_reference_text(doc):
+        return None
+    # doc is a dict here: doc_requires_reference_text() only ever returns True
+    # for one. `engine` is advisory metadata (fetch validates "a dict", no
+    # more), so a document without it degrades the wording, never the verdict.
+    engine = doc.get("engine") or "connected TTS engine"
+    return (
+        f"Persona '{persona_name}' has no reference-audio transcript, and the "
+        f"'{engine}' engine requires one. Open the Persona editor and fill in "
+        f"the words spoken in {persona_name}'s reference clip."
+    )
+
+
+def warn_missing_reference_text(base_url: Optional[str], persona_name: str) -> None:
+    """Log the "no TTS for this persona" verdict once per (engine, persona).
+
+    Both refusal sites (the router's warm-cache pre-check and synthesize()'s
+    cold-cache backstop) report through here, so one misconfigured persona
+    produces one log line per engine rather than one per sentence.
+    """
+    key = (base_url or "", persona_name)
+    if key in _reference_text_verdict_warned_for:
+        return
+    _reference_text_verdict_warned_for.add(key)
+    logger.warning(
+        "No TTS for persona '%s': the engine at %s requires a reference-audio "
+        "transcript and this persona has none (add it in the Persona editor)",
+        persona_name, base_url,
+    )
 
 
 async def fetch_capabilities_url(base_url: str) -> Optional[dict]:
@@ -612,11 +707,17 @@ async def _post_synthesis(url: str, payload: dict, timeout: float) -> httpx.Resp
 
 async def synthesize(
     text: str,
-    reference_text: str,
+    reference_text: Optional[str],
     audio_base64: str,
     language: str = "en",
+    persona_name: str = "",
 ) -> SynthesisResult:
     """Call the TTS server's /synthesize endpoint with a doc-driven payload.
+
+    `reference_text` may be None/empty: whether that is legal is the engine's
+    call, not the persona's (issue #164) — see the pre-flight below.
+    `persona_name` exists purely to name the persona in the refusal sentence
+    and its log line; it is never sent to the engine.
 
     Returns a SynthesisResult: the server's raw response dict on success
     (engine extras pass through; the frontend only reads `audio_base64`), or
@@ -674,6 +775,17 @@ async def synthesize(
             return SynthesisResult(
                 detail="the connected engine does not support reference-audio voice cloning"
             )
+        refusal = reference_text_refusal(persona_name, doc, reference_text)
+        if refusal:
+            # Local pre-flight, before the POST. A missing REQUIRED field is a
+            # FastAPI *validation* 422 (detail is a list), which
+            # _is_content_refusal() deliberately does not recognize — so an
+            # un-preflighted request would pay invalidate + refetch + re-POST
+            # for every sentence of the reply to hear the same answer, and the
+            # user would read a serialized validation list where a sentence
+            # should be. The doc is already in hand, so this costs no fetch.
+            warn_missing_reference_text(base_url, persona_name or "(unknown)")
+            return SynthesisResult(status=422, detail=refusal)
         response = await _post_synthesis(url, payload_for(doc), timeout)
         if response.status_code == 422 and _is_content_refusal(response):
             logger.warning(

@@ -70,6 +70,36 @@ function renderPersonaAvatar(avatarEl, persona) {
 }
 
 /**
+ * Why this persona cannot speak on the engine currently connected — or null
+ * when nothing blocks its voice.
+ *
+ * Two independent axes meet here, and this is the only place a UI may join
+ * them: the persona owns its files (`has_reference_audio` /
+ * `has_reference_transcript`, from GET /api/personas), while the connected
+ * engine owns the rule about whether a transcript of those files is mandatory
+ * (`ttsReferenceTextRequired`, from /api/tts/health). Nothing persona-shaped
+ * consults the engine anywhere else — a persona directory outlives whichever
+ * TTS server happens to be configured, and demanding a transcript the engine
+ * would ignore is exactly what silenced a quarter of the tts-serve fleet
+ * (issue #164).
+ *
+ * Returns the reason as a sentence (tooltip material) rather than a boolean,
+ * so callers decide *whether* to mark a persona, never how to word it. A
+ * missing clip is reported first: it is the half the user can act on, and the
+ * badge is the same 🔇 either way.
+ */
+function personaVoiceBlock(persona, engineRequiresTranscript) {
+    if (!persona.has_reference_audio) {
+        return "no reference audio clip — upload a WAV in the Persona editor";
+    }
+    if (engineRequiresTranscript && !persona.has_reference_transcript) {
+        return "the connected TTS engine requires a transcript of the reference "
+            + "audio and this persona has none — add it in the Persona editor";
+    }
+    return null;
+}
+
+/**
  * Case-insensitive alphabetical comparator for personas (anything with a
  * `name` property). Pair with Array.prototype.sort, e.g.
  * `[...personas].sort(comparePersonasByName)`.

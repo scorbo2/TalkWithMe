@@ -19,6 +19,7 @@ from tests.factories import (
     FakeAsyncClient,
     json_response,
     make_capabilities_doc,
+    make_minimal_capabilities_doc,
     make_personas,
     make_settings,
 )
@@ -44,31 +45,100 @@ def _persona_cache(monkeypatch, personas: PersonasConfig):
 # ---------------------------------------------------------------------------
 
 class TestTTSHealth:
+    # The health payload is the sidebar's only window onto the engine axis
+    # (issue #164 phase 2), so it is asserted as a whole dict: a missing field
+    # fails here instead of silently leaving a mute badge un-drawn.
+
+    def _health_stubs(self, monkeypatch, health=(True, "dots.tts"), capabilities=None):
+        """Stub both discovery calls at the router's import site (no network)."""
+        monkeypatch.setattr(tts_router, "check_tts_health", lambda: _coro(health))
+        monkeypatch.setattr(tts_router, "get_capabilities", lambda: _coro(capabilities))
+
     def test_inactive_reports_disabled_without_network(self, client):
+        # TTS inactive: both discovery calls self-guard, so nothing touches
+        # the wire — no httpx stub installed, and a real attempt would hang
+        # the hermetic suite instead.
         resp = client.get("/api/tts/health")
         assert resp.status_code == 200
         assert resp.json() == {"enabled": False, "available": False,
-                               "streaming": False, "server_type": None}
+                               "streaming": False, "server_type": None,
+                               "reference_text_required": False}
 
     def test_active_reports_health_result(self, client, monkeypatch):
         _active_tts_settings(monkeypatch, streaming=True)
-        monkeypatch.setattr(tts_router, "check_tts_health",
-                            lambda: _coro((True, "dots.tts")))
+        self._health_stubs(monkeypatch, capabilities=make_capabilities_doc(engine="dots.tts"))
 
         resp = client.get("/api/tts/health")
 
         assert resp.json() == {"enabled": True, "available": True,
-                               "streaming": True, "server_type": "dots.tts"}
+                               "streaming": True, "server_type": "dots.tts",
+                               "reference_text_required": False}
 
     def test_active_but_unreachable(self, client, monkeypatch):
         _active_tts_settings(monkeypatch)
-        monkeypatch.setattr(tts_router, "check_tts_health",
-                            lambda: _coro((False, None)))
+        self._health_stubs(monkeypatch, health=(False, None), capabilities=None)
 
         resp = client.get("/api/tts/health")
 
         assert resp.json()["enabled"] is True
         assert resp.json()["available"] is False
+        assert resp.json()["reference_text_required"] is False
+
+    def test_health_reports_reference_text_required_when_the_engine_demands_it(
+        self, client, monkeypatch
+    ):
+        doc = make_capabilities_doc(engine="dots.tts")
+        for spec in doc["parameters"]:
+            if spec["name"] == "reference_text":
+                spec["required"] = True
+        _active_tts_settings(monkeypatch)
+        self._health_stubs(monkeypatch, capabilities=doc)
+
+        resp = client.get("/api/tts/health")
+
+        assert resp.json()["reference_text_required"] is True
+
+    def test_health_reports_reference_text_not_required_for_an_engine_without_the_field(
+        self, client, monkeypatch
+    ):
+        # chatterbox never advertises reference_text: a persona with no
+        # transcript is perfectly speakable there and must show no badge.
+        _active_tts_settings(monkeypatch)
+        self._health_stubs(monkeypatch, capabilities=make_capabilities_doc(engine="chatterbox"))
+
+        resp = client.get("/api/tts/health")
+
+        assert resp.json()["reference_text_required"] is False
+
+    def test_health_fetches_capabilities_when_the_slot_is_cold_after_a_settings_save(
+        self, client, monkeypatch
+    ):
+        # A settings save clears the capabilities slot on purpose. If health
+        # read only the cache, the badge would flicker OFF exactly when the
+        # user switches engines and looks at the sidebar — so health is the one
+        # route allowed to fetch, and it warms the slot for the synthesis path.
+        doc = make_capabilities_doc(engine="dots.tts")
+        for spec in doc["parameters"]:
+            if spec["name"] == "reference_text":
+                spec["required"] = True
+        _active_tts_settings(monkeypatch)
+        monkeypatch.setattr(tts_router, "check_tts_health", lambda: _coro((True, "breeze-blue")))
+        fetched = {}
+
+        async def fake_get_capabilities():
+            fetched["called"] = True
+            tts_client._capabilities_cache = doc
+            tts_client._capabilities_base_url = "http://tts.local:5500"
+            return doc
+
+        monkeypatch.setattr(tts_router, "get_capabilities", fake_get_capabilities)
+
+        resp = client.get("/api/tts/health")
+
+        assert fetched.get("called") is True
+        assert resp.json()["reference_text_required"] is True
+        # Warmed for the synthesis path, keyed on the url it was fetched for.
+        assert tts_client.cached_capabilities() == ("http://tts.local:5500", doc)
 
 
 # ---------------------------------------------------------------------------
@@ -76,37 +146,210 @@ class TestTTSHealth:
 # ---------------------------------------------------------------------------
 
 class TestTTSProxy:
-    def _tts_capable_persona(self, tmp_path):
-        """A persona whose reference files really exist under tmp_path."""
+    def _tts_capable_persona(self, tmp_path, transcript=True):
+        """A persona whose reference files really exist under tmp_path.
+
+        `transcript=False` builds the issue-#164 persona: a real clip and no
+        ref.txt at all, which is exactly what a LuxTTS user uploads.
+        """
         wav = tmp_path / "luna.wav"
         wav.write_bytes(b"RIFF-ref")
-        txt = tmp_path / "luna.txt"
-        txt.write_text("a reference transcript", encoding="utf-8")
+        txt = None
+        if transcript:
+            txt = tmp_path / "luna.txt"
+            txt.write_text("a reference transcript", encoding="utf-8")
         return Persona(
             name="Luna",
             system_prompt="You are Luna.",
             router_hints="philosophy",
             reference_audio=str(wav),
-            reference_audio_transcript=str(txt),
+            reference_audio_transcript=str(txt) if txt else None,
             reference_audio_language="en",
         )
+
+    def _cache_doc(self, monkeypatch, doc):
+        """Warm the capabilities slot for the router's own base_url."""
+        monkeypatch.setattr(tts_client, "_capabilities_base_url", "http://tts.local:5500")
+        monkeypatch.setattr(tts_client, "_capabilities_cache", doc)
+
+    @staticmethod
+    def _engine_requiring_transcript():
+        """A synthetic capabilities doc for a transcript-mandatory engine.
+
+        Breeze Blue, Ming3-TTS-MoE and Qwen3-TTS-MLX mark reference_text
+        required, but none of them has a snapshot in tests/fixtures/ — and
+        test_tts_fixtures.py pins those snapshots to real tts-serve output, so
+        one may not be invented here. The minimal document is the sanctioned
+        synthetic baseline; the refusal path reads the parameter's `required`
+        flag and the `engine` slug, and nothing else.
+        """
+        doc = make_minimal_capabilities_doc(engine="breeze-blue")
+        for spec in doc["parameters"]:
+            if spec["name"] == "reference_text":
+                spec["required"] = True
+        return doc
 
     def test_unknown_persona_404(self, client):
         resp = client.post("/api/tts", json={"text": "hi", "persona_name": "NoSuchOne"})
         assert resp.status_code == 404
 
-    def test_persona_without_tts_400(self, client):
+    def test_persona_without_reference_audio_400(self, client):
+        # The persona axis: no clip, nothing to clone from. A missing
+        # TRANSCRIPT is not this error (issue #164) — see the 422 tests below.
         resp = client.post("/api/tts", json={"text": "hi", "persona_name": "Alex"})
         assert resp.status_code == 400
-        assert "TTS configured" in resp.json()["detail"]
+        assert "reference audio" in resp.json()["detail"]
 
-    def test_missing_reference_files_503(self, client, monkeypatch):
+    def test_unreadable_reference_audio_503(self, client, monkeypatch):
         personas = make_personas()
         personas.personas[1].reference_audio = "/nonexistent/luna.wav"
         _persona_cache(monkeypatch, personas)
 
         resp = client.post("/api/tts", json={"text": "hi", "persona_name": "Luna"})
         assert resp.status_code == 503
+
+    # -- the transcript requirement is the ENGINE's, not the persona's (#164) --
+
+    def test_persona_without_transcript_synthesizes_when_reference_text_is_optional(
+        self, client, monkeypatch, tmp_path
+    ):
+        # dots.tts advertises reference_text with required=False. A persona
+        # with a clip and no transcript used to be refused outright — the bug
+        # this test exists to keep dead.
+        _persona_cache(monkeypatch, PersonasConfig(
+            personas=[self._tts_capable_persona(tmp_path, transcript=False)]))
+        _active_tts_settings(monkeypatch)
+        self._cache_doc(monkeypatch, make_capabilities_doc(engine="dots.tts"))
+        seen = {}
+
+        async def fake_synthesize(text, reference_text, audio_base64, language, persona_name):
+            seen.update(reference_text=reference_text, persona_name=persona_name)
+            return SynthesisResult(audio={"audio_base64": "QUJD", "sample_rate": 24000})
+
+        monkeypatch.setattr(tts_router, "synthesize", fake_synthesize)
+
+        resp = client.post("/api/tts", json={"text": "hi", "persona_name": "Luna"})
+
+        assert resp.status_code == 200
+        assert seen["reference_text"] is None  # nothing invented, nothing sent
+
+    def test_persona_without_transcript_synthesizes_when_engine_offers_no_reference_text_field(
+        self, client, monkeypatch, tmp_path
+    ):
+        # chatterbox (and luxTTS / indexTTS / pocketTTS) has no reference_text
+        # field at all: sending one would 422, and needing one is impossible.
+        _persona_cache(monkeypatch, PersonasConfig(
+            personas=[self._tts_capable_persona(tmp_path, transcript=False)]))
+        _active_tts_settings(monkeypatch)
+        self._cache_doc(monkeypatch, make_capabilities_doc(engine="chatterbox"))
+        seen = {}
+
+        async def fake_synthesize(text, reference_text, audio_base64, language, persona_name):
+            seen["reference_text"] = reference_text
+            return SynthesisResult(audio={"audio_base64": "QUJD", "sample_rate": 24000})
+
+        monkeypatch.setattr(tts_router, "synthesize", fake_synthesize)
+
+        resp = client.post("/api/tts", json={"text": "hi", "persona_name": "Luna"})
+
+        assert resp.status_code == 200
+        assert seen["reference_text"] is None
+
+    def test_engine_requiring_reference_text_422s_before_synthesis_is_attempted(
+        self, client, monkeypatch, tmp_path
+    ):
+        doc = self._engine_requiring_transcript()
+        _persona_cache(monkeypatch, PersonasConfig(
+            personas=[self._tts_capable_persona(tmp_path, transcript=False)]))
+        _active_tts_settings(monkeypatch)
+        self._cache_doc(monkeypatch, doc)
+
+        async def failing_synthesize(**kwargs):
+            raise AssertionError(
+                "synthesize must not run: a missing required field is a FastAPI "
+                "validation 422, which the stale-document self-heal would retry "
+                "once per sentence of the reply"
+            )
+
+        monkeypatch.setattr(tts_router, "synthesize", failing_synthesize)
+
+        resp = client.post("/api/tts", json={"text": "hi", "persona_name": "Luna"})
+
+        assert resp.status_code == 422  # the client's permanent-verdict signal
+        detail = resp.json()["detail"]
+        # The sentence is user-visible under the reply: it must name the
+        # persona, the engine, and the fix.
+        assert "Luna" in detail
+        assert "breeze-blue" in detail
+        assert "transcript" in detail
+
+    def test_required_transcript_verdict_is_logged_once_per_persona_and_engine(
+        self, client, monkeypatch, tmp_path, caplog
+    ):
+        # Streaming asks for one sentence per request; the log line is about
+        # the persona's configuration, so it fires once per (engine, persona).
+        import logging
+
+        doc = self._engine_requiring_transcript()
+        _persona_cache(monkeypatch, PersonasConfig(
+            personas=[self._tts_capable_persona(tmp_path, transcript=False)]))
+        _active_tts_settings(monkeypatch)
+        self._cache_doc(monkeypatch, doc)
+
+        with caplog.at_level(logging.WARNING, logger="app.services.tts_client"):
+            for _ in range(3):
+                assert client.post(
+                    "/api/tts", json={"text": "hi", "persona_name": "Luna"}
+                ).status_code == 422
+
+        assert sum("No TTS for persona 'Luna'" in r.message for r in caplog.records) == 1
+
+    def test_cold_capabilities_cache_never_refuses_for_a_missing_transcript(
+        self, client, monkeypatch, tmp_path
+    ):
+        # No document = no EVIDENCE of a requirement, and "no evidence" must
+        # never out-rule the engine (the same polarity rule as the non-cloning
+        # check): the request proceeds and the server decides.
+        _persona_cache(monkeypatch, PersonasConfig(
+            personas=[self._tts_capable_persona(tmp_path, transcript=False)]))
+        _active_tts_settings(monkeypatch)
+        called = {}
+
+        async def fake_synthesize(text, reference_text, audio_base64, language, persona_name):
+            called["yes"] = True
+            return SynthesisResult(audio={"audio_base64": "QUJD", "sample_rate": 24000})
+
+        monkeypatch.setattr(tts_router, "synthesize", fake_synthesize)
+
+        resp = client.post("/api/tts", json={"text": "hi", "persona_name": "Luna"})
+
+        assert resp.status_code == 200
+        assert called.get("yes")
+
+    def test_required_transcript_doc_for_a_different_base_url_does_not_refuse(
+        self, client, monkeypatch, tmp_path
+    ):
+        # A cached doc describes only the engine it was fetched for. After an
+        # engine switch the slot may still hold the OLD engine's rules — and
+        # the old engine happened to demand a transcript the new one doesn't.
+        doc = self._engine_requiring_transcript()
+        _persona_cache(monkeypatch, PersonasConfig(
+            personas=[self._tts_capable_persona(tmp_path, transcript=False)]))
+        _active_tts_settings(monkeypatch)  # base_url http://tts.local:5500
+        monkeypatch.setattr(tts_client, "_capabilities_base_url", "http://old.engine:9999")
+        monkeypatch.setattr(tts_client, "_capabilities_cache", doc)
+        called = {}
+
+        async def fake_synthesize(text, reference_text, audio_base64, language, persona_name):
+            called["yes"] = True
+            return SynthesisResult(audio={"audio_base64": "QUJD", "sample_rate": 24000})
+
+        monkeypatch.setattr(tts_router, "synthesize", fake_synthesize)
+
+        resp = client.post("/api/tts", json={"text": "hi", "persona_name": "Luna"})
+
+        assert resp.status_code == 200
+        assert called.get("yes")
 
     def test_synthesis_failure_502(self, client, monkeypatch, tmp_path):
         _persona_cache(monkeypatch, PersonasConfig(personas=[self._tts_capable_persona(tmp_path)]))
@@ -187,9 +430,10 @@ class TestTTSProxy:
         _persona_cache(monkeypatch, PersonasConfig(personas=[self._tts_capable_persona(tmp_path)]))
         seen = {}
 
-        async def fake_synthesize(text, reference_text, audio_base64, language):
+        async def fake_synthesize(text, reference_text, audio_base64, language, persona_name):
             seen.update(text=text, reference_text=reference_text,
-                        audio_base64=audio_base64, language=language)
+                        audio_base64=audio_base64, language=language,
+                        persona_name=persona_name)
             return SynthesisResult(audio={"audio_base64": "QUJD", "sample_rate": 24000})
 
         monkeypatch.setattr(tts_router, "synthesize", fake_synthesize)
@@ -202,6 +446,10 @@ class TestTTSProxy:
         assert seen["reference_text"] == "a reference transcript"
         assert seen["audio_base64"] == base64.b64encode(b"RIFF-ref").decode()
         assert seen["language"] == "en"
+        # The persona's name reaches synthesize() so the transcript pre-flight
+        # can name the persona in its refusal. It is never sent to the engine
+        # (build_synthesis_payload has no idea it exists).
+        assert seen["persona_name"] == "Luna"
 
     def test_non_cloning_engine_503_without_calling_synthesize(self, client, monkeypatch, tmp_path):
         # The cached doc (for the current base_url) says reference_audio:
@@ -235,7 +483,8 @@ class TestTTSProxy:
                             make_capabilities_doc(engine="omnivoice", reference_audio=None))
         seen = {}
 
-        async def fake_synthesize(text, reference_text, audio_base64, language):
+        async def fake_synthesize(text, reference_text, audio_base64, language,
+                                  persona_name=""):
             seen["called"] = True
             return SynthesisResult(audio={"audio_base64": "QUJD", "sample_rate": 24000})
 

@@ -17,6 +17,7 @@ from tests.factories import (
     FakeAsyncClient,
     json_response,
     make_capabilities_doc,
+    make_minimal_capabilities_doc,
     make_settings,
     make_unexpected_field_422,
 )
@@ -623,6 +624,154 @@ class TestSynthesize:
 
         listed = json_response(422, make_unexpected_field_422("num_steps", 999))
         assert "num_steps" in tts_client._response_detail(listed)
+
+
+class TestReferenceTextRequirement:
+    """Whose transcript is it anyway? (issue #164)
+
+    The persona supplies the clip; the ENGINE decides whether a transcript of
+    it is mandatory. These tests are the fence between the two axes: too
+    strict and every LuxTTS persona is permanently mute, too lax and a
+    Breeze-Blue persona pays a doomed synthesis per sentence.
+    """
+
+    @staticmethod
+    def _required_doc(engine="breeze-blue"):
+        """Synthetic doc marking reference_text required (see the router suite
+        for why no shipped snapshot can be used here)."""
+        doc = make_minimal_capabilities_doc(engine=engine)
+        for spec in doc["parameters"]:
+            if spec["name"] == "reference_text":
+                spec["required"] = True
+        return doc
+
+    # -- the predicate ------------------------------------------------------
+
+    def test_doc_requires_reference_text_optional_advertisement_is_false(self):
+        assert tts_client.doc_requires_reference_text(
+            make_capabilities_doc(engine="dots.tts")) is False
+
+    def test_doc_requires_reference_text_engine_without_the_field_is_false(self):
+        # chatterbox / luxTTS / indexTTS / pocketTTS: the transcript is not
+        # merely optional, it is unsendable. Absent spec can never mean
+        # "mandatory".
+        assert tts_client.doc_requires_reference_text(
+            make_capabilities_doc(engine="chatterbox")) is False
+
+    def test_doc_requires_reference_text_required_advertisement_is_true(self):
+        assert tts_client.doc_requires_reference_text(self._required_doc()) is True
+
+    def test_doc_requires_reference_text_without_a_document_is_false(self):
+        # "No evidence" is never "known requirement" — the same polarity rule
+        # as doc_supports_reference_audio, and the reason an engine with no
+        # /capabilities endpoint still gets asked.
+        assert tts_client.doc_requires_reference_text(None) is False
+
+    def test_doc_requires_reference_text_non_boolean_flag_is_false(self):
+        # The document comes from a foreign server and is only validated as a
+        # dict: a truthy-but-not-True flag is a malformed doc, and "skip what
+        # we cannot judge" means the engine decides, not us.
+        doc = self._required_doc()
+        for spec in doc["parameters"]:
+            if spec["name"] == "reference_text":
+                spec["required"] = "yes please"
+        assert tts_client.doc_requires_reference_text(doc) is False
+
+    # -- the sentence -------------------------------------------------------
+
+    def test_reference_text_refusal_is_silent_when_a_transcript_exists(self):
+        assert tts_client.reference_text_refusal(
+            "Alex", self._required_doc(), "the words") is None
+
+    def test_reference_text_refusal_is_silent_when_the_engine_does_not_require_it(self):
+        assert tts_client.reference_text_refusal(
+            "Alex", make_capabilities_doc(engine="chatterbox"), None) is None
+
+    def test_reference_text_refusal_is_silent_without_a_document(self):
+        assert tts_client.reference_text_refusal("Alex", None, None) is None
+
+    def test_reference_text_refusal_names_persona_engine_and_fix(self):
+        refusal = tts_client.reference_text_refusal("Alex", self._required_doc(), None)
+
+        assert refusal is not None
+        # Rendered verbatim under the reply as
+        # "Voice unavailable for this reply: <this>", so it has to read as
+        # advice: who, what, and where to fix it.
+        assert "Alex" in refusal
+        assert "breeze-blue" in refusal
+        assert "transcript" in refusal
+
+    def test_reference_text_refusal_survives_a_document_without_an_engine_slug(self):
+        # fetch_capabilities_url validates "a dict", nothing more; a doc with
+        # no `engine` key must not TypeError the refusal path.
+        doc = self._required_doc()
+        del doc["engine"]
+
+        refusal = tts_client.reference_text_refusal("Alex", doc, "")
+
+        assert refusal is not None and "connected TTS engine" in refusal
+
+    # -- the synthesis-side pre-flight --------------------------------------
+
+    def test_synthesize_refuses_transcriptless_persona_without_posting_when_required(self, monkeypatch):
+        _active_tts(monkeypatch)
+        _cache_capabilities(monkeypatch, self._required_doc())
+        urls = []
+
+        def responder(method, url, **kw):
+            urls.append(url)
+            raise AssertionError("no request may be spent on a doomed synthesis")
+
+        _patch_http(monkeypatch, responder)
+        result = _run(tts_client.synthesize("hi", None, "QUJD", persona_name="Alex"))
+
+        assert urls == []  # neither /capabilities (cached) nor /synthesize
+        assert result.succeeded is False
+        # 422 is what the router forwards (ENGINE_REFUSAL_STATUSES) and what
+        # the browser reads as "stop asking for this reply, show the reason".
+        assert result.status == 422
+        assert "Alex" in result.reason()
+
+    def test_synthesize_sends_no_reference_text_when_the_engine_does_not_require_it(self, monkeypatch):
+        _active_tts(monkeypatch)
+        _cache_capabilities(monkeypatch, make_capabilities_doc(engine="dots.tts"))
+        seen = {}
+
+        def responder(method, url, **kw):
+            seen["payload"] = kw.get("json")
+            return json_response(200, {"audio_base64": "QUJD", "sample_rate": 24000})
+
+        _patch_http(monkeypatch, responder)
+        result = _run(tts_client.synthesize("hi", None, "QUJD", persona_name="Luna"))
+
+        assert result.succeeded is True
+        assert "reference_text" not in seen["payload"]  # nothing invented
+
+    def test_synthesize_warns_once_per_persona_and_engine(self, monkeypatch, caplog):
+        _active_tts(monkeypatch)
+        _cache_capabilities(monkeypatch, self._required_doc())
+        _patch_http(monkeypatch, lambda *a, **kw: json_response(200, {}))
+
+        with caplog.at_level(logging.WARNING, logger="app.services.tts_client"):
+            for _ in range(3):
+                _run(tts_client.synthesize("hi", None, "QUJD", persona_name="Alex"))
+
+        assert sum("No TTS for persona" in r.message for r in caplog.records) == 1
+
+    def test_synthesize_warns_again_after_an_engine_switch(self, monkeypatch, caplog):
+        # The verdict is about the (engine, persona) pair: point the same
+        # persona at a second transcript-mandatory engine and it is news again.
+        _active_tts(monkeypatch)
+        _cache_capabilities(monkeypatch, self._required_doc())
+        _patch_http(monkeypatch, lambda *a, **kw: json_response(200, {}))
+
+        with caplog.at_level(logging.WARNING, logger="app.services.tts_client"):
+            _run(tts_client.synthesize("hi", None, "QUJD", persona_name="Alex"))
+            tts_client.invalidate_capabilities()
+            _cache_capabilities(monkeypatch, self._required_doc(engine="ming3-tts-moe"))
+            _run(tts_client.synthesize("hi", None, "QUJD", persona_name="Alex"))
+
+        assert sum("No TTS for persona" in r.message for r in caplog.records) == 2
 
 
 class TestLanguageFit:

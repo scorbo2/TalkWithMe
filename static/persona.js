@@ -67,11 +67,18 @@ function renderPersonaList(list, showRemoveButtons) {
         avatar.className = "persona-avatar";
         renderPersonaAvatar(avatar, p);
 
-        // Mute indicator if not TTS-capable
-        if (!p.tts_capable) {
+        // Mute indicator. Two different reasons, one badge, and the tooltip
+        // says which (issue #164 phase 2): the persona has no reference clip,
+        // or it has one the CONNECTED engine cannot use because that engine
+        // demands a transcript the persona never supplied. The second half is
+        // why checkTTSHealth() repaints this list via refreshPersonaSidebar():
+        // init() renders personas before the health check lands.
+        const voiceBlock = personaVoiceBlock(p, ttsReferenceTextRequired);
+        if (voiceBlock) {
             const mute = document.createElement("span");
             mute.className = "mute-indicator";
             mute.textContent = "\u{1F507}";  // 🔇
+            mute.title = `${p.name} will be silent: ${voiceBlock}`;
             avatar.appendChild(mute);
         }
 
