@@ -28,7 +28,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 from app.models import ChatMessage
-from app.services.mime import mime_to_extension
+from app.services.mime import EXTENSION_SAFE_RE_CLASS, mime_to_extension
 
 logger = logging.getLogger(__name__)
 
@@ -117,16 +117,29 @@ def _is_plain_filename(value: Any) -> bool:
 # The only two names this module ever writes for a clip: "<message-id>_<index>.<ext>"
 # once the file is attached to a row (_audio_filename) and
 # "<message-id>_pending_<hex8>.<ext>" while the row does not exist yet
-# (_staged_audio_filename). The extension is deliberately NOT constrained.
-# app/services/mime.py derives it from the container the client recorded into,
-# and that output set is open by design — a closed "known audio extensions"
-# table here would be a second hand-maintained copy of that knowledge, would
-# stop nothing (mime_type is client-supplied, so an upload may be named almost
-# anything), and would silently mute replay for a real recording whose
-# container simply was not in the list (an .m4a or .3gpp capture). The *shape*
-# is what makes a name a clip, and the shape is stable.
+# (_staged_audio_filename). This is an allowlist on that SHAPE, never on the
+# extension: app/services/mime.py derives it from the container the client
+# recorded into and its output set is open by design, so a closed "known audio
+# extensions" table here would be a second hand-maintained copy of that
+# knowledge, would stop nothing (mime_type is client-supplied), and would
+# silently mute replay for a real recording whose container simply was not in
+# the list (an .m4a or .3gpp capture).
+#
+# The extension therefore accepts exactly EXTENSION_SAFE_RE_CLASS — the
+# character class mime_to_extension() is able to emit, imported from that
+# module rather than re-typed. The first version of this rule hand-copied a
+# stricter guess ("an extension starts alphanumeric"), which the sanitizer
+# contradicts: an upload advertising "audio/_foo" was saved as "<id>_0._foo"
+# and then 404'd on every replay attempt, write-only forever. Importing the
+# constant makes that drift impossible.
+#
+# CAVEAT, spelled out because it spans two files: the leading [^/\\]+ requires
+# a NON-EMPTY message id. That is guaranteed by the blank-id 422 in
+# app/routers/persistence.py::upload_audio, not by anything here — relax one
+# side and the other starts producing files this endpoint refuses to serve
+# ("_pending_a1b2c3d4.wav" is unspeakable to this regex).
 _CLIP_NAME_RE = re.compile(
-    r"[^/\\]+_(?:\d+|pending_[0-9a-f]{8})\.[a-z0-9][a-z0-9_-]*",
+    r"[^/\\]+_(?:\d+|pending_[0-9a-f]{8})\." + EXTENSION_SAFE_RE_CLASS + "+",
     re.IGNORECASE,
 )
 

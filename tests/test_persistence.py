@@ -12,6 +12,7 @@ import pytest
 
 from app import persistence
 from app.models import ChatMessage
+from app.services.mime import EXTENSION_SAFE_RE_CLASS
 
 B64_AUDIO = base64.b64encode(b"RIFF-fake-wav-bytes").decode("ascii")
 
@@ -199,6 +200,15 @@ class TestServeableAudioFilenames:
         "audio/3gpp",      # -> .3gpp
         "audio/vnd.wave",  # -> .vndwave: whatever the MIME sanitizer emits is fine
         "audio/nonsense",
+        # Adversarial-but-legal: mime_to_extension() filters a character SET,
+        # so an extension may legitimately start with "_" or "-". The first
+        # cut of the clip-shape allowlist required an alphanumeric first
+        # character, and uploads advertising these were written to disk and
+        # then 404'd on every replay attempt (write-only clips).
+        "audio/_foo",      # -> ._foo
+        "audio/-foo",      # -> .-foo
+        "audio/_",         # -> ._   (a whole extension of one underscore)
+        "audio/x-_weird",  # -> ._weird (vendor "x-" stripped, "_" survives)
         None,              # -> the .bin fallback
     ])
     def test_every_name_the_writers_produce_is_serveable_whatever_the_container(self, mime):
@@ -210,6 +220,25 @@ class TestServeableAudioFilenames:
             persistence._audio_filename("d4ee3044-1", 3, mime)) is True
         assert persistence.is_serveable_audio_filename(
             persistence._staged_audio_filename("d4ee3044-1", mime)) is True
+
+    def test_allowlist_extension_class_is_imported_from_mime_never_recopied(self):
+        # GIVEN the clip-name allowlist,
+        # THEN its extension portion IS the character class app/services/mime.py
+        # exports, not a hand-typed approximation of it. That hand-copy is what
+        # drifted the first time (the writer saved "<id>_0._foo"; the endpoint
+        # refused to serve it), and this is the guard that stops a third copy.
+        assert EXTENSION_SAFE_RE_CLASS in persistence._CLIP_NAME_RE.pattern
+
+    def test_empty_message_id_yields_an_unserveable_name_which_is_why_the_endpoint_rejects_it(self):
+        # GIVEN the blank message_id that upload_audio 422s (see
+        # tests/test_routers_persistence.py):
+        # THEN the names the writers would build are NOT clip-shaped, proving
+        # the 422 is load-bearing rather than tidiness — the allowlist's base
+        # segment needs at least one character before the "_".
+        assert persistence.is_serveable_audio_filename(
+            persistence._audio_filename("", 0, "audio/wav")) is False
+        assert persistence.is_serveable_audio_filename(
+            persistence._staged_audio_filename("", "audio/wav")) is False
 
     def test_file_named_exactly_like_a_clip_is_serveable_rule_boundary_is_the_name(self):
         # THEN the rule's accepted boundary is pinned: it discriminates by

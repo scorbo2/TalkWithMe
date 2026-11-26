@@ -63,6 +63,16 @@ def upload_audio(
             status_code=422,
             detail="Message ID may not contain path separators.",
         )
+    if not req.message_id.strip():
+        # A blank ID is not an identifier, and here it is also a write-only
+        # file: both name writers interpolate the ID as a PREFIX
+        # ("<id>_<index>.<ext>" / "<id>_pending_<hex8>.<ext>"), so "" produces
+        # "_0.wav" / "_pending_a1b2c3d4.wav" — names persistence is happy to
+        # save and the playback endpoint's clip-shape allowlist can never
+        # match (its base segment requires at least one character before the
+        # underscore). Reject the ID at the edge rather than accumulating
+        # recordings no replay button can ever fetch.
+        raise HTTPException(status_code=422, detail="Message ID may not be blank.")
 
     try:
         filename = persist_audio(room, req.message_id, req.audio_base64, req.mime_type)
