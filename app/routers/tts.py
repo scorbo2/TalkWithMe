@@ -17,6 +17,9 @@ from fastapi.responses import JSONResponse
 from app.config import clean_base_url, get_personas, get_settings
 from app.models import TTSRequest, TTSHealthResponse
 from app.services.tts_client import (
+    INACTIVE_DETAIL,
+    SynthesisOutcome,
+    SynthesisResult,
     cached_capabilities,
     check_tts_health,
     doc_requires_reference_text,
@@ -45,6 +48,38 @@ router = APIRouter(tags=["tts"])
 # own sentence carries the fix ("raise prompt_duration"), so the status only
 # has to classify permanence, not blame.
 ENGINE_REFUSAL_STATUSES = (400, 422)
+
+# The one place a SynthesisOutcome becomes a status code for OUR caller. The
+# axis is permanence, exactly as above and exactly what the frontend acts on:
+# 422 = "print this reason, stop asking for the rest of the reply", 502 =
+# "engine hiccup, ask again on the next sentence", 503 = "this app is not
+# configured to speak at all, and asking again changes nothing".
+#
+# _http_status_for_failure() SUBSCRIPTS this table rather than calling
+# .get(outcome, 502) on purpose: an outcome the table has never heard of raises
+# KeyError naming itself instead of quietly inheriting the ask-me-again bucket.
+# A silent default is exactly what made issue #171's prose match so cheap to
+# leave in. The suite walks every enum member
+# (test_every_synthesis_outcome_is_classified_by_the_router), so the KeyError
+# stays where it belongs: in the commit that added the member.
+_FAILURE_HTTP_STATUS = {
+    SynthesisOutcome.INACTIVE: 503,
+    SynthesisOutcome.LOCAL_REFUSAL: 422,
+    SynthesisOutcome.LOCAL_FAILURE: 502,
+}
+
+
+def _http_status_for_failure(result: SynthesisResult) -> int:
+    """The app's status code for a synthesis that brought back no audio.
+
+    An ENGINE_VERDICT is classified by the engine's own number (see
+    ENGINE_REFUSAL_STATUSES); every other outcome is decided by the table
+    above, so a new SynthesisOutcome member has to be given a row here — it
+    gets no free pass to 502.
+    """
+    if result.outcome is SynthesisOutcome.ENGINE_VERDICT:
+        return 422 if result.engine_status in ENGINE_REFUSAL_STATUSES else 502
+    return _FAILURE_HTTP_STATUS[result.outcome]
 
 
 def _capabilities_for_current_engine() -> Optional[dict]:
@@ -145,10 +180,7 @@ async def tts_capabilities(base_url: Optional[str] = Query(default=None, alias="
 
     settings = get_settings()
     if not settings.tts.is_active:
-        return JSONResponse(
-            status_code=503,
-            content={"detail": "TTS is not active (disabled or no base_url)"},
-        )
+        return JSONResponse(status_code=503, content={"detail": INACTIVE_DETAIL})
     doc = await get_capabilities()
     if doc is None:
         return JSONResponse(
@@ -222,19 +254,13 @@ async def tts_proxy(req: TTSRequest):
     if result.succeeded:
         return result.audio
 
-    # Propagate the engine's verdict. Its content pre-flights answer 422 (the
-    # text has nothing this engine can speak) and 400 (the persona's reference
-    # clip has no recognizable speech inside the transcribable window) with a
-    # detail naming what the caller can change. Collapsing every failure into
-    # "returned no audio" leaves the user with silence and no lead to follow,
-    # and the front end logs nothing more than a status code.
-    #
-    # Permanent refusals keep 422 (see ENGINE_REFUSAL_STATUSES); everything
-    # else is 502: an engine hiccup, a connection failure, a 500 from an engine
-    # too old to pre-flight (tts-serve < 1.5) — all worth asking about again on
-    # the next sentence.
-    if result.detail == "TTS is not active (disabled or no base_url)":
-        return JSONResponse(status_code=503, content={"detail": result.reason()})
-
-    status = 422 if result.status in ENGINE_REFUSAL_STATUSES else 502
-    return JSONResponse(status_code=status, content={"detail": result.reason()})
+    # Propagate the verdict in the client's own words (engine pre-flights and
+    # local refusals both name what the caller can change); collapsing them
+    # into "returned no audio" leaves the user with silence and no lead to
+    # follow. The status comes from _http_status_for_failure(), which reads
+    # SynthesisResult.outcome and nothing else — no status code in this app is
+    # decided by a sentence again.
+    return JSONResponse(
+        status_code=_http_status_for_failure(result),
+        content={"detail": result.reason()},
+    )

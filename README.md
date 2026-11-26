@@ -795,6 +795,7 @@ standalone script under `impl/` with per-engine install notes.
   - Some fixes for Windows users (#166)
   - Better handling of reference transcript per-engine (#164)
   - Bug fix: isSpeakableText() was over-zealous (#169)
+  - Bug fix: don't do control flow with strings (#171)
 
 ## License
 

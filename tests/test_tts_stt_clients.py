@@ -9,10 +9,12 @@ import asyncio
 import logging
 
 import httpx
+import pytest
 
 import app.config as app_config
 import app.services.stt_client as stt_client
 import app.services.tts_client as tts_client
+from app.services.tts_client import SynthesisOutcome, SynthesisResult
 from tests.factories import (
     FakeAsyncClient,
     json_response,
@@ -122,13 +124,84 @@ def _cache_capabilities(monkeypatch, doc, base_url="http://tts.local:5500"):
 
 
 class TestSynthesize:
-    def test_inactive_tts_returns_none_without_network(self, monkeypatch):
+    def test_inactive_tts_returns_no_audio_without_network(self, monkeypatch):
         def fail(*a, **kw):
             raise AssertionError("network must not be touched when TTS is inactive")
 
         _patch_http(monkeypatch, fail)
         result = _run(tts_client.synthesize("hi", "p", "QUJD"))
         assert result.audio is None
+
+    def test_synthesize_inactive_reports_the_inactive_outcome_with_no_engine_status(
+        self, monkeypatch
+    ):
+        # The router's 503 reads this outcome (issue #171). Two facts the
+        # classification depends on: the outcome is INACTIVE, and no
+        # engine_status rides along — this request never reached an engine, so
+        # it must not arrive at the router dressed as an engine verdict (which
+        # is the bucket that answers 502, "ask again").
+        def fail(*a, **kw):
+            raise AssertionError("network must not be touched when TTS is inactive")
+
+        _patch_http(monkeypatch, fail)
+        result = _run(tts_client.synthesize("hi", "p", "QUJD"))
+
+        assert result.outcome is SynthesisOutcome.INACTIVE
+        assert result.succeeded is False
+        assert result.engine_status is None
+        assert result.reason()  # the human sentence is still what the user reads
+
+    def test_synthesize_non_cloning_backstop_reports_local_failure_not_inactive(
+        self, monkeypatch
+    ):
+        # INACTIVE means "the FEATURE is off", not "no audio came back". The
+        # cold-doc non-cloning backstop consulted a real engine document, so it
+        # reports LOCAL_FAILURE — the router's 502, with the router's own 503 as
+        # the real answer once the warm cache can say why (pinned in
+        # tests/test_routers_tts_stt.py).
+        _active_tts(monkeypatch)
+        _cache_capabilities(monkeypatch,
+                            make_capabilities_doc(engine="omnivoice", reference_audio=None))
+        _patch_http(monkeypatch, lambda method, url, **kw: json_response(
+            200, {"audio_base64": "QUJD", "sample_rate": 24000}))
+
+        result = _run(tts_client.synthesize("hi", "p", "QUJD"))
+
+        assert result.outcome is SynthesisOutcome.LOCAL_FAILURE
+        assert result.succeeded is False
+
+    # -- the outcome/field invariants ---------------------------------------
+    #
+    # The router derives the caller's status from `outcome` alone, so a result
+    # carrying a rival signal (an engine status on a local outcome, audio on a
+    # failure) must be impossible to build: "which field wins" cannot be allowed
+    # to become a runtime question.
+
+    def test_synthesis_result_with_audio_but_no_audio_payload_raises(self):
+        with pytest.raises(ValueError, match="requires audio"):
+            SynthesisResult(outcome=SynthesisOutcome.AUDIO)
+
+    def test_synthesis_result_failure_carrying_audio_raises(self):
+        with pytest.raises(ValueError, match="must not carry audio"):
+            SynthesisResult(
+                outcome=SynthesisOutcome.LOCAL_FAILURE,
+                audio={"audio_base64": "QUJD", "sample_rate": 24000},
+            )
+
+    def test_synthesis_result_engine_verdict_without_a_status_raises(self):
+        with pytest.raises(ValueError, match="requires engine_status"):
+            SynthesisResult(
+                outcome=SynthesisOutcome.ENGINE_VERDICT, detail="no sentence, no number"
+            )
+
+    def test_synthesis_result_local_outcome_carrying_an_engine_status_raises(self):
+        # The exact confusion issue #171 was heading towards: a locally-decided
+        # failure smuggling a number would let the router's engine rule answer
+        # for a request that never reached an engine.
+        with pytest.raises(ValueError, match="must not carry an engine status"):
+            SynthesisResult(
+                outcome=SynthesisOutcome.LOCAL_REFUSAL, engine_status=422, detail="nope"
+            )
 
     def test_synthesize_posts_doc_driven_payload_and_returns_body(self, monkeypatch):
         # The payload is built from the capabilities doc (plan T4): the
@@ -498,9 +571,10 @@ class TestSynthesize:
         # ...the cached document survives, so the reply's next sentence does
         # not refetch it (an invalidated cache makes every sentence pay)...
         assert tts_client._capabilities_cache is not None
-        # ...the engine's own wording reaches the caller...
+        # ...the engine's own verdict reaches the caller...
         assert result.audio is None
-        assert result.status == 422
+        assert result.outcome is SynthesisOutcome.ENGINE_VERDICT
+        assert result.engine_status == 422
         assert "nothing this engine can speak" in result.detail
         # ...and the two 422 classes read differently in the log.
         assert "refused the CONTENT" in caplog.text
@@ -540,7 +614,8 @@ class TestSynthesize:
         result = _run(tts_client.synthesize("hello there", "p", "QUJD"))
 
         assert result.audio is None
-        assert result.status == 400
+        assert result.outcome is SynthesisOutcome.ENGINE_VERDICT
+        assert result.engine_status == 400
         assert "prompt_duration" in result.detail
         # reason() is what the browser prints under the reply, so it is the
         # engine's sentence VERBATIM: no "TTS engine (HTTP 400):" prefix, and
@@ -727,9 +802,12 @@ class TestReferenceTextRequirement:
 
         assert urls == []  # neither /capabilities (cached) nor /synthesize
         assert result.succeeded is False
-        # 422 is what the router forwards (ENGINE_REFUSAL_STATUSES) and what
-        # the browser reads as "stop asking for this reply, show the reason".
-        assert result.status == 422
+        # A refusal decided HERE, from the document in hand, is reported as a
+        # local refusal: no engine number attached (none exists), and the
+        # router answers it with the 422 the browser reads as "stop asking for
+        # this reply, show the reason".
+        assert result.outcome is SynthesisOutcome.LOCAL_REFUSAL
+        assert result.engine_status is None
         assert "Alex" in result.reason()
 
     def test_synthesize_sends_no_reference_text_when_the_engine_does_not_require_it(self, monkeypatch):

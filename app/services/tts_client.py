@@ -9,6 +9,7 @@ STT client code lives in its own module: app.services.stt_client
 """
 
 import base64
+import enum
 import json
 import logging
 from dataclasses import dataclass
@@ -149,8 +150,9 @@ def reference_text_refusal(
     The wording is user-facing: the browser shows it verbatim under the reply
     whose audio died ("Voice unavailable for this reply: <this>"), so it names
     the persona, the engine, and the fix. Persona-level absence is a permanent
-    verdict about local configuration, which is why the callers answer 422 —
-    see ENGINE_REFUSAL_STATUSES in app.routers.tts.
+    verdict about local configuration, which is why the callers answer 422: the
+    router's warm-cache pre-check says it directly, synthesize() reports it as a
+    SynthesisOutcome.LOCAL_REFUSAL (see _FAILURE_HTTP_STATUS in app.routers.tts).
     """
     if transcript:
         return None
@@ -668,34 +670,100 @@ def _is_content_refusal(response: httpx.Response) -> bool:
     return isinstance(body, dict) and isinstance(body.get("detail"), str)
 
 
+# What the app tells the user when the TTS feature itself is switched off
+# (disabled, or no base_url configured). Presentation only — the router's 503
+# branches on SynthesisOutcome.INACTIVE, never on this sentence. It lives here
+# because this module owns the verdict, and the router's own "inactive" 503 (on
+# /api/tts/capabilities) says the same thing about the same feature.
+INACTIVE_DETAIL = "TTS is not active (disabled or no base_url)"
+
+
+class SynthesisOutcome(enum.Enum):
+    """HOW a synthesis ended — the router's single classification axis.
+
+    Every exit of synthesize() belongs to exactly one member, and the router
+    turns the value into the caller's status code via _FAILURE_HTTP_STATUS in
+    app.routers.tts. Before this, the same fact was smeared over three optional
+    fields (`audio`, `status`, and a prose-matched sentence — issue #171), so
+    every new failure site inherited the 502 bucket merely by being new, and
+    the classification could be edited from a log-message branch.
+
+    Members (the docstring of each is the CONTRACT the router relies on):
+
+      AUDIO           — success; `audio` carries the engine's JSON body.
+      ENGINE_VERDICT  — the engine answered something other than 200;
+                        `engine_status` + `detail` are its number and its words.
+      LOCAL_REFUSAL   — we refused before the POST on evidence already in hand
+                        (a REQUIRED field this persona does not have). Permanent
+                        and about app-side configuration → 422, the same verdict
+                        class as an engine content pre-flight.
+      LOCAL_FAILURE   — we gave up (or blew up) with no engine verdict to pass
+                        on: the cache-cold non-cloning backstop, a transport
+                        exception. Nothing permanent is known → 502, ask again.
+      INACTIVE        — the feature is off, so no request was ever possible.
+                        Retrying changes nothing → 503.
+    """
+
+    AUDIO = "audio"
+    ENGINE_VERDICT = "engine_verdict"
+    LOCAL_REFUSAL = "local_refusal"
+    LOCAL_FAILURE = "local_failure"
+    INACTIVE = "inactive"
+
+
 @dataclass(frozen=True)
 class SynthesisResult:
     """Outcome of one synthesis, self-heal retry included.
 
-    `audio` is the engine's JSON body on success. On failure, `status` and
-    `detail` carry the engine's own verdict, which the router must propagate:
-    tts-serve's content pre-flights answer 400/422 with a detail naming what
-    the caller can change (this persona's reference clip has no speech in the
-    transcribable window; this text has nothing this engine can speak).
-    Dropping it turns a fixable configuration problem into permanent silence.
+    `outcome` is the only thing the router classifies on (SynthesisOutcome
+    says what each one means); the rest are payload fields. On an
+    ENGINE_VERDICT, `engine_status` and `detail` are the engine's own verdict,
+    which the router must propagate: tts-serve's content pre-flights answer
+    400/422 with a detail naming what the caller can change (this persona's
+    reference clip has no speech in the transcribable window; this text has
+    nothing this engine can speak). Dropping it turns a fixable configuration
+    problem into permanent silence. On the locally-decided outcomes, `detail`
+    is our own sentence about the same kind of fix.
     """
 
+    outcome: SynthesisOutcome
     audio: Optional[dict] = None
-    status: Optional[int] = None
+    engine_status: Optional[int] = None
     detail: Optional[str] = None
+
+    def __post_init__(self) -> None:
+        """Reject a result whose fields contradict its outcome.
+
+        The app's status code is derived from `outcome`, so a second, rival
+        signal sitting next to it must never be allowed to exist (that is how
+        "which number wins" becomes a runtime question). Cheaper to fail at the
+        construction site than to have a user read the wrong status.
+        """
+        if self.succeeded and self.audio is None:
+            raise ValueError("an AUDIO outcome requires audio")
+        if not self.succeeded and self.audio is not None:
+            raise ValueError(f"a {self.outcome.name} outcome must not carry audio")
+        if self.outcome is SynthesisOutcome.ENGINE_VERDICT:
+            if self.engine_status is None:
+                raise ValueError("an ENGINE_VERDICT outcome requires engine_status")
+        elif self.engine_status is not None:
+            raise ValueError(
+                f"a {self.outcome.name} outcome must not carry an engine status: "
+                "this module reports what happened, the router picks the code"
+            )
 
     @property
     def succeeded(self) -> bool:
-        return self.audio is not None
+        return self.outcome is SynthesisOutcome.AUDIO
 
     def reason(self) -> str:
         """The explanation for the app's client and the logs.
 
-        The engine's own sentence verbatim when there is one — its HTTP status
-        is already the status of the response the router builds, and the
-        synthesis failure is logged with status + detail, so prefixing
-        "TTS engine (HTTP 422)" here would only make the UI line harder to
-        read. The generic line covers the paths that never reached the engine.
+        The engine's own sentence verbatim when there is one — the outcome
+        already decides which status the router builds, and the failure is
+        logged with engine_status + detail, so prefixing "TTS engine
+        (HTTP 422)" here would only make the UI line harder to read. The generic
+        line covers the outcomes that carry no sentence at all.
         """
         return self.detail or "TTS server returned no audio"
 
@@ -719,10 +787,13 @@ async def synthesize(
     `persona_name` exists purely to name the persona in the refusal sentence
     and its log line; it is never sent to the engine.
 
-    Returns a SynthesisResult: the server's raw response dict on success
-    (engine extras pass through; the frontend only reads `audio_base64`), or
-    the engine's status + detail on failure — the router propagates them, and
+    Returns a SynthesisResult whose `outcome` says which of the SynthesisOutcome
+    cases happened: AUDIO with the server's raw response dict (engine extras
+    pass through; the frontend only reads `audio_base64`), or the engine's
+    status + detail on an ENGINE_VERDICT — the router propagates them, and
     tts-serve's content pre-flights name exactly what the caller can fix.
+    Every exit names its outcome explicitly; a new one that does not is a
+    TypeError here, not a wrong status code in the browser.
 
     The payload is built from the cached capabilities document (plan T4):
     only fields the engine advertises are sent. If no document is available
@@ -743,7 +814,7 @@ async def synthesize(
     settings = get_settings()
     if not settings.tts.is_active:
         logger.warning("TTS synthesis skipped: feature not active (no base_url or disabled)")
-        return SynthesisResult(detail="TTS is not active (disabled or no base_url)")
+        return SynthesisResult(outcome=SynthesisOutcome.INACTIVE, detail=INACTIVE_DETAIL)
     base_url = settings.tts.base_url
     url = f"{base_url}/synthesize"
     timeout = settings.tts.timeout
@@ -772,8 +843,16 @@ async def synthesize(
                 "is unavailable",
                 base_url,
             )
+            # LOCAL_FAILURE, not LOCAL_REFUSAL, and therefore a 502: the
+            # permanent answer to this situation is the ROUTER's 503, which
+            # fires as soon as this fetch has warmed the cache (see
+            # test_cold_cache_non_cloning_engine_502_without_synthesis_call).
+            # Reported as a refusal from here would send the frontend into its
+            # "this persona's voice is broken" path for what is really "this
+            # engine has no voice", and it is pinned as a 502 for that reason.
             return SynthesisResult(
-                detail="the connected engine does not support reference-audio voice cloning"
+                outcome=SynthesisOutcome.LOCAL_FAILURE,
+                detail="the connected engine does not support reference-audio voice cloning",
             )
         refusal = reference_text_refusal(persona_name, doc, reference_text)
         if refusal:
@@ -785,7 +864,7 @@ async def synthesize(
             # user would read a serialized validation list where a sentence
             # should be. The doc is already in hand, so this costs no fetch.
             warn_missing_reference_text(base_url, persona_name or "(unknown)")
-            return SynthesisResult(status=422, detail=refusal)
+            return SynthesisResult(outcome=SynthesisOutcome.LOCAL_REFUSAL, detail=refusal)
         response = await _post_synthesis(url, payload_for(doc), timeout)
         if response.status_code == 422 and _is_content_refusal(response):
             logger.warning(
@@ -802,11 +881,15 @@ async def synthesize(
                 "TTS synthesis failed: HTTP %d from %s: %s",
                 response.status_code, url, detail,
             )
-            return SynthesisResult(status=response.status_code, detail=detail)
-        return SynthesisResult(audio=response.json())
+            return SynthesisResult(
+                outcome=SynthesisOutcome.ENGINE_VERDICT,
+                engine_status=response.status_code,
+                detail=detail,
+            )
+        return SynthesisResult(outcome=SynthesisOutcome.AUDIO, audio=response.json())
     except Exception as exc:
         logger.warning("TTS synthesis failed: %s", exc)
-        return SynthesisResult(detail=str(exc))
+        return SynthesisResult(outcome=SynthesisOutcome.LOCAL_FAILURE, detail=str(exc))
 
 
 async def _self_heal_retry(
