@@ -2,6 +2,8 @@
 
 import base64
 
+import pytest
+
 from app.models import ChatMessage
 from app.persistence import persist_message
 from app.session import session
@@ -82,6 +84,26 @@ class TestUploadAudio:
         assert resp.status_code == 422
         assert not (persistence_root.parent / "pwn").exists()
 
+    @pytest.mark.parametrize("message_id", ["", "   "])
+    def test_upload_with_blank_message_id_returns_422_and_writes_nothing(self, client, persistence_root, message_id):
+        # GIVEN a blank message ID (a UUID is generated for every real message,
+        # so only a hand-built request produces this),
+        # WHEN it is posted,
+        persist_message("TNG", ChatMessage(role="user", content="hi"), "msg-1")
+        resp = client.post("/api/persist/audio?room=TNG",
+                           json={"message_id": message_id, "audio_base64": b64(AUDIO_BYTES),
+                                 "mime_type": "audio/webm"})
+
+        # THEN it is refused, and no write-only clip is left in the room. The
+        # writers interpolate the ID as a PREFIX, so an empty one yields
+        # "_pending_<hex8>.webm" — a file that saves happily and that the
+        # playback endpoint's clip-shape allowlist can never match. An upload
+        # that reports "saved" for audio no replay button can ever fetch is the
+        # bug; the 422 is what keeps the writers' output a subset of what is
+        # serveable.
+        assert resp.status_code == 422
+        assert [p.name for p in (persistence_root / "TNG").iterdir()] == ["history.json"]
+
     def test_upload_with_traversal_message_id_returns_422_and_writes_nothing(self, client, persistence_root):
         persist_message("TNG", ChatMessage(role="user", content="hi"), "m1")
         # The message_id is interpolated into the on-disk filename; with a
@@ -129,6 +151,87 @@ class TestServeAudio:
         # none of the transcript leaks on the way to the 404.
         assert resp.status_code == 404
         assert "TOP SECRET" not in resp.text
+
+    def test_history_tmp_crash_residue_is_not_serveable_as_audio(self, client, persistence_root):
+        # GIVEN a room whose history write was killed between the temp write
+        # and os.replace(): _write_history_file's scratch name is
+        # ``target.with_suffix(".tmp")`` — the ".json" is REPLACED — so the
+        # residue is history.tmp, holding the very transcript the history.json
+        # block protects. The file MUST be written here: a name that merely
+        # does not exist also 404s, so a test that skips this step is green
+        # while proving nothing at all.
+        persist_message("TNG", ChatMessage(role="user", content="TOP SECRET transcript"), "msg-1")
+        residue = persistence_root / "TNG" / "history.tmp"
+        residue.write_text(
+            '{"datetime": "now", "messages": [{"id": "msg-1", "sender": "USER", '
+            '"text": "TOP SECRET transcript", "audio": []}]}',
+            encoding="utf-8",
+        )
+        assert residue.exists()
+
+        # WHEN the audio endpoint is asked for the crash residue by name,
+        resp = client.get("/api/persist/audio/TNG/history.tmp")
+
+        # THEN it is a missing clip as far as this endpoint is concerned, and
+        # none of the transcript leaks on the way to the 404.
+        assert resp.status_code == 404
+        assert "TOP SECRET" not in resp.text
+
+    @pytest.mark.parametrize("mime,extension", [
+        ("audio/x-m4a", ".m4a"),   # iOS/Safari-family recordings
+        ("audio/3gpp", ".3gpp"),
+        ("audio/nonsense", ".nonsense"),
+        (None, ".bin"),             # the mime_to_extension fallback
+    ])
+    def test_clip_with_an_unlisted_container_still_serves(self, client, mime, extension):
+        # GIVEN a persisted clip whose extension is in no hand-written
+        # "known audio extensions" list: the serveable rule is about the name
+        # SHAPE the writers produce, because an extension table would silently
+        # mute replay for these (no error anywhere — just a dead button).
+        persist_message("TNG", ChatMessage(role="user", content="hi"), "msg-9")
+        upload = client.post("/api/persist/audio?room=TNG", json={
+            "message_id": "msg-9", "audio_base64": b64(AUDIO_BYTES), "mime_type": mime,
+        })
+        assert upload.status_code == 200
+        filename = upload.json()["filename"]
+        assert filename.endswith(extension)
+
+        # WHEN it is fetched for playback,
+        resp = client.get(f"/api/persist/audio/TNG/{filename}")
+
+        # THEN it plays.
+        assert resp.status_code == 200
+        assert resp.content == AUDIO_BYTES
+
+    @pytest.mark.parametrize("mime_type,extension", [
+        ("audio/_foo", "._foo"),
+        ("audio/-foo", ".-foo"),
+        ("audio/_", "._"),          # a one-character extension, all underscore
+        ("audio/x-_weird", "._weird"),
+    ])
+    def test_clip_with_an_extension_starting_with_punctuation_uploads_and_serves(
+        self, client, mime_type, extension
+    ):
+        # GIVEN a clip whose derived extension starts with "_" or "-":
+        # mime_to_extension() filters a character SET, so this is squarely in
+        # its output range. The clip allowlist used to require an alphanumeric
+        # first character, which saved the file and 404'd it forever — the
+        # round trip below is the invariant (whatever the writer can name, the
+        # endpoint must serve).
+        persist_message("TNG", ChatMessage(role="user", content="hi"), "msg-42")
+        upload = client.post("/api/persist/audio?room=TNG", json={
+            "message_id": "msg-42", "audio_base64": b64(AUDIO_BYTES), "mime_type": mime_type,
+        })
+        assert upload.status_code == 200
+        filename = upload.json()["filename"]
+        assert filename.endswith(extension)
+
+        # WHEN it is fetched for playback,
+        resp = client.get(f"/api/persist/audio/TNG/{filename}")
+
+        # THEN the bytes come back instead of a 404 for the app's own file.
+        assert resp.status_code == 200
+        assert resp.content == AUDIO_BYTES
 
     def test_symlink_out_of_the_room_dir_is_not_serveable(self, client, persistence_root):
         # GIVEN a symlink inside the room directory pointing at a file outside

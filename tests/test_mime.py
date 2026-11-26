@@ -10,6 +10,8 @@ integrations: tests/test_persistence.py (dotted, ".bin" fallback) and
 tests/test_tts_stt_clients.py (bare, "bin" fallback).
 """
 
+import re
+
 import pytest
 
 from app.services import mime
@@ -61,3 +63,63 @@ class TestMimeToExtension:
         monkeypatch.setattr("mimetypes.guess_extension", poison)
 
         assert mime.mime_to_extension("audio/webm") == "webm"
+
+
+# The extension alphabet is exported (EXTENSION_SAFE_CHARS /
+# EXTENSION_SAFE_RE_CLASS) so that consumers which VALIDATE a filename this
+# module named — app/persistence.py's clip-name allowlist — can import it
+# instead of re-guessing it. These tests are what make that export trustworthy:
+# the sanitizer's real output set, the exported set, and the exported regex
+# class must stay one fact in three clothes.
+class TestExtensionSafeCharsetExport:
+    @pytest.mark.parametrize("mime_type,expected", [
+        # There is NO "an extension starts with a letter" rule here, and there
+        # must never be one implicitly: callers that assume it 404 real files.
+        ("audio/_foo", "_foo"),
+        ("audio/-foo", "-foo"),
+        ("audio/_", "_"),
+        ("audio/-", "-"),
+        ("audio/x-_weird", "_weird"),  # vendor prefix stripped, leading "_" kept
+        ("audio/__proto__", "__proto__"),
+    ])
+    def test_mime_to_extension_can_emit_an_extension_starting_with_underscore_or_hyphen(
+        self, mime_type, expected
+    ):
+        # GIVEN a MIME subtype whose sanitizer-surviving form starts with "_"/"-",
+        # THEN the extension keeps that character: the sanitizer filters the
+        # character SET, never positions.
+        assert mime.mime_to_extension(mime_type) == expected
+
+    @pytest.mark.parametrize("mime_type", [
+        "audio/wav", "audio/webm;codecs=opus", "audio/x-m4a", "audio/3gpp",
+        "audio/vnd.wave", "audio/_foo", "audio/-", "audio/|weird;chars|",
+        "a/b/c", "audio/_\x00", "garbage", None,
+    ])
+    def test_every_extension_the_sanitizer_can_emit_matches_the_exported_class(self, mime_type):
+        # GIVEN any input at all: whatever mime_to_extension() returns MUST be
+        # matched by the class it exports. A gap here is the exact shape of the
+        # persistence allowlist bug — a name a writer produces that a validator
+        # refuses.
+        extension = mime.mime_to_extension(mime_type)
+        assert re.fullmatch(mime.EXTENSION_SAFE_RE_CLASS + "+", extension) is not None, extension
+
+    def test_exported_regex_class_accepts_the_exported_chars_and_nothing_else(self):
+        # GIVEN the two exported views of the alphabet,
+        # THEN they agree character by character over the whole printable ASCII
+        # range — the regex class is derived from the set, so a hand-edit of
+        # either one that makes them disagree fails here naming the character.
+        for codepoint in range(32, 127):
+            char = chr(codepoint)
+            in_set = char in mime.EXTENSION_SAFE_CHARS
+            # Single character, so the bare class (no quantifier) is the probe.
+            in_class = re.fullmatch(mime.EXTENSION_SAFE_RE_CLASS, char) is not None
+            assert in_set == in_class, f"{char!r}: set={in_set} class={in_class}"
+
+    def test_exported_set_is_the_documented_alphabet(self):
+        # GIVEN the alphabet itself,
+        # THEN it is exactly lowercase alphanumerics plus "_"/"-". Widening it
+        # is allowed (the allowlist consumers follow automatically) but must be
+        # a deliberate, named decision rather than a silent drift.
+        assert mime.EXTENSION_SAFE_CHARS == frozenset(
+            "abcdefghijklmnopqrstuvwxyz0123456789_-"
+        )
