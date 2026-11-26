@@ -160,6 +160,66 @@ class TestServeableAudioFilenames:
     def test_path_shaped_or_untrusted_names_are_neither_join_safe_nor_serveable(self, name):
         assert persistence.is_serveable_audio_filename(name) is False
 
+    @pytest.mark.parametrize("name", [
+        # _write_history_file's scratch file is literally named this: in
+        # ``target.with_suffix(".tmp")`` the ".json" is REPLACED, so killing the
+        # process between the temp write and os.replace() leaves the blocked
+        # transcript behind under a name a "value != history.json" denylist waves through.
+        "history.tmp",
+        "history.json.tmp",
+        # Anything else that can only be room-internal clutter.
+        "history.json.bak",
+        "history.json.migrated",
+        ".DS_Store",
+        "sidecar_notes.txt",
+        "settings.yaml",
+    ])
+    def test_room_internal_and_stray_names_are_not_serveable(self, name):
+        # GIVEN a name that is a plain filename but is not named like a clip
+        # (crash residue of the transcript, or clutter someone dropped into a
+        # room directory),
+        # THEN the audio endpoint refuses it.
+        assert persistence._is_plain_filename(name) is True
+        assert persistence.is_serveable_audio_filename(name) is False
+
+    def test_history_tmp_is_join_safe_which_is_why_a_denylist_cannot_work(self):
+        # GIVEN the crash residue: it passes join-safety exactly like
+        # history.json did, which is the trap that made the single-name
+        # block useless — the rule has to say "what IS a clip", never
+        # "which internal files did I remember".
+        assert persistence._is_plain_filename("history.tmp") is True
+        assert persistence.is_serveable_audio_filename("history.tmp") is False
+
+    @pytest.mark.parametrize("mime", [
+        "audio/wav",
+        "audio/webm;codecs=opus",
+        "audio/ogg",
+        "audio/mp4",
+        "audio/x-m4a",     # -> .m4a: a real container no hand-written list has
+        "audio/3gpp",      # -> .3gpp
+        "audio/vnd.wave",  # -> .vndwave: whatever the MIME sanitizer emits is fine
+        "audio/nonsense",
+        None,              # -> the .bin fallback
+    ])
+    def test_every_name_the_writers_produce_is_serveable_whatever_the_container(self, mime):
+        # GIVEN either writer and any MIME a client may advertise: the shape
+        # rule must never be the reason a genuine recording stops playing.
+        # (An extension allowlist here would mute these silently — no error,
+        # just dead replay buttons.)
+        assert persistence.is_serveable_audio_filename(
+            persistence._audio_filename("d4ee3044-1", 3, mime)) is True
+        assert persistence.is_serveable_audio_filename(
+            persistence._staged_audio_filename("d4ee3044-1", mime)) is True
+
+    def test_file_named_exactly_like_a_clip_is_serveable_rule_boundary_is_the_name(self):
+        # THEN the rule's accepted boundary is pinned: it discriminates by
+        # name, so a file that is named exactly like a clip is indistinguishable
+        # from one. Such a file can only be in a room directory because an
+        # upload put it there (the writers derive names from message_id + MIME),
+        # or someone placed it by hand — and a name-only endpoint has no basis
+        # to refuse it. Deliberate, not an oversight.
+        assert persistence.is_serveable_audio_filename("history_0.tmp") is True
+
 
 class TestPersistAudio:
     def test_persist_audio_existing_row_names_by_index(self):

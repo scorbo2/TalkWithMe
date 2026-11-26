@@ -82,8 +82,10 @@ def serve_audio(room_name: str, filename: str):
     if not is_serveable_audio_filename(filename):
         # 404, not 422: an unmatchable filename is indistinguishable from
         # a missing one, and there is no reason to reveal which check
-        # tripped. This also covers the room's own history.json, which is
-        # join-safe but is emphatically not a clip to replay.
+        # tripped. This also covers everything in a room directory that is
+        # not named like a clip: the room's own history.json, the .tmp
+        # residue of a history write that was killed mid-flight, and any
+        # other sidecar — all join-safe, none of them a clip to replay.
         raise HTTPException(status_code=404, detail="Audio file not found.")
     audio_path = _PERSISTENCE_ROOT / room_name / filename
     # A plain name is not the same as a contained file: a symlink inside the

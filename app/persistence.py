@@ -19,6 +19,7 @@ import json
 import locale
 import logging
 import os
+import re
 import shutil
 import threading
 import uuid
@@ -54,8 +55,9 @@ _HISTORY_LOCK = threading.Lock()
 _pending_audio: Dict[Tuple[str, str], List[str]] = {}
 
 
-# The room's own bookkeeping file, by name (the audio endpoint has to be able
-# to name it: see is_serveable_audio_filename).
+# The room's own bookkeeping file, by name. The audio endpoint never has to
+# name it to refuse it: history.json (and its .tmp residue) simply is not a
+# clip-shaped name — see is_serveable_audio_filename.
 HISTORY_FILENAME = "history.json"
 
 
@@ -112,6 +114,23 @@ def _is_plain_filename(value: Any) -> bool:
     )
 
 
+# The only two names this module ever writes for a clip: "<message-id>_<index>.<ext>"
+# once the file is attached to a row (_audio_filename) and
+# "<message-id>_pending_<hex8>.<ext>" while the row does not exist yet
+# (_staged_audio_filename). The extension is deliberately NOT constrained.
+# app/services/mime.py derives it from the container the client recorded into,
+# and that output set is open by design — a closed "known audio extensions"
+# table here would be a second hand-maintained copy of that knowledge, would
+# stop nothing (mime_type is client-supplied, so an upload may be named almost
+# anything), and would silently mute replay for a real recording whose
+# container simply was not in the list (an .m4a or .3gpp capture). The *shape*
+# is what makes a name a clip, and the shape is stable.
+_CLIP_NAME_RE = re.compile(
+    r"[^/\\]+_(?:\d+|pending_[0-9a-f]{8})\.[a-z0-9][a-z0-9_-]*",
+    re.IGNORECASE,
+)
+
+
 def is_serveable_audio_filename(value: Any) -> bool:
     """True when *value* names a file the audio playback endpoint may serve.
 
@@ -121,8 +140,21 @@ def is_serveable_audio_filename(value: Any) -> bool:
     transcript with a confident media_type="audio/*" on it. The name check is
     the cheap half; the router also re-checks containment after resolve()
     because a symlink planted in a room dir is a perfectly plain filename too.
+
+    This is an allowlist on the clip-name shape above, not a denylist of the
+    internal files one happened to think of. The previous rule ("anything but
+    history.json") still served the crash residue of that very file: in
+    _write_history_file, ``target.with_suffix(".tmp")`` *replaces* the ".json",
+    so a hard kill between the temp write and os.replace() leaves a
+    ``history.tmp`` holding the same transcript — plus ``.DS_Store`` and any
+    sidecar a future refactor parks in a room directory.
+
+    Accepted boundary (pinned by
+    test_file_named_exactly_like_a_clip_is_serveable_rule_boundary_is_the_name):
+    a file named *exactly* like a clip is indistinguishable from one, so this
+    refuses app-internal names, never lookalikes.
     """
-    return _is_plain_filename(value) and value != HISTORY_FILENAME
+    return _is_plain_filename(value) and _CLIP_NAME_RE.fullmatch(value) is not None
 
 
 def _find_message(data: Dict[str, Any], message_id: str) -> Optional[Dict[str, Any]]:
