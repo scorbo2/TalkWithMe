@@ -43,6 +43,58 @@ class TestListPersonas:
         assert by_name["Alex"]["avatar_image"] is False
         assert by_name["Luna"]["avatar_image"] is False
 
+    def test_summary_reports_reference_clip_and_transcript_presence_separately(
+        self, client, personas_root
+    ):
+        # Issue #164 phase 2: the sidebar must tell "no voice at all" apart from
+        # "voice this engine cannot use", so the two files are reported as two
+        # flags. tts_capable stays the chat-path gate (persona axis alone).
+        summary = {p["name"]: p for p in client.get("/api/personas").json()}
+        assert summary["Alex"]["has_reference_audio"] is False
+        assert summary["Alex"]["has_reference_transcript"] is False
+        assert summary["Luna"]["has_reference_audio"] is True
+        assert summary["Luna"]["has_reference_transcript"] is True
+
+    def test_summary_of_a_clip_without_transcript_reports_the_missing_half(
+        self, client, personas_root
+    ):
+        # The LuxTTS-shaped persona: a clip, no ref.txt. It IS TTS-capable and
+        # must not be flagged as voiceless by the persona axis — the badge only
+        # appears when the connected engine demands the missing half.
+        resp = client.post(
+            "/api/personas",
+            data={
+                "name": "SilentBob",
+                "description": "A clip with no transcript",
+                "system_prompt": "You are SilentBob.",
+                "router_hints": "quiet types",
+                "avatar_color": "#123456",
+                "reference_audio_language": "en",
+                "allow_tool_calls": "false",
+                "reference_audio_transcript": "",
+            },
+            files={"reference_audio": ("bob.wav", b"WAVDATA", "audio/wav")},
+        )
+        assert resp.status_code == 201, resp.text
+
+        summary = {p["name"]: p for p in client.get("/api/personas").json()}
+
+        assert summary["SilentBob"]["has_reference_audio"] is True
+        assert summary["SilentBob"]["has_reference_transcript"] is False
+        assert summary["SilentBob"]["tts_capable"] is True
+
+    def test_summary_never_leaks_persona_file_paths(self, client, personas_root):
+        # Presence flags, not filesystem paths (the browser cannot open them and
+        # they would leak the personas_root location). Every value here is bool.
+        for persona in client.get("/api/personas").json():
+            assert set(persona) == {
+                "name", "description", "avatar_color",
+                "avatar_image", "tts_capable",
+                "has_reference_audio", "has_reference_transcript",
+            }
+            assert isinstance(persona["has_reference_audio"], bool)
+            assert isinstance(persona["has_reference_transcript"], bool)
+
 
 # ---------------------------------------------------------------------------
 # POST /api/personas
@@ -489,14 +541,16 @@ class TestUpdatePersona:
         assert resp.json()["tts_capable"] is False  # no audio -> not TTS-capable
         assert not (personas_root / "Luna" / "ref.wav").exists()
 
-    def test_update_blank_transcript_removes_ref_txt(self, client, personas_root):
+    def test_update_blank_transcript_removes_ref_txt_but_keeps_the_voice(self, client, personas_root):
+        # Issue #164: a blanked transcript is no transcript, but Luna still has
+        # her clip, so she stays voice-capable (some engines never read ref.txt).
         resp = client.put(
             "/api/personas/Luna",
             data=self._data(name="Luna", reference_audio_transcript="   "),
         )
         assert resp.status_code == 200
         assert resp.json()["reference_audio_transcript"] is None
-        assert resp.json()["tts_capable"] is False
+        assert resp.json()["tts_capable"] is True
         assert not (personas_root / "Luna" / "ref.txt").exists()
 
     def test_update_new_transcript_written(self, client, personas_root):

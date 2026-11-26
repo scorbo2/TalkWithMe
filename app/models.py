@@ -82,6 +82,14 @@ class PersonaResponse(BaseModel):
     # GET /api/personas/{name}/avatar).
     avatar_image: bool = False
     tts_capable: bool = False
+    # Two separate presence flags so the UI can tell "this persona has no voice"
+    # apart from "this persona's voice is unusable on the engine currently
+    # connected" (issue #164, phase 2). tts_capable stays the chat-path gate —
+    # the persona axis alone — while these two exist for display, which is the
+    # only place the persona and engine axes may be combined. Presence only:
+    # paths never leave the server.
+    has_reference_audio: bool = False
+    has_reference_transcript: bool = False
 
 
 class PersonaDetailResponse(BaseModel):
@@ -161,6 +169,19 @@ class TTSHealthResponse(BaseModel):
     server_type: Optional[str] = Field(
         default=None,
         description="Server type reported by the TTS server's /health endpoint (e.g. dots.tts)",
+    )
+    reference_text_required: bool = Field(
+        default=False,
+        description=(
+            "True when the CONNECTED ENGINE's capabilities document proves it "
+            "demands a transcript of the persona's reference clip. An "
+            "engine-axis fact, reported here (never on the persona) because a "
+            "persona outlives whichever engine is configured. False also means "
+            "'not known' — no capabilities document reachable, or TTS inactive. "
+            "This route deliberately fetches (and warms the cache) so the value "
+            "is not stale right after a settings save cleared the slot; the "
+            "synthesis path, which runs once per sentence, still never fetches."
+        ),
     )
 
 

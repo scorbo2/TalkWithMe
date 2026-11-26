@@ -50,17 +50,41 @@ async function loadChatRooms() {
 }
 
 /**
+ * The personas visible in the current chat room: everyone in "default", only
+ * the assigned ones in a named room. Shared by applyChatRoomFilter() and
+ * refreshPersonaSidebar() so the room filter is derived in exactly one place.
+ */
+function currentRoomPersonas() {
+    if (currentChatRoom === "default") return [...personas];
+    const roomPersonaNames = roomPersonas[currentChatRoom] || [];
+    return personas.filter(p => roomPersonaNames.includes(p.name));
+}
+
+/**
+ * Re-render the sidebar for a fact that changed about the ENGINE, not about
+ * the personas (today: /api/tts/health reporting that the connected engine
+ * demands a reference transcript — issue #164 phase 2).
+ *
+ * Deliberately NOT applyChatRoomFilter(): that also posts the room's active
+ * personas to the session, which a mere repaint must not re-trigger, and it
+ * touches the dropdown and the echo-chamber checkbox. Same filter, same
+ * remove-button rule, no side effects.
+ */
+function refreshPersonaSidebar() {
+    const isActiveRoom = currentChatRoom !== "default";
+    renderPersonaList(currentRoomPersonas(), isActiveRoom);
+    highlightSelectedPersona();
+}
+
+/**
  * Apply the current chat room filter: update persona list, active session,
  * and UI controls (add/remove buttons).
  */
 function applyChatRoomFilter() {
     const isActiveRoom = currentChatRoom !== "default";
-    const roomPersonaNames = roomPersonas[currentChatRoom] || [];
 
     // Filter the persona list to only those in this room
-    const filtered = isActiveRoom
-        ? personas.filter(p => roomPersonaNames.includes(p.name))
-        : [...personas];
+    const filtered = currentRoomPersonas();
 
     // Update the persona list rendering
     renderPersonaList(filtered, isActiveRoom);

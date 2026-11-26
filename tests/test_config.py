@@ -1,5 +1,8 @@
 """Tests for app/config.py — model validation and YAML load/save behaviour."""
 
+import ast
+from pathlib import Path
+
 import logging
 
 import yaml
@@ -380,13 +383,34 @@ class TestMCPServerConfig:
 # ---------------------------------------------------------------------------
 
 class TestPersona:
-    def test_persona_tts_capable_requires_audio_and_transcript(self):
-        assert Persona(name="A", system_prompt="p", reference_audio="a.wav").tts_capable is False
+    """The persona axis of TTS capability: files only, never engine policy.
+
+    Issue #164: demanding a transcript here silenced every persona on the four
+    tts-serve engines that never accept one. Whether a transcript is required
+    is decided from the capabilities document at synthesis time (see
+    tests/test_tts_stt_clients.py + tests/test_routers_tts_stt.py).
+    """
+
+    def test_tts_capable_needs_only_the_reference_clip(self):
+        assert Persona(name="A", system_prompt="p").tts_capable is False
+        assert Persona(name="A", system_prompt="p", reference_audio="a.wav").tts_capable is True
+
+    def test_tts_capable_with_transcript_present_is_also_true(self):
+        # The transcript never ADDS capability (a clip is required either way);
+        # asserting the pair keeps that from being read backwards.
         assert (
             Persona(name="A", system_prompt="p", reference_audio="a.wav",
                     reference_audio_transcript="a.txt")
             .tts_capable
             is True
+        )
+
+    def test_transcript_without_a_clip_is_not_tts_capable(self):
+        # A transcript of a clip that does not exist is nothing to clone from.
+        assert (
+            Persona(name="A", system_prompt="p", reference_audio_transcript="a.txt")
+            .tts_capable
+            is False
         )
 
 
@@ -957,3 +981,64 @@ class TestCaching:
         assert app_config.get_settings().llm.base_url == "http://reloaded:1"
         assert [p.name for p in app_config.get_personas().personas] == ["Fresh"]
         assert [r.name for r in app_config.get_chatrooms().chat_rooms] == ["NewRoom"]
+
+
+# ---------------------------------------------------------------------------
+# Architecture guard: the persona axis never learns about the engine
+# ---------------------------------------------------------------------------
+
+_CONFIG_SOURCE = Path(__file__).resolve().parent.parent / "app" / "config.py"
+
+
+def test_persona_model_never_reaches_for_the_tts_capabilities_document():
+    """`Persona` must stay engine-agnostic — a structural, not behavioural, fence.
+
+    Persona objects are scanned off disk at startup and served by *synchronous*
+    handlers; the capabilities document is a per-engine, lazily cached network
+    artifact. Teaching Persona.tts_capable to consult the connected engine —
+    the "obvious" way to satisfy issue #164 — would make the persona list's
+    capability flag depend on cache state (it would flicker after every settings
+    save, and go stale on every engine switch), make GET /api/personas depend on
+    a TTS server being up, and put a network-shaped dependency inside a data
+    model. The engine's requirement is enforced where the document already is:
+    app/services/tts_client.py + app/routers/tts.py.
+    """
+    tree = ast.parse(_CONFIG_SOURCE.read_text(encoding="utf-8"))
+
+    def _imported_names(node) -> list:
+        """Every module name an import node can bind (`from a.b import c` too)."""
+        if isinstance(node, ast.ImportFrom):
+            return [node.module or ""] + [alias.name for alias in node.names]
+        if isinstance(node, ast.Import):
+            return [alias.name for alias in node.names]
+        return []
+
+    offenders = [
+        name
+        for node in ast.walk(tree)
+        for name in _imported_names(node)
+        if "tts_client" in name
+    ]
+    assert not offenders, (
+        f"app/config.py must not import app.services.tts_client (found {offenders}): "
+        "a persona's capability is a fact about its files, while engine "
+        "requirements belong at the synthesis boundary "
+        "(see tts_client.doc_requires_reference_text)"
+    )
+
+    properties = [
+        node for node in ast.walk(tree)
+        if isinstance(node, ast.FunctionDef) and node.name == "tts_capable"
+    ]
+    assert properties, "Persona.tts_capable disappeared; update this guard on purpose"
+
+    forbidden = {"get_settings", "get_personas", "get_capabilities", "cached_capabilities"}
+    for prop in properties:
+        read_names = {n.id for n in ast.walk(prop) if isinstance(n, ast.Name)}
+        called = {n.func.id for n in ast.walk(prop)
+                  if isinstance(n, ast.Call) and isinstance(n.func, ast.Name)}
+        assert not (read_names | called) & forbidden, (
+            f"Persona.tts_capable at line {prop.lineno} reads live settings/engine "
+            "state; that turns the persona list into a function of whichever TTS "
+            "server happens to be configured"
+        )

@@ -182,12 +182,12 @@
                                 <button type="button" id="pf-audio-remove" class="btn-secondary btn-small hidden" title="Remove the reference audio">Remove</button>
                             </div>
                         </div>
-                        <span class="field-hint">WAV only, max 20MB. Required (with a transcript) for TTS voice cloning.</span>
+                        <span class="field-hint">WAV only, max 20MB. Required for TTS voice cloning.</span>
                     </div>
                     <div class="form-row">
                         <label for="pf-reference-audio-transcript">Reference Audio Transcript</label>
-                        <textarea id="pf-reference-audio-transcript" maxlength="16384" rows="4" placeholder="Transcript of the reference audio (optional)"></textarea>
-                        <span class="field-hint">The words spoken in the reference audio, so voice cloning is accurate. 16KB max.</span>
+                        <textarea id="pf-reference-audio-transcript" maxlength="16384" rows="4" placeholder="The words spoken in the reference audio"></textarea>
+                        <span class="field-hint">The words spoken in the reference audio, so voice cloning is accurate. 16KB max. Whether this is optional depends on the TTS <em>server</em>, not on the persona: most engines treat it as a bonus, some require it, a few ignore it and transcribe the clip themselves. If the connected engine needs one and this persona has none, the chat window says so out loud.</span>
                     </div>
                     <div class="form-row">
                         <label for="pf-reference-audio-language">Reference Audio Language</label>

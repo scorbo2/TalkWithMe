@@ -195,12 +195,23 @@ def _validate_name(name: str, reserved_check: bool = True) -> str:
 
 
 def _to_response(p: Persona) -> PersonaResponse:
+    """Persona summary for the sidebar/picker.
+
+    `has_reference_audio` / `has_reference_transcript` are reported alongside
+    `tts_capable` so the UI can distinguish "this persona has no voice" from
+    "this persona's voice is unusable on the engine currently connected"
+    (issue #164 phase 2). Both are presence flags, never paths: the browser
+    cannot open the persona's files, and combining them with the engine's
+    requirement is a display decision (see /api/tts/health).
+    """
     return PersonaResponse(
         name=p.name,
         description=p.description,
         avatar_color=p.avatar_color,
         avatar_image=bool(p.avatar_image),
         tts_capable=p.tts_capable,
+        has_reference_audio=bool(p.reference_audio),
+        has_reference_transcript=bool(p.reference_audio_transcript),
     )
 
 

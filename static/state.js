@@ -18,6 +18,11 @@ let ttsEnabled = false;
 let ttsAvailable = false;
 let ttsStreaming = false;
 let ttsServerType = "";
+// Engine-axis fact from /api/tts/health: does the CONNECTED TTS engine demand
+// a transcript of each persona's reference clip? Never stored on a persona —
+// the same persona may or may not need one depending on the server configured
+// right now (issue #164). Only the sidebar's mute badge reads it.
+let ttsReferenceTextRequired = false;
 let sttAvailable = false;
 let isStreaming = false;
 

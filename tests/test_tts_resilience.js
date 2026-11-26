@@ -96,6 +96,11 @@ const UNSPEAKABLE_TEXT_DETAIL =
     "Japanese, Korean, Arabic, ...).  Send at least one English or Chinese " +
     "word.";
 
+const MISSING_TRANSCRIPT_DETAIL =
+    "Persona 'Alex' has no reference-audio transcript, and the 'breeze-blue' " +
+    "engine requires one. Open the Persona editor and fill in the words spoken " +
+    "in Alex's reference clip.";
+
 const NO_SPEECH_IN_CLIP_DETAIL =
     "reference audio contains no recognizable speech in its first 5 s: the " +
     "engine transcribes only that window with Whisper and conditions on the " +
@@ -712,6 +717,82 @@ test("handleSSEEvent_onStartEvent_clearsTheBreakerOfThePreviousReply", async () 
     h.run('enqueueStreamingTTS("aria", "A fresh reply sentence.")');
     await sleep(20);
     assert.equal(h.ttsCalls().length, 2, "the next reply is requested");
+});
+
+/* ==========================================================================
+    Non-streaming mode gets the same verdict line (processAudioQueue)
+    ========================================================================== */
+
+/** Let the non-streaming playback queue settle: drained, nothing in flight. */
+async function playbackIdle(h) {
+    await waitUntil(() => h.get("audioQueue.length") === 0 && h.get("isPlayingAudio") === false);
+    // One extra beat for the trailing setTimeout(() => processAudioQueue(), 100).
+    await sleep(120);
+}
+
+test("processAudioQueue_onAMissingRequiredTranscript422_printsTheReasonUnderTheReplyAndPlaysNothing", async () => {
+    // GIVEN non-streaming mode (one /api/tts request for the whole reply) and
+    // an app 422 saying this persona has no reference transcript while the
+    // connected engine demands one,
+    const h = createHarness();
+    h.fetchStub.routes.set("/api/tts", () => ttsErrorResponse(422, detailBody(MISSING_TRANSCRIPT_DETAIL)));
+
+    h.run('enqueueTTS("Alex", "The whole reply, spoken in one piece.")');
+    await playbackIdle(h);
+
+    // THEN the reply is silent, exactly one request was made, and the reason is
+    // on screen. Before this fix the whole catch block was a console.warn, so a
+    // persona the engine cannot serve produced absolute, unexplained silence
+    // for everyone who left streaming mode off (which is the default).
+    assert.equal(h.ttsCalls().length, 1);
+    assert.equal(h.audioCtx.sources.length, 0, "nothing may be played");
+    const notes = h.notes();
+    assert.equal(notes.length, 1, "exactly one note line");
+    assert.ok(notes[0].textContent.includes(MISSING_TRANSCRIPT_DETAIL), notes[0].textContent);
+    assert.equal(h.refused("M1"), true, "the verdict belongs to the message that asked");
+    assert.equal(h.get("isPlayingAudio"), false, "the playback queue must not be left wedged");
+});
+
+test("processAudioQueue_onTransient502_printsNoNoteAndRecordsNoVerdict", async () => {
+    // GIVEN the same non-streaming queue and an ENGINE HICCUP instead of a
+    // verdict,
+    const h = createHarness();
+    h.fetchStub.routes.set("/api/tts", () => ttsErrorResponse(502, detailBody("CUDA out of memory")));
+
+    h.run('enqueueTTS("Alex", "The whole reply, spoken in one piece.")');
+    await playbackIdle(h);
+
+    // THEN nothing is printed and no verdict is recorded: 5xx is transient, and
+    // the next reply must still be asked — the new 422 branch must not swallow it.
+    assert.equal(h.notes().length, 0);
+    assert.equal(h.refused("M1"), false);
+    assert.equal(h.get("isPlayingAudio"), false);
+});
+
+/* ==========================================================================
+    A persona's missing transcript is a verdict, not a mystery (issue #164)
+    ========================================================================== */
+
+test("processTTSRequests_onTheMissingRequiredTranscript422_showsTheAppSentenceAndStopsTheReply", async () => {
+    // GIVEN an engine that demands the reference transcript (breeze-blue,
+    // ming3-tts-moe, qwen3-tts-mlx) and a persona that has a clip but no
+    // ref.txt: TalkWithMe answers the 422 itself, before the engine is asked,
+    // and the sentence names the persona, the engine, and where to fix it.
+    const h = createHarness();
+    h.fetchStub.routes.set("/api/tts", () => ttsErrorResponse(422, detailBody(MISSING_TRANSCRIPT_DETAIL)));
+
+    h.run(`
+        enqueueStreamingTTS("Alex", "First speakable sentence.");
+        enqueueStreamingTTS("Alex", "Second speakable sentence.");
+    `);
+    await pipelineIdle(h);
+
+    assert.equal(h.ttsCalls().length, 1, "one ask, then the verdict stands");
+    const notes = h.notes();
+    assert.equal(notes.length, 1);
+    assert.ok(notes[0].textContent.includes("no reference-audio transcript"), notes[0].textContent);
+    assert.ok(notes[0].textContent.includes("Persona editor"), notes[0].textContent);
+    assert.equal(h.refused("M1"), true);
 });
 
 /* ==========================================================================

@@ -313,7 +313,10 @@ class TestLoadPersonaFromDir:
         )
         assert load_persona_from_dir(d).name == "O'Brien"
 
-    def test_empty_transcript_makes_persona_not_tts_capable(self, tmp_path, caplog):
+    def test_whitespace_only_transcript_is_dropped_but_the_clip_still_counts(self, tmp_path, caplog):
+        # A whitespace-only ref.txt is no transcript at all, but it must not
+        # cost the persona its voice: engines that never ask for a transcript
+        # clone happily from the clip alone (issue #164).
         d = make_persona_dir(tmp_path)
         (d / "ref.wav").write_bytes(b"wav")
         (d / "ref.txt").write_text("   \n")
@@ -321,8 +324,20 @@ class TestLoadPersonaFromDir:
         persona = load_persona_from_dir(d)
         assert persona.reference_audio is not None
         assert persona.reference_audio_transcript is None
-        assert persona.tts_capable is False
+        assert persona.tts_capable is True
         assert "empty" in caplog.text
+
+    def test_clip_without_any_ref_txt_is_tts_capable(self, tmp_path):
+        # The plainest form of the issue-#164 persona: a voice clip and no
+        # transcript file at all. LuxTTS / chatterbox / indexTTS / PocketTTS
+        # clone from exactly this.
+        d = make_persona_dir(tmp_path)
+        (d / "ref.wav").write_bytes(b"wav")
+
+        persona = load_persona_from_dir(d)
+
+        assert persona.reference_audio_transcript is None
+        assert persona.tts_capable is True
 
 
 class TestScanPersonasDirectory:
