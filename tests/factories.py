@@ -14,6 +14,7 @@ from typing import Any, Callable, List, Optional
 
 import httpx
 
+from app.services.tts_client import SynthesisOutcome, SynthesisResult
 from app.config import (
     AppSettings,
     ChatRoom,
@@ -1010,6 +1011,35 @@ def make_unexpected_field_422(field: str, value: Any = None) -> dict:
         ]
     }
 
+
+
+# ---------------------------------------------------------------------------
+# Synthesis results
+# ---------------------------------------------------------------------------
+# For tests that stub tts_client.synthesize at a router's import site. The
+# client's own tests drive the REAL synthesize() with httpx faked instead and
+# never build these by hand.
+#
+# Each helper is named for the SynthesisOutcome it reports, because the outcome
+# is the ONLY thing the router classifies on (issue #171): a stub that wants to
+# fake an engine refusal reads as an engine refusal, and no stub can invent an
+# "unclassified" result just by leaving a field out.
+
+def make_synthesis_audio(audio: Optional[dict] = None) -> SynthesisResult:
+    """Success: the router forwards this body to the browser verbatim."""
+    return SynthesisResult(
+        outcome=SynthesisOutcome.AUDIO,
+        audio=audio if audio is not None else {"audio_base64": "QUJD", "sample_rate": 24000},
+    )
+
+
+def make_engine_verdict(status: int, detail: str) -> SynthesisResult:
+    """The engine answered non-200: its number and its own sentence."""
+    return SynthesisResult(
+        outcome=SynthesisOutcome.ENGINE_VERDICT,
+        engine_status=status,
+        detail=detail,
+    )
 
 
 # ---------------------------------------------------------------------------

@@ -8,20 +8,23 @@ exercised for real against tmp_path files.
 import base64
 
 import httpx
+import pytest
 
 import app.config as app_config
 import app.routers.stt as stt_router
 import app.routers.tts as tts_router
 import app.services.tts_client as tts_client
-from app.services.tts_client import SynthesisResult
+from app.services.tts_client import SynthesisOutcome, SynthesisResult
 from app.config import Persona, PersonasConfig
 from tests.factories import (
     FakeAsyncClient,
     json_response,
     make_capabilities_doc,
+    make_engine_verdict,
     make_minimal_capabilities_doc,
     make_personas,
     make_settings,
+    make_synthesis_audio,
 )
 from app.config import STTConfig, TTSConfig
 
@@ -208,6 +211,130 @@ class TestTTSProxy:
         resp = client.post("/api/tts", json={"text": "hi", "persona_name": "Luna"})
         assert resp.status_code == 503
 
+    # -- the feature is off: 503, and the router knows it by FLAG, not prose --
+
+    def test_inactive_tts_503s_without_network_for_a_tts_capable_persona(
+        self, client, monkeypatch, tmp_path
+    ):
+        # settings.yaml with TTS disabled (or with no tts base_url) and a
+        # persona that could speak: the router has no is_active guard of its
+        # own, so synthesize() refuses and flags the result. 503 is the only
+        # honest status — 502 would tell the browser "engine hiccup, ask
+        # again", and the streaming client would re-ask per sentence.
+        _persona_cache(monkeypatch, PersonasConfig(
+            personas=[self._tts_capable_persona(tmp_path)]))
+
+        def fail(*a, **kw):
+            raise AssertionError("network must not be touched when TTS is inactive")
+
+        monkeypatch.setattr(tts_client.httpx, "AsyncClient",
+                            lambda *a, **kw: FakeAsyncClient(fail))
+
+        resp = client.post("/api/tts", json={"text": "hi", "persona_name": "Luna"})
+
+        assert resp.status_code == 503
+        # The client's sentence forwarded verbatim (wording is not what this
+        # test is for — the constant is the wording, and it is the flag that
+        # decides the status).
+        assert resp.json()["detail"] == tts_client.INACTIVE_DETAIL
+
+    def test_inactive_outcome_503s_whatever_sentence_it_carries(
+        self, client, monkeypatch, tmp_path
+    ):
+        # Issue #171: this branch used to be `result.detail == "TTS is not
+        # active (disabled or no base_url)"` — control flow by prose, with
+        # the literal hand-copied out of tts_client. Re-word that sentence
+        # there and the endpoint silently degraded 503 to 502, every test in
+        # the suite still green. The router now reads SynthesisOutcome.INACTIVE,
+        # so the wording is presentation and the status is the outcome's.
+        _persona_cache(monkeypatch, PersonasConfig(
+            personas=[self._tts_capable_persona(tmp_path)]))
+        _active_tts_settings(monkeypatch)
+
+        async def fake_synthesize(**kwargs):
+            return SynthesisResult(
+                outcome=SynthesisOutcome.INACTIVE, detail="TTS feature is not active"
+            )
+
+        monkeypatch.setattr(tts_router, "synthesize", fake_synthesize)
+
+        resp = client.post("/api/tts", json={"text": "hi", "persona_name": "Luna"})
+
+        assert resp.status_code == 503
+        # The user still reads the client's own sentence, verbatim.
+        assert resp.json()["detail"] == "TTS feature is not active"
+
+    def test_inactive_sentence_without_the_inactive_outcome_is_not_a_503(
+        self, client, monkeypatch, tmp_path
+    ):
+        # The mirror of the test above, and the reason both must exist: a
+        # LOCAL_FAILURE that happens to carry the old literal is a 502 like any
+        # other failure this app cannot classify. If someone keeps the string
+        # comparison next to the outcome table, this is the one that fails.
+        _persona_cache(monkeypatch, PersonasConfig(
+            personas=[self._tts_capable_persona(tmp_path)]))
+        _active_tts_settings(monkeypatch)
+
+        async def fake_synthesize(**kwargs):
+            return SynthesisResult(
+                outcome=SynthesisOutcome.LOCAL_FAILURE,
+                detail="TTS is not active (disabled or no base_url)",
+            )
+
+        monkeypatch.setattr(tts_router, "synthesize", fake_synthesize)
+
+        resp = client.post("/api/tts", json={"text": "hi", "persona_name": "Luna"})
+
+        assert resp.status_code == 502
+
+    # -- the classification itself: every outcome has exactly one answer ----
+
+    def test_every_synthesis_outcome_is_classified_by_the_router(self):
+        # The seam issue #171 was really about: synthesize() has several
+        # distinct exits, and a router that answers them with `else: 502`
+        # teaches nothing to whoever adds the next one. The router therefore
+        # keeps ONE table (_FAILURE_HTTP_STATUS) plus the engine-status rule,
+        # and it subscripts the table instead of .get(..., 502) — an outcome
+        # with no row raises KeyError instead of quietly becoming retryable.
+        # This test walks the enum so that crash never happens in a browser.
+        # GIVEN the table the router answers from, and the two outcomes it
+        # decides somewhere else (AUDIO returns the body; ENGINE_VERDICT is
+        # classified by the engine's own number):
+        classified = set(tts_router._FAILURE_HTTP_STATUS)
+        decided_elsewhere = {SynthesisOutcome.AUDIO, SynthesisOutcome.ENGINE_VERDICT}
+
+        # THEN every outcome the client can report has exactly one home. A new
+        # SynthesisOutcome with no row fails here, naming the table to fix.
+        assert set(SynthesisOutcome) == classified | decided_elsewhere, (
+            "every SynthesisOutcome needs a row in "
+            "app.routers.tts._FAILURE_HTTP_STATUS or an explicit pass to the "
+            "engine-status rule"
+        )
+        # ...and no row is wasted on an outcome the table never gets to answer
+        # (a dead row reads like a decision).
+        assert classified.isdisjoint(decided_elsewhere)
+
+    def test_unclassified_outcome_would_raise_instead_of_defaulting_to_502(
+        self, client, monkeypatch, tmp_path
+    ):
+        # The loud half of the previous test: the table is consulted by
+        # subscript, so an outcome with no row is an error, not a status code.
+        # Enum members cannot be added from a test, so the seam is probed by
+        # deleting a row for one call (a stand-in for a future member that
+        # forgot its row) and asserting the endpoint cannot answer.
+        _persona_cache(monkeypatch, PersonasConfig(
+            personas=[self._tts_capable_persona(tmp_path)]))
+        _active_tts_settings(monkeypatch)
+
+        async def inactive_synthesize(**kwargs):
+            return SynthesisResult(outcome=SynthesisOutcome.INACTIVE, detail="off")
+
+        monkeypatch.setattr(tts_router, "synthesize", inactive_synthesize)
+        monkeypatch.delitem(tts_router._FAILURE_HTTP_STATUS, SynthesisOutcome.INACTIVE)
+
+        with pytest.raises(KeyError):
+            client.post("/api/tts", json={"text": "hi", "persona_name": "Luna"})
+
     # -- the transcript requirement is the ENGINE's, not the persona's (#164) --
 
     def test_persona_without_transcript_synthesizes_when_reference_text_is_optional(
@@ -224,7 +351,7 @@ class TestTTSProxy:
 
         async def fake_synthesize(text, reference_text, audio_base64, language, persona_name):
             seen.update(reference_text=reference_text, persona_name=persona_name)
-            return SynthesisResult(audio={"audio_base64": "QUJD", "sample_rate": 24000})
+            return make_synthesis_audio()
 
         monkeypatch.setattr(tts_router, "synthesize", fake_synthesize)
 
@@ -246,7 +373,7 @@ class TestTTSProxy:
 
         async def fake_synthesize(text, reference_text, audio_base64, language, persona_name):
             seen["reference_text"] = reference_text
-            return SynthesisResult(audio={"audio_base64": "QUJD", "sample_rate": 24000})
+            return make_synthesis_audio()
 
         monkeypatch.setattr(tts_router, "synthesize", fake_synthesize)
 
@@ -317,7 +444,7 @@ class TestTTSProxy:
 
         async def fake_synthesize(text, reference_text, audio_base64, language, persona_name):
             called["yes"] = True
-            return SynthesisResult(audio={"audio_base64": "QUJD", "sample_rate": 24000})
+            return make_synthesis_audio()
 
         monkeypatch.setattr(tts_router, "synthesize", fake_synthesize)
 
@@ -342,7 +469,7 @@ class TestTTSProxy:
 
         async def fake_synthesize(text, reference_text, audio_base64, language, persona_name):
             called["yes"] = True
-            return SynthesisResult(audio={"audio_base64": "QUJD", "sample_rate": 24000})
+            return make_synthesis_audio()
 
         monkeypatch.setattr(tts_router, "synthesize", fake_synthesize)
 
@@ -355,7 +482,7 @@ class TestTTSProxy:
         _persona_cache(monkeypatch, PersonasConfig(personas=[self._tts_capable_persona(tmp_path)]))
 
         async def failing_synthesize(**kwargs):
-            return SynthesisResult(status=500, detail="CUDA out of memory")
+            return make_engine_verdict(500, "CUDA out of memory")
 
         monkeypatch.setattr(tts_router, "synthesize", failing_synthesize)
 
@@ -380,7 +507,7 @@ class TestTTSProxy:
         )
 
         async def refusing_synthesize(**kwargs):
-            return SynthesisResult(status=422, detail=engine_detail)
+            return make_engine_verdict(422, engine_detail)
 
         monkeypatch.setattr(tts_router, "synthesize", refusing_synthesize)
 
@@ -405,9 +532,9 @@ class TestTTSProxy:
         _persona_cache(monkeypatch, PersonasConfig(personas=[self._tts_capable_persona(tmp_path)]))
 
         async def refusing_synthesize(**kwargs):
-            return SynthesisResult(
-                status=400,
-                detail=(
+            return make_engine_verdict(
+                400,
+                (
                     "reference audio contains no recognizable speech in its "
                     "first 5 s: the engine transcribes only that window with "
                     "Whisper and conditions on the transcript, so silence, "
@@ -434,7 +561,7 @@ class TestTTSProxy:
             seen.update(text=text, reference_text=reference_text,
                         audio_base64=audio_base64, language=language,
                         persona_name=persona_name)
-            return SynthesisResult(audio={"audio_base64": "QUJD", "sample_rate": 24000})
+            return make_synthesis_audio()
 
         monkeypatch.setattr(tts_router, "synthesize", fake_synthesize)
 
@@ -486,7 +613,7 @@ class TestTTSProxy:
         async def fake_synthesize(text, reference_text, audio_base64, language,
                                   persona_name=""):
             seen["called"] = True
-            return SynthesisResult(audio={"audio_base64": "QUJD", "sample_rate": 24000})
+            return make_synthesis_audio()
 
         monkeypatch.setattr(tts_router, "synthesize", fake_synthesize)
 
@@ -494,6 +621,43 @@ class TestTTSProxy:
 
         assert resp.status_code == 200
         assert seen.get("called")
+
+    def test_cold_cache_transcript_refusal_from_synthesize_reaches_the_caller_as_422(
+        self, client, monkeypatch, tmp_path
+    ):
+        # The router's own transcript pre-check can only read a WARM doc, so in
+        # the cold-slot window the refusal happens inside synthesize() and lands
+        # here as a SynthesisOutcome.LOCAL_REFUSAL — the one row of the outcome
+        # table the warm path above never reaches. It must answer the same app
+        # 422 (the frontend's "show the reason, stop asking for this reply"),
+        # never a 502, or the reply's remaining sentences each re-pay the fetch.
+        # The REAL synthesize runs; only httpx is faked.
+        _persona_cache(monkeypatch, PersonasConfig(
+            personas=[self._tts_capable_persona(tmp_path, transcript=False)]))
+        _active_tts_settings(monkeypatch)
+        calls = []
+
+        def responder(method, url, **kw):
+            calls.append(url)
+            if url.endswith("/capabilities"):
+                return json_response(200, self._engine_requiring_transcript())
+            raise AssertionError(
+                "no /synthesize request may be spent on a synthesis the "
+                "document already condemned"
+            )
+
+        monkeypatch.setattr(tts_client.httpx, "AsyncClient",
+                            lambda *a, **kw: FakeAsyncClient(responder))
+
+        resp = client.post("/api/tts", json={"text": "hi", "persona_name": "Luna"})
+
+        # The /capabilities fetch is the proof this went through synthesize():
+        # the ROUTER's refusal reads the cache only and never fetches, so a
+        # passing test with no recorded call would mean the warm path answered
+        # and the row under test was never exercised.
+        assert calls == ["http://tts.local:5500/capabilities"]
+        assert resp.status_code == 422
+        assert "Luna" in resp.json()["detail"]
 
     def test_cold_cache_non_cloning_engine_502_without_synthesis_call(self, client, monkeypatch, tmp_path):
         # The backstop for the cache-cold window: the router's 503 check
