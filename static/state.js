@@ -56,17 +56,22 @@ const audioBufferQueue = [];
 let isFetchingTTS = false;
 let isPlayingAudioBuffer = false;
 
-// Streaming TTS resilience: the message IDs whose voice the engine has
-// refused for good (the app's 422: text this engine has nothing to speak, or
-// this persona's reference clip has no recognizable speech inside the
-// transcribable window). The verdict is about the engine/persona pairing, not
-// about the sentence, so every remaining sentence of THAT message would burn a
-// serialized synthesis slot to hear the same answer.
+// Streaming TTS resilience: the message IDs whose voice has been refused for
+// good — a failure the SERVER labelled with a refusal class
+// (`refusal: "engine"`: text this engine has nothing to speak, or this
+// persona's reference clip has no recognizable speech inside the transcribable
+// window; `"persona_files"`: the persona is missing a file the connected
+// engine demands). Never a status code: /api/tts answers 422 for those verdicts
+// AND for a request body FastAPI rejected before the handler ran, and only the
+// first is a verdict (issue #173 — see isVoiceVerdict in static/tts.js).
+// The verdict is about the engine/persona pairing, not about the sentence, so
+// every remaining sentence of THAT message would burn a serialized synthesis
+// slot to hear the same answer.
 //
 // Keyed by message ID, deliberately NOT a single "this reply" flag: a TTS
 // fetch is in flight for as long as one synthesis (seconds), so a verdict for
 // persona A lands while persona B's row is already the current one. A shared
-// flag let A's late 422 mute B's whole reply and print A's explanation under
+// flag let A's late verdict mute B's whole reply and print A's explanation under
 // B's bubble — with max_persona_replies > 1, and routinely in the echo
 // chamber, where the LLM emits every responder long before the first
 // synthesis finishes. Each message is judged on its own verdict only.
@@ -76,7 +81,7 @@ let isPlayingAudioBuffer = false;
 // other clear site — so the set stays bounded to one reply and a broken voice
 // never mutes the session.
 //
-// ACCEPTED CONSEQUENCE of reading a 422 as a statement about the pairing
+// ACCEPTED CONSEQUENCE of reading a refusal as a statement about the pairing
 // (issue #169): a mixed-script reply on a narrow engine can lose audio the
 // old letter-table pre-filter kept, because ONE refused sentence condemns the
 // whole message. Deliberate — the alternative was the client-side script table

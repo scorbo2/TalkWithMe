@@ -634,6 +634,40 @@ def _response_detail(response: httpx.Response) -> str:
     return json.dumps(body)
 
 
+# What the bubble quotes when the engine's request model rejects our payload
+# even after the stale-document self-heal rebuilt it from a fresh capabilities
+# document. The engine's own body is a `detail` LIST of {type, loc, msg, input}
+# entries — a field name and a value, which is log material, not a sentence.
+# Wording claims the likeliest cause (a tts.parameters entry left behind by a
+# retired engine) without asserting it: a surviving rejection can equally be
+# this app sending a payload the model never advertised, which is why the raw
+# list stays in the warning line beside it.
+PAYLOAD_REJECTION_DETAIL = (
+    "the connected engine rejected this synthesis request's parameters even "
+    "after its capabilities document was refetched — check the TTS parameters "
+    "in the Servers dialog."
+)
+
+
+def _payload_rejection_detail(response: httpx.Response) -> Optional[str]:
+    """A user-facing sentence for a FastAPI **shape** rejection, else None.
+
+    Deliberately the mirror of `_is_content_refusal()` and deliberately not its
+    negation: a JSON object whose `detail` is a LIST is the one failure body
+    that is provably not written for a human reader. A string `detail` is a
+    tts-serve pre-flight's own sentence and is forwarded verbatim; a proxy's
+    HTML page or a foreign server's envelope may carry words we did not write
+    but cannot improve on, so both fall through to `_response_detail()`.
+    """
+    try:
+        body = response.json()
+    except Exception:
+        return None
+    if isinstance(body, dict) and isinstance(body.get("detail"), list):
+        return PAYLOAD_REJECTION_DETAIL
+    return None
+
+
 def _is_content_refusal(response: httpx.Response) -> bool:
     """Is this 422 a verdict on the request's CONTENT, not on its shape?
 
@@ -791,7 +825,10 @@ async def synthesize(
     cases happened: AUDIO with the server's raw response dict (engine extras
     pass through; the frontend only reads `audio_base64`), or the engine's
     status + detail on an ENGINE_VERDICT — the router propagates them, and
-    tts-serve's content pre-flights name exactly what the caller can fix.
+    tts-serve's content pre-flights name exactly what the caller can fix
+    (a FastAPI shape rejection is the one exception: its `detail` is a field
+    list, so the caller gets PAYLOAD_REJECTION_DETAIL — see
+    `_payload_rejection_detail()`).
     Every exit names its outcome explicitly; a new one that does not is a
     TypeError here, not a wrong status code in the browser.
 
@@ -876,6 +913,9 @@ async def synthesize(
         elif response.status_code == 422:
             response = await _self_heal_retry(url, base_url, timeout, payload_for, response)
         if response.status_code != 200:
+            # The log keeps the engine's raw body — it names the offending
+            # field, which is the whole diagnostic for a shape rejection. The
+            # caller (and through it, the user's .tts-note) gets a sentence.
             detail = _response_detail(response)
             logger.warning(
                 "TTS synthesis failed: HTTP %d from %s: %s",
@@ -884,7 +924,7 @@ async def synthesize(
             return SynthesisResult(
                 outcome=SynthesisOutcome.ENGINE_VERDICT,
                 engine_status=response.status_code,
-                detail=detail,
+                detail=_payload_rejection_detail(response) or detail,
             )
         return SynthesisResult(outcome=SynthesisOutcome.AUDIO, audio=response.json())
     except Exception as exc:

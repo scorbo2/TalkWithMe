@@ -114,17 +114,33 @@ async function processAudioQueue() {
             }
         }
     } catch (err) {
-        // Same verdict path the streaming queue uses. A 422 here is a
-        // permanent statement about this persona's voice as configured (no
-        // transcript while the connected engine demands one, an unclonable
-        // clip), and the reason belongs under the bubble where the user can
-        // read it — not in a console nobody opens. Nothing to drop: this
-        // queue holds one item per reply, but the verdict set and the note are
-        // keyed by item.messageId, which enqueueTTS already captured.
-        if (err && err.status === 422) {
+        // Same verdict path the streaming queue uses, and the same rule: the
+        // SERVER says whether this is a permanent statement about this
+        // persona's voice (no transcript while the connected engine demands
+        // one, an unclonable clip), and the reason belongs under the bubble
+        // where the user can read it — not in a console nobody opens. Nothing
+        // to drop here: this queue holds one item per reply, but the verdict
+        // set and the note are keyed by item.messageId, which enqueueTTS
+        // already captured.
+        if (isVoiceVerdict(err)) {
             handleUnvoiceableVerdict(item, err);
+            console.warn("TTS playback refused:", err.status, err.refusal, err.detail);
+        } else {
+            // Loud on purpose. Worded neutrally on purpose too: this catch also
+            // sees a bad base64 payload, a dead AudioContext, or a DOM throw
+            // from the highlight, so it may not claim "not a voice verdict"
+            // about an error that never reached /api/tts. What it DOES know is
+            // the one thing worth knowing — no verdict was recorded, so the
+            // next reply asks again — and the error object carries whatever
+            // status/detail/refusal the request did get.
+            //
+            // (It deliberately does NOT branch on err.status to word this
+            // better. The suite forbids reading a status in this file at all,
+            // and "but this one is only for the log" is how that rule starts
+            // having exceptions.)
+            console.error("TTS playback failed with no voice verdict recorded;",
+                          "the next reply will ask again:", err && err.detail, err);
         }
-        console.warn("TTS playback error:", err);
     } finally {
         isPlayingAudio = false;
         setTimeout(() => processAudioQueue(), 100);
@@ -373,16 +389,21 @@ async function processTTSRequests() {
             processAudioBufferQueue();
         }
     } catch (err) {
-        // A 422 is the engine's verdict on the voice itself, not on this
-        // sentence: its own script coverage, this persona's reference clip, or
-        // a parameter the rebuilt payload still carries. Every remaining
-        // sentence of this message would hear the same answer, so drop them
-        // and show the engine's reason. A 5xx stays transient: the engine
-        // hiccuped, and the next sentence is worth asking again.
-        if (err && err.status === 422) {
+        // The server decides whether this failure is a verdict on the voice;
+        // see isVoiceVerdict. When it is one, every remaining sentence of this
+        // message would hear the same answer, so drop them and show its reason.
+        // When it is not — an engine hiccup, or a request the backend never
+        // accepted — the next sentence is a DIFFERENT request and gets asked.
+        if (isVoiceVerdict(err)) {
             handleUnvoiceableVerdict(item, err);
+            console.warn("TTS streaming fetch refused:", err.status, err.refusal, err.detail);
+        } else {
+            // Loud on purpose: a synthesis failure with no refusal class is
+            // either an engine hiccup or a malformed request from this very
+            // file. The second one used to hide inside the breaker above.
+            console.error("TTS streaming fetch failed (not a voice verdict):",
+                          err.status, err.detail);
         }
-        console.warn("TTS streaming fetch error:", err);
     } finally {
         isFetchingTTS = false;
         // Immediately fetch the next sentence if one is waiting
@@ -432,27 +453,68 @@ async function processAudioBufferQueue() {
    ========================================================================== */
 
 /**
- * Build the error a failed /synthesize carries: the HTTP status (the pipeline
- * distinguishes "cannot be voiced" from "the engine hiccuped" by it) and the
- * engine's own detail, which the tts-serve pre-flights write for the user.
+ * Build the error a failed /api/tts carries: the refusal class the server
+ * decided on (`refusal`, the ONLY thing the pipeline acts on), the sentence it
+ * wrote for the user (`detail`), and the HTTP status for the console.
  */
-function ttsRequestError(status, detail) {
+function ttsRequestError(status, detail, refusal) {
     const err = new Error(`TTS request failed: HTTP ${status}`);
     err.status = status;
     err.detail = detail;
+    err.refusal = refusal || null;
     return err;
 }
 
-/** The `detail` of an error body, verbatim when it is a sentence. */
-async function readErrorDetail(resp) {
+/**
+ * Read a failed /api/tts response into the two facts it carries.
+ *
+ * `refusal` is the server's own classification — "is this a permanent verdict
+ * on this persona's voice?" — and it is the ONLY reason the client gets to
+ * decide that (see isVoiceVerdict). Null when the body does not carry it, and
+ * a body WITHOUT the key is provably not this app's answer: the router stamps
+ * every one of its failure bodies (app/routers/tts.py::_failure_body), so a
+ * missing key means FastAPI rejected the request model, or a proxy answered
+ * instead of us. Neither says anything about a voice.
+ *
+ * `detail` is verbatim when it is a sentence; anything else (a validation list,
+ * a foreign envelope) is serialized — that form is LOG material, never bubble
+ * material, and only a refused `refusal` ever puts it on screen.
+ */
+async function readTtsErrorBody(resp) {
+    let body;
     try {
-        const body = await resp.json();
-        if (body && typeof body.detail === "string") return body.detail;
-        return JSON.stringify(body);
+        body = await resp.json();
     } catch (err) {
         // Non-JSON body (a proxy's HTML error page, an empty 502).
-        return `HTTP ${resp.status}`;
+        return { detail: `HTTP ${resp.status}`, refusal: null };
     }
+    const refusal = body && typeof body.refusal === "string" && body.refusal
+        ? body.refusal
+        : null;
+    const detail = body && typeof body.detail === "string" && body.detail
+        ? body.detail
+        : JSON.stringify(body);
+    return { detail, refusal };
+}
+
+/**
+ * Did the SERVER classify this failure as a permanent verdict on the voice?
+ *
+ * The browser no longer reads HTTP numbers to decide that, deliberately
+ * (issue #173). `/api/tts` answers 422 for two unrelated things: the verdicts
+ * worth muting a reply over, and FastAPI rejecting the request BODY
+ * (`TTSRequest.text` is min_length=1) before the handler ever ran. Classifying
+ * both as "this persona cannot speak" muted replies that had a perfectly good
+ * voice — the next sentence is a different, valid request — and printed a
+ * serialized validation list under the bubble accusing a voice that was fine.
+ * The server already knows which is which; it now says so.
+ *
+ * A refusal-less failure is NOT silence-by-another-name either: the remaining
+ * sentences stay queued and keep asking, and the caller logs it as the bug it
+ * probably is.
+ */
+function isVoiceVerdict(err) {
+    return Boolean(err && typeof err.refusal === "string" && err.refusal);
 }
 
 /**
@@ -463,8 +525,9 @@ async function readErrorDetail(resp) {
  * @param {string|null} messageId - The message ID this audio belongs to.
  *   Stamped at enqueue time from the "start" event, so it is correct
  *   regardless of when this fetch resolves.
- * @throws {Error} with `.status` and `.detail` on a non-2xx response, so the
- *   streaming pipeline can tell a content rejection from a hiccup.
+ * @throws {Error} with `.status`, `.detail` and the server's `.refusal` class
+ *   on a non-2xx response, so the pipeline can tell a voice verdict from a
+ *   hiccup without reading the status (isVoiceVerdict).
  */
 async function fetchTTS(personaName, text, messageId) {
     const resp = await fetch("/api/tts", {
@@ -474,9 +537,9 @@ async function fetchTTS(personaName, text, messageId) {
     });
 
     if (!resp.ok) {
-        const detail = await readErrorDetail(resp);
-        console.warn("TTS request failed:", resp.status, detail);
-        throw ttsRequestError(resp.status, detail);
+        const { detail, refusal } = await readTtsErrorBody(resp);
+        console.warn("TTS request failed:", resp.status, refusal || "no-refusal", detail);
+        throw ttsRequestError(resp.status, detail, refusal);
     }
 
     const data = await resp.json();

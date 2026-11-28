@@ -117,12 +117,16 @@ and fill in the words spoken in Alex's reference clip.
 
 Both halves of that line are load-bearing:
 
-- **The status is 422**, which is already the frontend's *permanent verdict
-  about this voice* signal: `handleUnvoiceableVerdict()` records it against the
-  message that asked, stops re-asking for the rest of that reply, and prints the
-  reason under the bubble (`.tts-note`). No new UI machinery, and no
-  once-per-sentence log spam. Answering 400/403/502 instead would silently undo
-  the fix — the note would never print and the client would keep asking.
+- **The status is 422** *(and, since issue #173, the body carries
+  `"refusal": "persona_files"` — see
+  [`feature_tts_voice_verdict.md`](feature_tts_voice_verdict.md), which amends
+  this section: the signal the client acts on is that class, not the number)*.
+  This refusal is the frontend's *permanent verdict about this voice* class:
+  `handleUnvoiceableVerdict()` records it against the message that asked, stops
+  re-asking for the rest of that reply, and prints the reason under the bubble
+  (`.tts-note`). No new UI machinery, and no once-per-sentence log spam.
+  Answering 400/403/502 — or answering 422 without the class — would silently
+  undo the fix: the note would never print and the client would keep asking.
 - **The check runs before `POST /synthesize`.** A missing *required* field is a
   FastAPI **validation** 422 (`detail` is a list), which `_is_content_refusal()`
   deliberately does not recognise — so an un-preflighted request would trigger

@@ -224,7 +224,7 @@ function handleSSEEvent(event) {
             // "this engine cannot voice this persona" circuit-breaker.
             // Deliberately OUTSIDE the ttsStreaming guard below: the
             // non-streaming queue records the very same verdicts (see
-            // processAudioQueue's 422 branch) and has no other clear site, so
+            // processAudioQueue's verdict branch) and has no other clear site, so
             // while this call lived inside the guard a session with streaming
             // off — the default — only ever added message IDs to
             // ttsBrokenMessageIds and never removed one.
