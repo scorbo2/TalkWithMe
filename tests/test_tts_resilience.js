@@ -976,6 +976,94 @@ test("handleSSEEvent_secondResponderStart_lateFirstResponder422MutesNeitherTheNe
     assert.equal(h.notes().length, 1, "A's note is under A's reply");
 });
 
+test("dropQueuedSentencesOfMessage_withAnUnknownMessageId_dropsNothingYetStillHonoursARealId", () => {
+    // Issue #174. Every other ID-keyed site in this file guards the missing ID
+    // (beginSpeaking, endSpeaking, noteTtsUnavailableForReply, the breaker
+    // lookup and its add). This splice loop was the one that did not, so a
+    // null ID meant "drop the sentences of EVERY message whose ID we do not
+    // know" — i.e. the other responders of the same turn.
+    const h = createHarness();
+
+    // GIVEN a queue holding two ID-less items (a server whose "start" event
+    // carried no message_id) beside one properly identified item,
+    h.run(`
+        ttsRequestQueue.length = 0;
+        ttsRequestQueue.push({ personaName: "Alex", text: "A1", messageId: null });
+        ttsRequestQueue.push({ personaName: "Luna", text: "B1", messageId: null });
+        ttsRequestQueue.push({ personaName: "Luna", text: "B2", messageId: "M2" });
+    `);
+
+    // WHEN a verdict with no message ID drops "its" sentences,
+    h.run("dropQueuedSentencesOfMessage(null)");
+
+    // THEN nothing is dropped: an unknown ID identifies no message at all.
+    assert.equal(h.get("ttsRequestQueue.length"), 3,
+        "a null/undefined ID must never match another responder's queued sentences");
+
+    // AND the guard is a guard, not a no-op: a real ID still drops its own.
+    h.run('dropQueuedSentencesOfMessage("M2")');
+    assert.equal(h.get("ttsRequestQueue.length"), 2,
+        "a named message's queued sentences are still dropped");
+    assert.equal(h.get('ttsRequestQueue.every((i) => i.messageId === null)'), true,
+        "and exactly the M2 item went");
+});
+
+test("processTTSRequests_onARefusalFromAMessageWithNoId_mutesNoOtherIdLessResponder", async () => {
+    // The end-to-end shape of issue #174: a backend/frontend version skew (an
+    // older server whose "start" event carries no message_id, or a reply that
+    // starts before one is adopted) leaves EVERY responder's items stamped
+    // null, so they are all indistinguishable to the drop loop — one persona's
+    // broken voice silently deleted the other's queued sentences, with no note
+    // and no verdict to explain the silence.
+    const h = createHarness();
+    h.fetchStub.routes.set("/api/tts", (call) => (/Alex/.test(JSON.parse(call.body).text)
+        ? ttsErrorResponse(422, UNSPEAKABLE_TEXT_BODY)
+        : ttsSuccessResponse()));
+
+    // GIVEN two responders whose replies carry no message ID, with Alex's
+    // first sentence in flight and both followers still queued,
+    h.run("currentAssistantMessageId = null;");
+    h.run('enqueueStreamingTTS("Alex", "Hello from Alex.");');
+    h.run('enqueueStreamingTTS("Alex", "More from Alex.");');
+    h.run('enqueueStreamingTTS("Luna", "Hello from Luna.");');
+
+    await pipelineIdle(h);
+
+    // THEN the refusal condemns nobody: Luna's sentence is still asked for.
+    const requested = h.ttsCalls().map((c) => JSON.parse(c.body).text);
+    assert.ok(requested.includes("Hello from Luna."),
+        `Luna's queued sentence must survive Alex's refusal, got: ${requested.join(" | ")}`);
+
+    // AND with no ID there is nothing to judge: no verdict is recorded for any
+    // message (least of all a null key), so a later reply asks again.
+    assert.equal(h.get("ttsBrokenMessageIds.size"), 0, "an ID-less refusal records no verdict");
+    assert.equal(h.get("ttsBrokenMessageIds.has(null)"), false);
+    assert.equal(h.get("isFetchingTTS"), false, "the fetch pipeline must not be left wedged");
+});
+
+test("handleUnvoiceableVerdict_withNoMessageId_recordsNoVerdictAndPrintsNoNote", async () => {
+    // The same rule seen from the helper itself: an unattributable verdict is
+    // neither a breaker entry nor a bubble note. It stays LOUD in the console
+    // (both callers log the refusal after this call returns).
+    const h = createHarness();
+    const b = h.addRow("M2");
+
+    // GIVEN a real verdict from the engine against an item with no message ID,
+    h.run(`handleUnvoiceableVerdict(
+        { personaName: "Alex", text: "Hello from Alex.", messageId: null },
+        ttsRequestError(422, ${JSON.stringify(MISSING_TRANSCRIPT_DETAIL)},
+                        ${JSON.stringify(REFUSAL_PERSONA_FILES)}),
+    );`);
+
+    // THEN no message is judged, and no note is printed on the row that merely
+    // happened to be current — which is somebody else's reply.
+    assert.equal(h.get("ttsBrokenMessageIds.size"), 0);
+    assert.equal(h.notes().length, 0, "no note on the current row");
+    assert.equal(h.notesIn(b.content).length, 0, "no note on any other row");
+    assert.match(h.loggedText("warn"), /no message ID/,
+        "unattributed is not the same as unlogged");
+});
+
 test("resetTtsReplyState_withTheBreakerTripped_givesTheNextReplyAFreshVoice", async () => {
     const h = createHarness();
     h.fetchStub.routes.set("/api/tts", () => ttsErrorResponse(422, UNSPEAKABLE_TEXT_BODY));
@@ -1300,6 +1388,179 @@ test("ttsScript_neverClassifiesAnHttpStatusCodeAndNoScriptSpecialCases422", () =
         `both playback pipelines must be able to record a verdict, found ${handlerCalls}`);
     assert.equal(guarded, handlerCalls,
         "every circuit-breaker call must be guarded by isVoiceVerdict(err)");
+});
+
+/* ==========================================================================
+    Message-ID keying (issue #174) — the one-helper rule, grepped
+    ========================================================================== */
+
+/** A reference to a message ID: messageId, item.messageId, rowMessageId, … */
+const MESSAGE_ID_REF = String.raw`(?:[\w$]+\.)*[A-Za-z_$]*[mM]essageId`;
+
+/**
+ * Blank out the sanctioned keying calls, so what is left of a line is the part
+ * the guard has to judge. Two families:
+ *   - the two helpers this rule lives in,
+ *   - the `*MessageIds` Set/Map lookups, which mention an ID without ever
+ *     asking whether it is known (a membership test is not a gate).
+ * A THIRD name for the same decision would not be blanked, so a rename or a
+ * hand-rolled `if (idLooksUsable(id))` is flagged rather than waved through.
+ */
+function blankSanctionedKeying(line) {
+    return line
+        .replace(/\b(?:isKnownMessageId|belongsToMessage)\s*\([^()]*\)/g, " ID_CHECK ")
+        .replace(/\b[\w$]*[mM]essageIds\s*\.\s*(?:has|get|set|delete)\s*\([^()]*\)/g, " ID_LOOKUP ");
+}
+
+/**
+ * A condition whose FIRST operand is a bare ID (negation allowed), or an
+ * `ID ? … : …` ternary. Deliberately anchored to just inside the paren: an
+ * `if (a.messageId === b.messageId)` is the comparison guard's business, and a
+ * gate that also fires on it reports the wrong rule for the right bug.
+ */
+const BARE_ID_GATE = new RegExp(
+    String.raw`\b(?:if|while)\s*\(\s*(?:!\s*)?${MESSAGE_ID_REF}\s*(?:\)|&&|\|\|)|${MESSAGE_ID_REF}\s*\?`);
+
+/** Any equality comparison between two message-ID references. */
+const RAW_ID_COMPARISON = new RegExp(
+    String.raw`(?:${MESSAGE_ID_REF}\s*(?:[=!]==?)|(?:[=!]==?)\s*${MESSAGE_ID_REF})`);
+
+const codeLines = (source) => source.split("\n")
+    .map((line, i) => ({ line, n: i + 1 }))
+    .filter(({ line }) => {
+        const t = line.trim();
+        return t && !t.startsWith("//") && !t.startsWith("*") && !t.startsWith("/*");
+    });
+
+/** The source of one top-level function, by name (for a scoped exemption). */
+function functionSource(source, name) {
+    const start = source.search(new RegExp(`^function ${name}\\(`, "m"));
+    if (start === -1) return "";
+    const end = source.indexOf("\n}", start);
+    return source.slice(start, end === -1 ? undefined : end + 2);
+}
+
+test("everyStaticScript_keysOnAMessageIdOnlyThroughIsKnownMessageIdOrBelongsToMessage", () => {
+    // Issue #174's rule, enforced by grep instead of by memory: "an unknown ID
+    // identifies nothing" is decided in exactly one function
+    // (utils.js::isKnownMessageId), and message IDs may be compared for
+    // equality in exactly one place (tts.js::belongsToMessage). Before the
+    // fix, the rule was re-derived at a dozen sites as bare truthiness — and
+    // at the one site that mattered, the splice loop in
+    // dropQueuedSentencesOfMessage, it was not re-derived at all, so `null ===
+    // null` let one persona's refused voice delete another's queued sentences.
+    // A thirteenth `if (messageId)` written next year is the same bug.
+
+    // Self-check first (the house rule for a grep guard): feed the predicate
+    // every shape the code used to contain — the real pre-fix lines — and
+    // demand it flinch. A guard that matches nothing is indistinguishable from
+    // a fix.
+    for (const shape of [
+        "if (messageId) {",                                  // appendUserBubble, pre-fix
+        "if (!messageId) return;",                           // beginSpeaking, pre-fix
+        "if (!item.messageId) {",                            // handleUnvoiceableVerdict, pre-fix
+        "if (messageId && ttsBrokenMessageIds.has(messageId)) {", // enqueueStreamingTTS, pre-fix
+        "if (!rowMessageId) {",                              // deleteMessageFromChat, pre-fix
+        "if (!pendingUserMessageId) {",                      // sendMessage / stt.js, pre-fix
+        "if (!messageId || typeof document === \"undefined\") return;",
+        "while (messageId) { drain(); }",
+        "const cb = messageId ? () => endSpeaking(messageId) : undefined;",
+    ]) {
+        assert.ok(BARE_ID_GATE.test(blankSanctionedKeying(shape)),
+            `the gate guard must reject: ${shape}`);
+    }
+    for (const shape of [
+        "if (ttsRequestQueue[i].messageId === messageId) ttsRequestQueue.splice(i, 1);",
+        "if (messageId === otherMessageId) return;",
+        "if (row.dataset.messageId !== messageId) {",        // multi-line form too
+    ]) {
+        assert.ok(RAW_ID_COMPARISON.test(blankSanctionedKeying(shape)),
+            `the comparison guard must reject: ${shape}`);
+    }
+
+    // And the sanctioned shapes must NOT read as offences, including the two
+    // legal ways an ID appears next to a condition: a keyed lookup, and an
+    // assignment that falls back to another source.
+    for (const shape of [
+        "if (isKnownMessageId(messageId)) {", "if (!isKnownMessageId(item.messageId)) {",
+        "if (isKnownMessageId(messageId) && ttsBrokenMessageIds.has(messageId)) {",
+        "if (belongsToMessage(ttsRequestQueue[i], messageId)) splice();",
+        "if (speakingMessageIds.has(messageId)) { repaint(); }",
+        "const rowMessageId = messageId || row.dataset.messageId;",
+        "row.dataset.messageId = messageId;",
+        "noteTtsUnavailableForReply(item.messageId, err.detail);",
+    ]) {
+        assert.ok(!BARE_ID_GATE.test(blankSanctionedKeying(shape)),
+            `sanctioned shape must not be flagged: ${shape}`);
+        assert.ok(!RAW_ID_COMPARISON.test(blankSanctionedKeying(shape)),
+            `sanctioned shape must not be flagged: ${shape}`);
+    }
+
+    const staticDir = path.join(__dirname, "..", "static");
+    const utilsSource = fs.readFileSync(path.join(staticDir, "utils.js"), "utf8");
+    const ttsSource = fs.readFileSync(path.join(staticDir, "tts.js"), "utf8");
+
+    // The exemption below is scoped to a function body, so a missing helper is
+    // reported as itself rather than as a mystery comparison somewhere else.
+    assert.equal((utilsSource.match(/^function isKnownMessageId\(/gm) || []).length, 1,
+        "utils.js must declare isKnownMessageId() exactly once");
+    const belongsBody = functionSource(ttsSource, "belongsToMessage");
+    assert.ok(belongsBody.includes("function belongsToMessage("),
+        "tts.js must declare belongsToMessage() — the one place two message IDs may be compared");
+
+    for (const file of fs.readdirSync(staticDir)) {
+        if (!file.endsWith(".js")) continue;
+        const source = fs.readFileSync(path.join(staticDir, file), "utf8");
+        const lines = codeLines(source).filter(({ line }) =>
+            !(file === "tts.js" && belongsBody.includes(line)));
+
+        assert.deepEqual(
+            lines.filter(({ line }) => BARE_ID_GATE.test(blankSanctionedKeying(line)))
+                .map(({ line, n }) => `${n}: ${line.trim()}`),
+            [],
+            `${file} decides whether a message ID is usable without asking `
+            + `isKnownMessageId() (issue #174)`);
+        assert.deepEqual(
+            lines.filter(({ line }) => RAW_ID_COMPARISON.test(blankSanctionedKeying(line)))
+                .map(({ line, n }) => `${n}: ${line.trim()}`),
+            [],
+            `${file} compares two message IDs with a raw ===; only `
+            + `belongsToMessage() may (issue #174)`);
+
+        // Multi-line conditions are invisible to a line-by-line sweep (`if (`
+        // on one line, the bare ID on the next), so join the file and re-run
+        // the SAME gate over the result. Blanking happens per line first, with
+        // comments stripped, so a legal one-liner cannot hide an offence.
+        const joined = source.split("\n")
+            .map((line) => blankSanctionedKeying(line.replace(/\/\/.*$/, "")))
+            .join(" ")
+            .replace(/\s+/g, " ");
+        const joinedGate = joined.match(new RegExp(BARE_ID_GATE.source, "g"));
+        assert.equal(joinedGate, null,
+            `${file} gates on a bare message ID across a line break: ${joinedGate && joinedGate[0]}`);
+    }
+});
+
+test("belongsToMessage_withEitherSideUnknown_neverMatches", () => {
+    // The rule itself, not just the shape of the code: an unknown ID on either
+    // side identifies no message, so it matches nothing — which is what keeps
+    // one unidentified responder's verdict from draining the queue of every
+    // other unidentified responder (issue #174).
+    const h = createHarness();
+    const asks = (item, messageId) => h.get(`belongsToMessage(${JSON.stringify(item)}, ${JSON.stringify(messageId)})`);
+
+    // GIVEN/WHEN/THEN: a known ID matches only its own items.
+    assert.equal(asks({ messageId: "M1" }, "M1"), true, "an item belongs to its own message");
+    assert.equal(asks({ messageId: "M1" }, "M2"), false, "and to no other");
+
+    // An unknown ID on EITHER side matches nothing — including the case that
+    // caused #174, where both sides were unknown and `===` called them equal.
+    assert.equal(asks({ messageId: null }, null), false, "null matches null? NEVER (issue #174)");
+    assert.equal(asks({ messageId: undefined }, undefined), false);
+    assert.equal(asks({ messageId: "" }, ""), false, "an empty ID is as unknown as null");
+    assert.equal(asks({ messageId: null }, "M1"), false, "an ID-less item belongs to nobody");
+    assert.equal(asks({ messageId: "M1" }, null), false, "an ID-less question is about nobody");
+    assert.equal(asks({}, "M1"), false, "an item with no messageId field is not a wildcard");
 });
 
 test("refusalClassFixtures_matchTheConstantsTheBackendSends", () => {

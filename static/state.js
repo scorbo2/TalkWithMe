@@ -81,6 +81,12 @@ let isPlayingAudioBuffer = false;
 // other clear site — so the set stays bounded to one reply and a broken voice
 // never mutes the session.
 //
+// A verdict needs an owner. An ID is added only when isKnownMessageId() says
+// the asking item carried one, so this set can never hold a blank key (issue
+// #174): when the "start" event carried no message_id it carried none for the
+// whole turn, and a null key would silently stand in for every responder in it
+// — see handleUnvoiceableVerdict and belongsToMessage().
+//
 // ACCEPTED CONSEQUENCE of reading a refusal as a statement about the pairing
 // (issue #169): a mixed-script reply on a narrow engine can lose audio the
 // old letter-table pre-filter kept, because ONE refused sentence condemns the

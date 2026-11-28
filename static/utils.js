@@ -132,6 +132,28 @@ function generateMessageId() {
 }
 
 /**
+ * Is this a message ID we may key a decision on?
+ *
+ * The ONE home for "an unknown ID identifies nothing" (issue #174). A message
+ * ID goes missing a whole turn at a time — the `start` event either carries
+ * `message_id` or it does not (an older backend, a stripped proxy) — so an
+ * ID-less thing is never a lone oddity: every responder's row, queue item and
+ * audio buffer in that turn is ID-less at once. Any per-site `===` or bare
+ * truthiness test therefore answers for ALL of them, and that is exactly how
+ * one persona's refused TTS voice came to delete the OTHER responders' queued
+ * sentences while the note's own guard printed no explanation.
+ *
+ * Today this is `Boolean(messageId)`, and a function that only ever coerces to
+ * a boolean looks like ceremony. It is not: it is where the rule lives, what
+ * every keyed site asks instead of re-deriving it, and what the grep guard in
+ * tests/test_tts_resilience.js measures — no bare truthiness test on a message
+ * ID, and no raw `===` between two of them, anywhere in static/.
+ */
+function isKnownMessageId(messageId) {
+    return Boolean(messageId);
+}
+
+/**
  * Copy text to the system clipboard, with a fallback for insecure origins.
  *
  * `navigator.clipboard` only exists in a secure context (HTTPS, or the

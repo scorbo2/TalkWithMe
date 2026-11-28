@@ -169,6 +169,30 @@ curl -s -X POST localhost:8000/api/tts \
   reverse — new JS against an old server — would lose the note *and* the
   breaker. Frontend and backend ship from one tree and are served by one
   process, so keep them in one commit.
+- **A verdict on an item with no message ID judges nobody (issue #174).** The
+  splice loop in `dropQueuedSentencesOfMessage` compared queue items to the
+  asking ID with a bare `===`, so `null === null` matched *every* ID-less item
+  in the queue. An ID is missing a whole turn at a time — the `"start"` event
+  either carries `message_id` or it does not — so those ID-less items belong to
+  several responders, and one persona's refusal silently deleted another's
+  pending sentences while `noteTtsUnavailableForReply(null)` early-returned and
+  explained nothing. `handleUnvoiceableVerdict` now returns before any of its
+  three actions. The cost is deliberate: an unidentified reply re-asks (and is
+  refused again) instead of guessing at an owner.
+- **The keying rule has one home per question (issue #174).** "Is this ID
+  usable?" is asked of `isKnownMessageId()` (`static/utils.js`) and nothing
+  else; "does this queued item belong to that message?" is asked of
+  `belongsToMessage(item, messageId)` (`static/tts.js`), the only place two
+  message IDs may be `===`. Both exist because the rule was previously
+  re-derived as bare truthiness at a dozen sites — and *not* derived at the one
+  site that mattered. A grep guard in `tests/test_tts_resilience.js` keeps it
+  that way: no `static/*.js` may gate an `if`/`while`/ternary on a bare message
+  ID, and none may compare two IDs outside that helper (line-by-line and across
+  a line break). `*MessageIds.has(…)`-style lookups are exempt — a membership
+  test is not a known-ness test — and an `id || row.dataset.messageId`
+  assignment is legal, because deriving an ID is not gating on one. Widen the
+  exemption list only with a written-down reason; a name that is *not* on it
+  (a local `idLooksUsable()`) is flagged, which is the point.
 - **Adding a `SynthesisOutcome`?** `tests/test_routers_tts_stt.py`
   (`test_every_synthesis_outcome_declares_whether_it_is_a_voice_verdict`) fails
   and names it. Say out loud whether the new outcome is a permanent voice
@@ -206,7 +230,13 @@ curl -s -X POST localhost:8000/api/tts \
   `handleUnvoiceableVerdict` call site behind `isVoiceVerdict`), and the
   backend cross-check that the JS `REFUSAL_*` constants and the three body
   fixtures (verdict / router's `refusal: null` / key-absent validation) still
-  match `app/routers/tts.py`.
+  match `app/routers/tts.py`, and the issue #174 cases (the drop loop with an
+  unknown ID drops nothing *while a real ID still drops its own*, an
+  `"start"`-less turn in which one ID-less responder's refusal must leave the
+  other's sentence queued, an unattributed verdict that records no verdict and
+  prints no note but stays in the log, `belongsToMessage()` matching nothing
+  when either side is unknown, and the keying grep guard — whose self-checks
+  feed it the pre-#174 source lines and demand it flinch).
 
 ```bash
 python -m pytest tests/test_routers_tts_stt.py tests/test_tts_stt_clients.py
