@@ -36,6 +36,14 @@
  * the press must land on the backdrop. That also kills the mirror case
  * (press on the backdrop, release inside the modal box).
  *
+ * Issue #172 is the follow-up that rewrite introduced: `mousedown`/`mouseup`
+ * fire once PER MOUSE BUTTON, so a button-blind press pair made a
+ * middle-click or a right-click on the backdrop a valid "backdrop click"
+ * and closed the modal the same way. The old click-on-overlay handler had
+ * never had that bug (a browser synthesises a `click` for the MAIN button
+ * only), so `press()` below models the button as well: the activation event
+ * it dispatches depends on which button was pressed.
+ *
  * NOTE: this file is intentionally NOT part of the pytest suite (which
  * must run with nothing but Python installed). Run it alongside:
  *     python3 -m pytest
@@ -315,10 +323,16 @@ function nearestCommonAncestor(a, b) {
     return null;
 }
 
+/** Which event a completed press activates, per mouse button (UI Events:
+ *  `click` is main-button only; middle is `auxclick`, right is `contextmenu`
+ *  and never a click at all). */
+const ACTIVATION_EVENT_OF_BUTTON = { 0: "click", 1: "auxclick", 2: "contextmenu" };
+
 /**
  * Drive one full press on `overlayEl`: mouse down on `down`, drag, up on
  * `up` (undefined = released outside the window, so no mouseup is
- * delivered), followed by the `click` the browser synthesises afterwards.
+ * delivered), followed by the activation event the browser synthesises
+ * afterwards (`click` for the default left button).
  *
  * The synthesis is the whole point of this harness: a real browser does
  * NOT fire that click on either endpoint — it fires it on the nearest
@@ -326,14 +340,24 @@ function nearestCommonAncestor(a, b) {
  * looking innocent, because the buggy handler only ever listened to
  * `click`. Inner presses reach the overlay's listeners by bubbling, so
  * every event here is dispatched on the overlay with the right `target`.
+ *
+ * `button` is modelled because issue #172 is about it: 0 main, 1 auxiliary
+ * (middle), 2 secondary (right). A stub that left `button` undefined would
+ * make the fixed helper refuse EVERY press, which fails the backdrop-click
+ * tests loudly rather than quietly.
  */
-function press(overlayEl, { down, up }) {
-    overlayEl.dispatch("mousedown", { target: down });
+function press(overlayEl, { down, up, button = 0 }) {
+    overlayEl.dispatch("mousedown", { target: down, button });
     if (up === undefined) return;
-    overlayEl.dispatch("mouseup", { target: up });
+    overlayEl.dispatch("mouseup", { target: up, button });
 
     const clickTarget = nearestCommonAncestor(down, up);
-    if (clickTarget) overlayEl.dispatch("click", { target: clickTarget });
+    if (clickTarget) {
+        overlayEl.dispatch(ACTIVATION_EVENT_OF_BUTTON[button] || "click", {
+            target: clickTarget,
+            button,
+        });
+    }
 }
 
 /* ==========================================================================
@@ -420,6 +444,107 @@ test("installBackdropClose_dragFromControlThenBackdropClick_stillCloses", async 
     assert.equal(closes, 1, "an ignored drag must not disarm later backdrop clicks");
 });
 
+/* --------------------------------------------------------------------------
+    Issue #172 — the press pair is a MAIN (left) button press pair
+    -------------------------------------------------------------------------- */
+
+test("installBackdropClose_middlePressPairOnBackdrop_neverCallsClose", () => {
+    // GIVEN the helper installed on a fresh overlay,
+    const h = createModalHarness();
+    const overlay = h.elementById("some-overlay");
+    let closes = 0;
+    h.sandbox.installBackdropClose(overlay, () => closes++);
+
+    // WHEN the MIDDLE button is pressed and released on the backdrop (button
+    // 1: a completed press pair, and on X11 a primary-selection paste on top
+    // of it),
+    press(overlay, { down: overlay, up: overlay, button: 1 });
+
+    // THEN the modal survives:
+    assert.equal(closes, 0, "a middle-click on the backdrop must never close the modal");
+});
+
+test("installBackdropClose_rightPressPairOnBackdrop_neverCallsClose", () => {
+    // GIVEN the helper installed on a fresh overlay,
+    const h = createModalHarness();
+    const overlay = h.elementById("some-overlay");
+    let closes = 0;
+    h.sandbox.installBackdropClose(overlay, () => closes++);
+
+    // WHEN the RIGHT button is pressed and released on the backdrop (button
+    // 2, which also opens the native context menu over the page),
+    press(overlay, { down: overlay, up: overlay, button: 2 });
+
+    // THEN the modal survives — the user was after a context menu, not after
+    // a way to lose the half-filled form:
+    assert.equal(closes, 0, "a right-click on the backdrop must never close the modal");
+});
+
+test("installBackdropClose_nonMainPressesOnBackdrop_thenLeftBackdropClick_closesOnTheLeftPressOnly", () => {
+    // GIVEN the helper installed on a fresh overlay,
+    const h = createModalHarness();
+    const overlay = h.elementById("some-overlay");
+    let closes = 0;
+    h.sandbox.installBackdropClose(overlay, () => closes++);
+
+    // WHEN a middle and a right press pair land on the backdrop and the user
+    // then clicks the backdrop properly,
+    press(overlay, { down: overlay, up: overlay, button: 1 });
+    press(overlay, { down: overlay, up: overlay, button: 2 });
+    press(overlay, { down: overlay, up: overlay, button: 0 });
+
+    // THEN exactly one close happened: a non-main press is ignored, and being
+    // ignored must not disarm the NEXT press either:
+    assert.equal(closes, 1, "one close, from the left-button press only");
+});
+
+test("installBackdropClose_offWindowLeftPress_thenRightPress_thenReleaseInside_neverCallsClose", () => {
+    // GIVEN the helper installed on a fresh overlay. The pre-#172 flag is
+    // re-derived on EVERY mousedown, which is what stops a press released
+    // off-window leaving a stale "close me" armed; the button gate must not
+    // quietly narrow that re-arming to left presses only.
+    const h = createModalHarness();
+    const overlay = h.elementById("some-overlay");
+    const checkbox = h.controlIn(overlay, "pf-tool-calls");
+    let closes = 0;
+    h.sandbox.installBackdropClose(overlay, () => closes++);
+
+    // WHEN a left press starts on the backdrop and is released off-window,
+    // then a right press happens on a control, then a left press starts on
+    // the backdrop and releases inside the modal box,
+    press(overlay, { down: overlay, up: undefined, button: 0 });
+    press(overlay, { down: checkbox, up: undefined, button: 2 });
+    press(overlay, { down: overlay, up: checkbox, button: 0 });
+
+    // THEN nothing closes:
+    assert.equal(closes, 0, "a stale backdrop arming must not survive a non-main press");
+});
+
+test("installBackdropClose_middleButtonReleasedFirstWhileLeftStillHeld_neverCallsClose", () => {
+    // GIVEN the helper installed on a fresh overlay. This is the multi-button
+    // gymnastics the RELEASE-side button gate exists for.
+    const h = createModalHarness();
+    const overlay = h.elementById("some-overlay");
+    let closes = 0;
+    h.sandbox.installBackdropClose(overlay, () => closes++);
+
+    // WHEN the middle button goes down on the backdrop, the left button goes
+    // down there too, and the MIDDLE one is released first (a mouseup whose
+    // button is 1 with a left pair nominally in flight),
+    overlay.dispatch("mousedown", { target: overlay, button: 1 });
+    overlay.dispatch("mousedown", { target: overlay, button: 0 });
+    overlay.dispatch("mouseup", { target: overlay, button: 1 });
+
+    // THEN nothing has closed:
+    assert.equal(closes, 0, "releasing a button that never pressed the backdrop must not close");
+
+    // AND the eventual left release does not close either — that press
+    // sequence began as a middle press, and losing it is the safe side of the
+    // ambiguity:
+    overlay.dispatch("mouseup", { target: overlay, button: 0 });
+    assert.equal(closes, 0, "the interleaved press must not close on either release");
+});
+
 /* ==========================================================================
     The real modals — every one of them shares the one helper
     ========================================================================== */
@@ -442,6 +567,34 @@ test("harnessSelfCheck_naiveClickOnOverlayHandler_isFooledByAControlToBackdropDr
     // THEN the naive handler really is fooled — proof that the drag tests
     // below can actually detect this bug:
     assert.equal(closes, 1, "the harness must synthesise the click on the common ancestor");
+});
+
+test("harnessSelfCheck_buttonBlindPressPairHandler_isFooledByANonMainPressOnTheBackdrop", () => {
+    // GIVEN the pre-#172 shape of the helper — the press pair, but with no
+    // button check — installed by hand. This is the self-check the fix needs:
+    // if press() ever stopped modelling `button`, the #172 tests above would
+    // read as green against a helper that ignores every press, which is a
+    // different bug that nobody would notice.
+    const h = createModalHarness();
+    const overlay = h.elementById("some-overlay");
+    let closes = 0;
+    let armed = false;
+    overlay.addEventListener("mousedown", (e) => {
+        armed = e.target === overlay;
+    });
+    overlay.addEventListener("mouseup", (e) => {
+        const completed = armed && e.target === overlay;
+        armed = false;
+        if (completed) closes++;
+    });
+
+    // WHEN a middle and a right press pair land on the backdrop,
+    press(overlay, { down: overlay, up: overlay, button: 1 });
+    press(overlay, { down: overlay, up: overlay, button: 2 });
+
+    // THEN this handler really is fooled twice — proof that the tests above
+    // can detect the bug at all:
+    assert.equal(closes, 2, "the harness must deliver non-main button presses to the listeners");
 });
 
 /* --------------------------------------------------------------------------
@@ -539,6 +692,16 @@ test("backdropListeners_everyModalOverlayGetsThePressPairAndNoClickHandler", asy
             !types.includes("click"),
             `${id} has a click listener — the pre-fix backdrop handler is back`,
         );
+        // ...and no "other activation event" variant of it either: a close
+        // decided from auxclick/contextmenu is the same #172 bug in a
+        // different hat, and pointer events would reintroduce the pairing
+        // question under new names.
+        for (const forbidden of ["auxclick", "contextmenu", "pointerdown", "pointerup"]) {
+            assert.ok(
+                !types.includes(forbidden),
+                `${id} has a ${forbidden} listener — backdrop close is the mousedown/mouseup pair only`,
+            );
+        }
     }
 });
 
@@ -574,6 +737,35 @@ for (const { id, owner } of MODALS) {
         assert.ok(
             !overlay.classList.contains("hidden"),
             `${id} must NOT close when a press that started inside the modal ends on the backdrop`,
+        );
+    });
+
+    test(`backdropButton_${id}_middleAndRightPressPairs_neverCloseTheModal`, async () => {
+        // GIVEN the modal owned by ${owner} is open:
+        const h = createModalHarness();
+        const overlay = h.elementById(id);
+        overlay.classList.remove("hidden");
+
+        // WHEN the backdrop is clicked with the middle and then the right
+        // button (issue #172),
+        press(overlay, { down: overlay, up: overlay, button: 1 });
+        await h.settle();
+        press(overlay, { down: overlay, up: overlay, button: 2 });
+        await h.settle();
+
+        // THEN the modal is still open:
+        assert.ok(
+            !overlay.classList.contains("hidden"),
+            `${id} must NOT close on a middle- or right-click of the backdrop`,
+        );
+
+        // AND a plain left click still closes it — the guard must not have
+        // disarmed this modal's backdrop for good:
+        press(overlay, { down: overlay, up: overlay, button: 0 });
+        await h.settle();
+        assert.ok(
+            overlay.classList.contains("hidden"),
+            `${id} must still close on a left-click of the backdrop`,
         );
     });
 

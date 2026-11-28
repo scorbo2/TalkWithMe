@@ -219,18 +219,36 @@ function legacyCopyToClipboard(text) {
  * every press — so a press released outside the window, where no mouseup
  * is delivered at all, can never leave a stale "close me" behind.
  *
+ * And the press must be the MAIN (left) button: `mousedown`/`mouseup` fire
+ * once per button, with `button` 0/1/2 = main/auxiliary/secondary, so a
+ * button-blind press pair lets a middle-click (button 1 — plus the X11
+ * primary-selection paste it carries) or a right-click (button 2 — which
+ * also pops the native context menu over the page) eat the modal exactly
+ * the way the drag did. Note that the old `click`-on-overlay handler was
+ * immune to this: browsers never synthesise a `click` for a non-main
+ * button. Keying on the press pair is what opened the hole, so the pair is
+ * keyed by button too. The flag is still RE-DERIVED on every mousedown
+ * (never assigned only inside a left-button branch), because a non-main
+ * press must also disarm a stale flag left by an earlier press.
+ *
  * @param {HTMLElement} overlay - The full-viewport .modal-overlay element.
  * @param {function} closeFn - Called when a genuine backdrop click completes.
  */
 function installBackdropClose(overlay, closeFn) {
+    const MAIN_BUTTON = 0;
     let pressStartedOnBackdrop = false;
 
     overlay.addEventListener("mousedown", (e) => {
-        pressStartedOnBackdrop = e.target === overlay;
+        pressStartedOnBackdrop = e.button === MAIN_BUTTON && e.target === overlay;
     });
 
     overlay.addEventListener("mouseup", (e) => {
-        const clickCompletedOnBackdrop = pressStartedOnBackdrop && e.target === overlay;
+        // Same button gate on the release: a `mouseup` carries the button that
+        // was released, so this refuses a close decided by e.g. a middle
+        // button let go first while the left one is still held. It can only
+        // ever suppress a close, never arm one.
+        const clickCompletedOnBackdrop =
+            pressStartedOnBackdrop && e.button === MAIN_BUTTON && e.target === overlay;
         pressStartedOnBackdrop = false;
         if (clickCompletedOnBackdrop) closeFn();
     });

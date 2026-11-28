@@ -58,19 +58,21 @@ on the backdrop again → close.
 ## The rule
 
 `installBackdropClose(overlay, closeFn)` in `static/utils.js`. Decide from the
-**press pair**, never from the synthesised click: close only when `mousedown`
-**and** `mouseup` both land on the overlay itself.
+**press pair**, never from the synthesised click: close only when a **main
+button (left)** `mousedown` **and** `mouseup` both land on the overlay itself.
 
 ```js
 function installBackdropClose(overlay, closeFn) {
+    const MAIN_BUTTON = 0;
     let pressStartedOnBackdrop = false;
 
     overlay.addEventListener("mousedown", (e) => {
-        pressStartedOnBackdrop = e.target === overlay;
+        pressStartedOnBackdrop = e.button === MAIN_BUTTON && e.target === overlay;
     });
 
     overlay.addEventListener("mouseup", (e) => {
-        const clickCompletedOnBackdrop = pressStartedOnBackdrop && e.target === overlay;
+        const clickCompletedOnBackdrop =
+            pressStartedOnBackdrop && e.button === MAIN_BUTTON && e.target === overlay;
         pressStartedOnBackdrop = false;
         if (clickCompletedOnBackdrop) closeFn();
     });
@@ -83,6 +85,38 @@ gets retargeted), which is exactly what makes this correct. Presses that start
 ancestor of the modal box — so the flag is re-armed on every press, and a press
 released outside the browser window (where no `mouseup` is delivered at all) can
 never leave a stale "close me" behind.
+
+### …and the press must be the LEFT button (issue #172)
+
+`mousedown` and `mouseup` fire **once per mouse button**, with `MouseEvent.button`
+`0` / `1` / `2` = main / auxiliary (middle) / secondary (right). A press pair
+that only compares `target` therefore also accepts a **middle-click** (button 1,
+which on X11 additionally pastes the primary selection) and a **right-click**
+(button 2, which pops the native context menu over the page) on the backdrop as
+"a genuine backdrop click" — and the half-filled persona form disappears while
+the user is still looking for a context menu.
+
+The uncomfortable part: **the old `click`-on-overlay handler never had this
+bug.** A browser synthesises `click` for the main button only (middle is
+`auxclick`, right is `contextmenu`), so rewriting the close from `click` to the
+press pair is what opened the hole. Lesson: when you replace an event with the
+lower-level events underneath it, check which of the higher event's guarantees
+you just gave away.
+
+Both ends of the pair are gated:
+
+- the **`mousedown`** gate is the fix itself, and it assigns the flag for every
+  press rather than only inside a left-button branch — a non-main press must
+  *disarm* as well as fail to arm, or an earlier off-window left press could
+  come back to close the modal later;
+- the **`mouseup`** gate costs one condition and refuses the ambiguous residue:
+  middle button down on the backdrop, left button down there too, middle
+  released first. A release-side gate can only ever *suppress* a close, never
+  arm one, so the worst it does is drop a press nobody means.
+
+The native context menu is deliberately **not** suppressed (`contextmenu` →
+`preventDefault`): blocking it app-wide to paper over a close bug would be worse
+than the bug.
 
 Every backdrop-closable modal in the app shares it. The authoritative list is
 **derived from `templates/index.html`** by the test suite (every `id` on a
@@ -109,10 +143,18 @@ ended up with the press-pair listeners and no `click` listener at all.
 node tests/test_modal_backdrop.js
 ```
 
-It drives the real listeners of every modal in the app through four press
+It drives the real listeners of every modal in the app through five press
 shapes each — backdrop/backdrop (closes), control→backdrop (the reported
-bug), backdrop→control, and backdrop→off-window — and asserts the flag re-arms
-so a skipped `mouseup` never sticks.
+bug), backdrop→control, backdrop→off-window, and **middle- and right-button
+backdrop presses** (issue #172, must not close — followed by a left click that
+must still close) — and asserts the flag re-arms so a skipped `mouseup` never
+sticks.
+
+`press()` models the button: `{ down, up, button = 0 }`, and the activation
+event it dispatches afterwards depends on it (`click` / `auxclick` /
+`contextmenu`). A companion self-check installs the **pre-#172** button-blind
+press-pair handler and asserts it is fooled twice, so a harness that quietly
+stopped delivering `button` cannot make those tests vacuous.
 
 The set of modals those loops run over is derived from the markup rather than
 written out (this file, `AGENTS.md` and the test all used to carry a hand-typed
