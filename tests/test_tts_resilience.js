@@ -16,8 +16,10 @@
  * invariant 1). A silent reference clip is a 400 there, which the
  * TalkWithMe router forwards as an app 422 too: both are permanent verdicts
  * about app-side configuration, and the client's axis is permanent vs
- * transient. One sentence of a reply must not eat the reply's audio, and one
- * reply's broken voice must not eat the session.
+ * transient — which the router states in the body (`refusal`) rather than
+ * leaving the browser to infer it from the number (invariant 3a below). One
+ * sentence of a reply must not eat the reply's audio, and one reply's broken
+ * voice must not eat the session.
  *
  * Invariants under test:
  *
@@ -32,12 +34,23 @@
  * 2. enqueueStreamingTTS drops an unspeakable chunk WITHOUT a /api/tts request
  *    and logs the reason; a speakable chunk is queued unchanged, with the
  *    message ID stamped at enqueue time.
- * 3. A 422 (the engine's verdict on the voice) trips the breaker for the
- *    message that ASKED: exactly one request goes out, that message's rest of
- *    the queue is dropped, the fetch pipeline is not left wedged, and the
+ * 3. A failure the SERVER labelled with a refusal CLASS trips the breaker for
+ *    the message that ASKED: exactly one request goes out, that message's rest
+ *    of the queue is dropped, the fetch pipeline is not left wedged, and the
  *    engine's own sentence reaches the user as one muted line anchored on
  *    that message's .bubble-content (the row is a flex row: a direct row
  *    child renders beside the bubble, not under it).
+ *
+ * 3a. The class, never the status code (issue #173). `/api/tts` answers 422
+ *     both for those verdicts and for FastAPI rejecting the request BODY
+ *     (`TTSRequest.text` is min_length=1) before the handler ran, and the two
+ *     need OPPOSITE client behaviour: the verdict predicts the next sentence's
+ *     verdict, the shape failure predicts nothing (the next sentence is a
+ *     different, valid request). So the trip happens on `err.refusal` — a
+ *     machine-readable class the router stamps on every failure body it
+ *     authors — and a failure without one keeps every later sentence queued,
+ *     shows no note, and is logged as the bug it probably is. Two grep guards
+ *     near the end of this file keep the status code out of the decision.
  *
  *    3b. ACCEPTED CONSEQUENCE of 3, pinned rather than discovered later
  *        (issue #169): ONE refusal condemns the whole message, so a
@@ -127,6 +140,30 @@ const NO_SPEECH_IN_CLIP_DETAIL =
     "engine transcribes only that window with Whisper and conditions on the " +
     "transcript, so silence, music, or speech other than English / Chinese " +
     "cannot be cloned.  Start the clip with speech, or raise prompt_duration.";
+
+/* ==========================================================================
+    The refusal class (issue #173)
+
+    Every POST /api/tts failure body from this app carries `refusal`: the
+    machine-readable answer to "is this persona's voice permanently
+    unavailable?", which is the ONLY question the client's circuit breaker
+    answers. The HTTP status is not it — /api/tts 422s both for these verdicts
+    and for a request FastAPI rejected before the handler ran. The values below
+    are the backend's constants (app/routers/tts.py), re-checked against that
+    file by the last test in this suite so the two languages cannot drift.
+    ========================================================================== */
+
+const REFUSAL_ENGINE = "engine";
+const REFUSAL_PERSONA_FILES = "persona_files";
+
+/** A synthesis failure body as the router sends it: sentence + refusal class. */
+function verdictBody(refusal, detail) {
+    return { detail, refusal };
+}
+
+const UNSPEAKABLE_TEXT_BODY = verdictBody(REFUSAL_ENGINE, UNSPEAKABLE_TEXT_DETAIL);
+const NO_SPEECH_IN_CLIP_BODY = verdictBody(REFUSAL_ENGINE, NO_SPEECH_IN_CLIP_DETAIL);
+const MISSING_TRANSCRIPT_BODY = verdictBody(REFUSAL_PERSONA_FILES, MISSING_TRANSCRIPT_DETAIL);
 
 /* ==========================================================================
     DOM / browser stubs (see tests/test_speaking_highlight.js)
@@ -240,9 +277,26 @@ function ttsErrorResponse(status, body) {
     };
 }
 
-/** A body that quotes an engine sentence, as the router sends it. */
+/**
+ * The router's own NON-verdict failure body: a sentence, and `refusal: null`
+ * saying "we answered, and this is not a verdict on the voice".
+ *
+ * This is what an engine hiccup actually looks like on the wire (the 502 exit —
+ * pinned server-side by
+ * tests/test_routers_tts_stt.py::test_engine_hiccup_502_declares_no_refusal_class,
+ * which asserts the KEY IS PRESENT, not merely null-valued). It used to be
+ * `{ detail }`, a body this router stopped emitting in #173: harmless to the
+ * assertions (absent and null both mean "not a verdict" to the client) and
+ * therefore exactly the kind of fixture that quietly describes a wire format
+ * that no longer exists. The fixture cross-check at the end of this file keeps
+ * the two shapes apart.
+ *
+ * The OTHER non-verdict is a body with no `refusal` key at all — that one is
+ * `validationBody()` (FastAPI, key absent because the router never ran) or a
+ * non-JSON proxy page.
+ */
 function detailBody(detail) {
-    return { detail };
+    return { detail, refusal: null };
 }
 
 /**
@@ -254,16 +308,28 @@ function detailBody(detail) {
  */
 function engineThatRefuses(scriptRe) {
     return (call) => (scriptRe.test(JSON.parse(call.body).text)
-        ? ttsErrorResponse(422, detailBody(UNSPEAKABLE_TEXT_DETAIL))
+        ? ttsErrorResponse(422, UNSPEAKABLE_TEXT_BODY)
         : ttsSuccessResponse());
 }
 
 const CYRILLIC = /\p{Script=Cyrillic}/u;
 
-/** A FastAPI validation failure: `detail` is a list, not a sentence. */
+/**
+ * FastAPI's request-model validation failure — the OTHER 422 (issue #173).
+ *
+ * `detail` is a list of {type, loc, msg, input} entries and there is no
+ * `refusal` key at all, because the body is built by FastAPI's validation
+ * handler: the TTS router never ran, so no persona, engine, or voice was ever
+ * consulted. Shaped after the real answer for TTSRequest's `text: min_length=1`.
+ */
 function validationBody(field) {
     return {
-        detail: [{ loc: ["body", field], msg: "Extra inputs are not permitted", type: "extra_forbidden" }],
+        detail: [{
+            type: "string_too_short",
+            loc: ["body", field],
+            msg: "String should have at least 1 characters",
+            input: "",
+        }],
     };
 }
 
@@ -303,8 +369,22 @@ function createHarness() {
 
     const uploadAudioCalls = [];
     let highlightCalls = 0;
+    // The console is recorded, not forwarded: the resilience paths announce
+    // themselves there (a dropped chunk, a failure that is NOT a voice verdict),
+    // and "the user saw nothing but the log says why" is an assertion worth
+    // making. Forwarding to the real console would just noise up the run.
+    const logs = [];
+    const record = (level) => (...args) => {
+        logs.push({ level, text: args.map((a) => String(a)).join(" ") });
+    };
     const sandbox = {
-        console,
+        console: {
+            log: record("log"),
+            info: record("info"),
+            warn: record("warn"),
+            error: record("error"),
+            debug: record("debug"),
+        },
         document: documentStub,
         fetch: fetchStub,
         atob: (s) => Buffer.from(s, "base64").toString("latin1"),
@@ -392,6 +472,10 @@ function createHarness() {
         audioCtx,
         fetchStub,
         uploadAudioCalls,
+        /** Everything the scripts logged: {level, text}. */
+        logs: () => logs,
+        /** The logged lines at one level, joined for substring assertions. */
+        loggedText: (level) => logs.filter((l) => l.level === level).map((l) => l.text).join("\n"),
         highlightCalls: () => highlightCalls,
         addRow,
         notesIn,
@@ -523,7 +607,7 @@ test("enqueueStreamingTTS_withANonLatinReply_asksTheEngineAndShowsItsRefusal", a
     // reach the server and come back as the engine's 422 sentence, which the
     // verdict path puts under the bubble. Before the fix it died in a
     // console.warn nobody opens: the resilience machinery never saw it.
-    h.fetchStub.routes.set("/api/tts", () => ttsErrorResponse(422, detailBody(UNSPEAKABLE_TEXT_DETAIL)));
+    h.fetchStub.routes.set("/api/tts", () => ttsErrorResponse(422, UNSPEAKABLE_TEXT_BODY));
 
     h.run(`
         enqueueStreamingTTS("boris", "Привет мир.");
@@ -624,7 +708,7 @@ test("enqueueStreamingTTS_withAVoiceableChunk_queuesItWithTheStampedMessageId", 
 
 test("processTTSRequests_onEngineContent422_stopsTheReplyAndShowsTheEngineSentence", async () => {
     const h = createHarness();
-    h.fetchStub.routes.set("/api/tts", () => ttsErrorResponse(422, detailBody(UNSPEAKABLE_TEXT_DETAIL)));
+    h.fetchStub.routes.set("/api/tts", () => ttsErrorResponse(422, UNSPEAKABLE_TEXT_BODY));
 
     h.run(`
         enqueueStreamingTTS("aria", "First speakable sentence.");
@@ -660,7 +744,7 @@ test("noteTtsUnavailableForReply_withAnActionRow_insertsTheNoteAboveTheButtons",
     h.content.appendChild(actions);
     h.content.linkChildSelector(".message-actions", actions);
 
-    h.fetchStub.routes.set("/api/tts", () => ttsErrorResponse(422, detailBody(UNSPEAKABLE_TEXT_DETAIL)));
+    h.fetchStub.routes.set("/api/tts", () => ttsErrorResponse(422, UNSPEAKABLE_TEXT_BODY));
     h.run('enqueueStreamingTTS("aria", "A speakable sentence.")');
     await pipelineIdle(h);
 
@@ -673,25 +757,71 @@ test("noteTtsUnavailableForReply_withAnActionRow_insertsTheNoteAboveTheButtons",
     );
 });
 
-test("processTTSRequests_onContent422WithANonJsonBody_fallsBackToTheStatus", async () => {
+test("processTTSRequests_onAnUnlabelled422FromSomethingElse_keepsAskingAndAccusesNobody", async () => {
+    // A 422 whose body is not even JSON (a reverse proxy's error page, an empty
+    // gateway answer). The TTS router stamps EVERY failure body it authors with
+    // a refusal class, so a body without one is not this app judging this
+    // persona's voice — and it used to trip the breaker anyway and print
+    // "Voice unavailable for this reply: HTTP 422", an accusation with no
+    // evidence behind it (issue #173).
     const h = createHarness();
-    h.fetchStub.routes.set("/api/tts", () => ttsErrorResponse(422, undefined));
+    let answered = 0;
+    h.fetchStub.routes.set("/api/tts", () => {
+        answered += 1;
+        return ttsErrorResponse(422, undefined);
+    });
 
-    h.run('enqueueStreamingTTS("aria", "A speakable sentence.")');
+    h.run(`
+        enqueueStreamingTTS("aria", "First speakable sentence.");
+        enqueueStreamingTTS("aria", "Second speakable sentence.");
+    `);
     await pipelineIdle(h);
 
-    // GIVEN a 422 whose body is not JSON (a proxy in front of the backend),
-    // THEN the verdict is recorded all the same and the note degrades to the
-    // status. (The backend self-heals a non-JSON 422 — a proxy page is not a
-    // tts-serve content sentence — so what reaches here is the surviving one.)
-    assert.equal(h.refused("M1"), true, "verdict recorded without a detail");
-    assert.equal(h.notes().length, 1, "one note line");
-    assert.ok(h.notes()[0].textContent.includes("HTTP 422"), h.notes()[0].textContent);
+    // GIVEN two sentences and an answer nobody authored,
+    // THEN the second sentence — a different request — is still asked,
+    assert.equal(answered, 2, "an unjudged failure must not mute the rest of the reply");
+    // ...no verdict is recorded, no line blames the voice,...
+    assert.equal(h.refused("M1"), false, "no refusal class, no verdict");
+    assert.equal(h.notes().length, 0, "no note about a voice that was never judged");
+    // ...and the failure is not swallowed either: it is on the console.
+    assert.ok(h.loggedText("error").includes("HTTP 422"),
+        `the unlabelled failure must be logged: ${h.loggedText("error")}`);
+});
+
+test("isVoiceVerdict_onlyAPresentRefusalClassIsAVerdict", () => {
+    const h = createHarness();
+    const cases = [
+        // The two classes the backend can send (re-checked against its file
+        // below) — both are verdicts, whatever the number that carried them.
+        [{ refusal: REFUSAL_ENGINE }, true],
+        [{ refusal: REFUSAL_PERSONA_FILES }, true],
+        // The router's own null: it answered, and said "not a verdict".
+        [{ refusal: null }, false],
+        // FastAPI's validation body, or a foreign server's envelope.
+        [{}, false],
+        // Junk that must never be read as a verdict by a truthiness shortcut.
+        [{ refusal: "" }, false],
+        [{ refusal: 0 }, false],
+        [{ refusal: false }, false],
+        [{ refusal: ["engine"] }, false],
+        [null, false],
+        [undefined, false],
+        [{}, false],
+    ];
+
+    // GIVEN each body shape as it arrives on `err.refusal`,
+    // WHEN isVoiceVerdict classifies it, THEN only a non-empty string is a verdict.
+    for (const [err, expected] of cases) {
+        assert.equal(
+            h.get(`isVoiceVerdict(${JSON.stringify(err)})`), expected,
+            `expected ${expected} for ${JSON.stringify(err)}`,
+        );
+    }
 });
 
 test("enqueueStreamingTTS_afterAContent422_sendsNoFurtherRequestForThisReply", async () => {
     const h = createHarness();
-    h.fetchStub.routes.set("/api/tts", () => ttsErrorResponse(422, detailBody(UNSPEAKABLE_TEXT_DETAIL)));
+    h.fetchStub.routes.set("/api/tts", () => ttsErrorResponse(422, UNSPEAKABLE_TEXT_BODY));
 
     h.run('enqueueStreamingTTS("aria", "First speakable sentence.")');
     await pipelineIdle(h);
@@ -736,7 +866,7 @@ test("processTTSRequests_onTheClipRefusalMappedToApp422_stopsTheReplyAndShowsThe
     // LuxTTS raises it after encode_prompt (Whisper ASR, inside its synthesis
     // lock) — a client that kept asking would pay a near-full slot per
     // sentence, per reply, forever, and the user would never read the advice.
-    h.fetchStub.routes.set("/api/tts", () => ttsErrorResponse(422, detailBody(NO_SPEECH_IN_CLIP_DETAIL)));
+    h.fetchStub.routes.set("/api/tts", () => ttsErrorResponse(422, NO_SPEECH_IN_CLIP_BODY));
 
     h.run(`
         enqueueStreamingTTS("aria", "First sentence.");
@@ -750,18 +880,54 @@ test("processTTSRequests_onTheClipRefusalMappedToApp422_stopsTheReplyAndShowsThe
     assert.ok(h.notes()[0].textContent.includes("prompt_duration"), h.notes()[0].textContent);
 });
 
-test("processTTSRequests_onSchema422WithAValidationList_tripsTheBreakerLikeAny422", async () => {
+test("processTTSRequests_onARequestModelValidationFailure_keepsTheReplyVoiceableAndLogsTheBug", async () => {
+    // The issue #173 case as the browser sees it. `/api/tts` answers 422 for
+    // TWO unrelated things: the voice verdicts above, and FastAPI rejecting the
+    // request BODY (TTSRequest.text is min_length=1) before the handler ran —
+    // a `detail` LIST, with no persona, engine, or voice consulted anywhere in
+    // it. Reading that as "this persona cannot speak" muted a healthy reply
+    // (the next sentence is a different, valid request) and printed a
+    // serialized validation list under the bubble.
     const h = createHarness();
-    h.fetchStub.routes.set("/api/tts", () => ttsErrorResponse(422, validationBody("temperature")));
+    h.fetchStub.routes.set("/api/tts", (call) => (
+        // One sentence's request is malformed; the reply itself is fine.
+        JSON.parse(call.body).text.startsWith("Bad")
+            ? ttsErrorResponse(422, validationBody("text"))
+            : ttsSuccessResponse()
+    ));
 
-    h.run('enqueueStreamingTTS("aria", "A speakable sentence.")');
+    h.run(`
+        enqueueStreamingTTS("aria", "Bad first sentence.");
+        enqueueStreamingTTS("aria", "Second speakable sentence.");
+        enqueueStreamingTTS("aria", "Third speakable sentence.");
+    `);
     await pipelineIdle(h);
 
-    // GIVEN a schema rejection (detail is a list, not a sentence),
-    // THEN the client cannot repair it mid-reply: the verdict is recorded, and
-    // the list shape reaches the note rather than being swallowed.
-    assert.equal(h.refused("M1"), true, "a schema 422 also ends this reply");
-    assert.ok(h.notes()[0].textContent.includes("Extra inputs are not permitted"), h.notes()[0].textContent);
+    // GIVEN a reply whose first sentence's request is rejected on shape,
+    // THEN the other two sentences are still requested and played:
+    assert.equal(h.ttsCalls().length, 3, "a bad request says nothing about its siblings");
+    assert.equal(h.refused("M1"), false, "no verdict for a failure that judged nothing");
+    // THEN no line reaches the bubble, and specifically no serialized list
+    // ever does — the list is log material, not bubble material:
+    assert.equal(h.notes().length, 0, "the user reads nothing about a shape failure");
+    assert.ok(h.loggedText("error").includes("String should have at least 1 characters"),
+        `the request bug must be logged where a developer will find it: ${h.loggedText("error")}`);
+});
+
+test("processAudioQueue_onARequestModelValidationFailure_showsNoNoteInNonStreamingMode", async () => {
+    const h = createHarness();
+    // Non-streaming mode holds one item per reply, so there is no sibling
+    // sentence to save — but the note is the same lie there: a persona whose
+    // request was rejected on shape has not been told it cannot speak.
+    h.fetchStub.routes.set("/api/tts", () => ttsErrorResponse(422, validationBody("text")));
+
+    h.run('enqueueTTS("aria", "A whole reply to synthesize in one go.")');
+    await playbackIdle(h);
+
+    assert.equal(h.get("audioQueue.length"), 0, "the item was processed");
+    assert.equal(h.refused("M1"), false, "a shape failure is not a voice verdict");
+    assert.equal(h.notes().length, 0, "no false verdict line under the reply");
+    assert.ok(h.loggedText("error").length > 0, "the failure is logged, not swallowed");
 });
 
 test("handleSSEEvent_secondResponderStart_lateFirstResponder422MutesNeitherTheNewReplyNorItsBubble", async () => {
@@ -781,7 +947,7 @@ test("handleSSEEvent_secondResponderStart_lateFirstResponder422MutesNeitherTheNe
         calls += 1;
         if (calls === 1) {
             await sleep(40); // A's synthesis is still running
-            return ttsErrorResponse(422, detailBody(UNSPEAKABLE_TEXT_DETAIL));
+            return ttsErrorResponse(422, UNSPEAKABLE_TEXT_BODY);
         }
         return ttsSuccessResponse();
     });
@@ -812,7 +978,7 @@ test("handleSSEEvent_secondResponderStart_lateFirstResponder422MutesNeitherTheNe
 
 test("resetTtsReplyState_withTheBreakerTripped_givesTheNextReplyAFreshVoice", async () => {
     const h = createHarness();
-    h.fetchStub.routes.set("/api/tts", () => ttsErrorResponse(422, detailBody(UNSPEAKABLE_TEXT_DETAIL)));
+    h.fetchStub.routes.set("/api/tts", () => ttsErrorResponse(422, UNSPEAKABLE_TEXT_BODY));
 
     h.run('enqueueStreamingTTS("aria", "A speakable sentence.")');
     await pipelineIdle(h);
@@ -837,7 +1003,7 @@ test("resetTtsReplyState_withTheBreakerTripped_givesTheNextReplyAFreshVoice", as
 
 test("handleSSEEvent_onStartEvent_clearsTheBreakerOfThePreviousReply", async () => {
     const h = createHarness();
-    h.fetchStub.routes.set("/api/tts", () => ttsErrorResponse(422, detailBody(UNSPEAKABLE_TEXT_DETAIL)));
+    h.fetchStub.routes.set("/api/tts", () => ttsErrorResponse(422, UNSPEAKABLE_TEXT_BODY));
 
     h.run('enqueueStreamingTTS("aria", "A speakable sentence.")');
     await pipelineIdle(h);
@@ -870,7 +1036,7 @@ test("handleSSEEvent_onStartEventInNonStreamingMode_stillClearsTheBreaker", asyn
     // removed — a set that only grows for the session, and a state.js comment
     // describing a clear site that did not run.
     const h = createHarness();
-    h.fetchStub.routes.set("/api/tts", () => ttsErrorResponse(422, detailBody(MISSING_TRANSCRIPT_DETAIL)));
+    h.fetchStub.routes.set("/api/tts", () => ttsErrorResponse(422, MISSING_TRANSCRIPT_BODY));
 
     // GIVEN a non-streaming reply whose voice the app refused,
     h.run('enqueueTTS("Alex", "The whole reply, spoken in one piece.")');
@@ -903,7 +1069,7 @@ test("processAudioQueue_onAMissingRequiredTranscript422_printsTheReasonUnderTheR
     // an app 422 saying this persona has no reference transcript while the
     // connected engine demands one,
     const h = createHarness();
-    h.fetchStub.routes.set("/api/tts", () => ttsErrorResponse(422, detailBody(MISSING_TRANSCRIPT_DETAIL)));
+    h.fetchStub.routes.set("/api/tts", () => ttsErrorResponse(422, MISSING_TRANSCRIPT_BODY));
 
     h.run('enqueueTTS("Alex", "The whole reply, spoken in one piece.")');
     await playbackIdle(h);
@@ -947,7 +1113,7 @@ test("processTTSRequests_onTheMissingRequiredTranscript422_showsTheAppSentenceAn
     // ref.txt: TalkWithMe answers the 422 itself, before the engine is asked,
     // and the sentence names the persona, the engine, and where to fix it.
     const h = createHarness();
-    h.fetchStub.routes.set("/api/tts", () => ttsErrorResponse(422, detailBody(MISSING_TRANSCRIPT_DETAIL)));
+    h.fetchStub.routes.set("/api/tts", () => ttsErrorResponse(422, MISSING_TRANSCRIPT_BODY));
 
     h.run(`
         enqueueStreamingTTS("Alex", "First speakable sentence.");
@@ -969,7 +1135,7 @@ test("processTTSRequests_onTheMissingRequiredTranscript422_showsTheAppSentenceAn
 
 test("fetchTTS_onHttp422_rejectsWithStatusAndTheEngineDetailVerbatim", async () => {
     const h = createHarness();
-    h.fetchStub.routes.set("/api/tts", () => ttsErrorResponse(422, detailBody(UNSPEAKABLE_TEXT_DETAIL)));
+    h.fetchStub.routes.set("/api/tts", () => ttsErrorResponse(422, UNSPEAKABLE_TEXT_BODY));
 
     // GIVEN a 422 whose body is the engine's sentence for the user,
     // THEN the caller gets the status AND the words.
@@ -979,16 +1145,37 @@ test("fetchTTS_onHttp422_rejectsWithStatusAndTheEngineDetailVerbatim", async () 
     assert.ok(err, "a non-2xx response must reject");
     assert.equal(err.status, 422, "status attached");
     assert.equal(err.detail, UNSPEAKABLE_TEXT_DETAIL, "detail attached verbatim");
+    // The class is what the pipeline acts on, and it travels beside the
+    // sentence rather than being inferred from it (issue #173).
+    assert.equal(err.refusal, REFUSAL_ENGINE, "the server's refusal class attached");
 });
 
-test("fetchTTS_onHttp422WithAValidationList_serializesTheListIntoTheDetail", async () => {
+test("fetchTTS_onAVerdictBodyWithNoSentence_stillCarriesTheRefusalClass", async () => {
     const h = createHarness();
-    h.fetchStub.routes.set("/api/tts", () => ttsErrorResponse(422, validationBody("temperature")));
+    // A body that declares a verdict and quotes nothing: the class alone is
+    // enough to trip the breaker, and the note falls back to the error message
+    // rather than printing "undefined" under the reply.
+    h.fetchStub.routes.set("/api/tts", () => ttsErrorResponse(422, { refusal: REFUSAL_PERSONA_FILES }));
 
     const err = await h.get("fetchTTS('aria', 'Hello.', 'M1')").then(() => null, (e) => e);
 
+    assert.equal(err.refusal, REFUSAL_PERSONA_FILES, "class attached with no sentence");
+    assert.ok(!String(err.detail).includes("undefined"), err.detail);
+});
+
+test("fetchTTS_onAValidationListBody_serializesItForTheLogAndCarriesNoRefusal", async () => {
+    const h = createHarness();
+    h.fetchStub.routes.set("/api/tts", () => ttsErrorResponse(422, validationBody("text")));
+
+    const err = await h.get("fetchTTS('aria', 'Hello.', 'M1')").then(() => null, (e) => e);
+
+    // The serialized list stays on the error as LOG material (it names the
+    // offending field, which is the whole diagnostic there) — what changed in
+    // #173 is that nothing puts it on screen any more, because `refusal` says
+    // this failure judged nothing about the voice.
     assert.equal(err.status, 422, "status attached");
-    assert.ok(err.detail.includes("Extra inputs are not permitted"), err.detail);
+    assert.ok(err.detail.includes("String should have at least 1 characters"), err.detail);
+    assert.equal(err.refusal, null, "a body with no refusal class carries no verdict");
 });
 
 test("fetchTTS_onANonJsonErrorBody_degradesToTheStatus", async () => {
@@ -999,6 +1186,7 @@ test("fetchTTS_onANonJsonErrorBody_degradesToTheStatus", async () => {
 
     assert.equal(err.status, 502, "status attached");
     assert.equal(err.detail, "HTTP 502", "a proxy HTML page degrades to the status");
+    assert.equal(err.refusal, null, "an unreadable body cannot be a verdict either");
 });
 
 test("fetchTTS_onSuccessWithNoAudio_returnsNullAndNeverThrows", async () => {
@@ -1032,6 +1220,130 @@ test("fetchTTS_onSuccess_decodesQueuesAndPersistsTheAudio", async () => {
     assert.equal(h.notes().length, 0, "no note on success");
     assert.equal(h.get("audioBufferQueue.length"), 0, "the playback queue drained");
     assert.equal(h.get("isFetchingTTS"), false, "the fetch pipeline is idle");
+});
+
+/* ==========================================================================
+    The shape of the rule itself (grep guards)
+    ========================================================================== */
+
+test("ttsScript_neverClassifiesAnHttpStatusCodeAndNoScriptSpecialCases422", () => {
+    // Issue #173 in two regexes. The browser used to answer "is this persona's
+    // voice gone?" with `err.status === 422`, and no number can carry that
+    // question: /api/tts 422s for a verdict AND for a request body Pydantic
+    // rejected before the handler ran. The server now states the class and the
+    // client reads it, so a status comparison is the bug walking back in —
+    // grep for it rather than trusting a code review.
+    //
+    // Two scopes, because status checks are legal elsewhere: the file that
+    // owns the TTS pipeline may not compare a status at all, and nowhere in
+    // static/ may anything special-case 422 (chat.js legitimately branches on
+    // 404 when deleting a message; settings.js on a 422 from the capabilities
+    // PROBE, which is a form error the user can fix in the field).
+    // Any way a status can be classified, not just the one shape the bug had.
+    // Equality was the starting point; `>= 400` and `switch (err.status)` are
+    // what someone "simplifying" the check writes next, and a guard that lets
+    // the refactor through guards nothing. Range comparisons, membership, and
+    // switch-on-status are all the same decision made louder.
+    const statusComparison = /\.status\s*(?:[=!]==?|[<>]=?|\bin\b)/;
+    const statusSwitch = /switch\s*\(\s*[\w.]*\.status\s*\)/;
+    const anyStatusJudgement = (line) => statusComparison.test(line) || statusSwitch.test(line);
+    const overload = /\.status\s*(?:[=!]==?|[<>]=?\s*)\s*422|case\s+422\b/;
+
+    const offendingLines = (source, isOffending) => source.split("\n")
+        .map((line, i) => ({ line, n: i + 1 }))
+        .filter(({ line }) => !line.trim().startsWith("//") && isOffending(line));
+
+    // Self-check first: a guard that matches nothing is indistinguishable from
+    // a fix. Feed each forbidden shape through the predicate and demand it
+    // flinch, including the two the original regex waved through.
+    for (const shape of [
+        "if (err.status === 422) { trip(); }",
+        "if (err.status == 502) return;",
+        "if (err.status !== 422) { keepGoing(); }",
+        "if (err.status >= 422) { trip(); }",
+        "if (err.status > 499) { retry(); }",
+        "switch (err.status) { case 422: trip(); }",
+    ]) {
+        assert.ok(anyStatusJudgement(shape), `the guard must reject: ${shape}`);
+    }
+    assert.ok(!anyStatusJudgement('if (isVoiceVerdict(err)) { trip(); }'),
+        "the sanctioned predicate must not read as a status judgement");
+    assert.ok(!anyStatusJudgement("console.error('failed:', err.status, err.detail);"),
+        "reading a status for a LOG LINE is legal — only deciding from one is not");
+
+    const ttsSource = fs.readFileSync(path.join(__dirname, "..", "static", "tts.js"), "utf8");
+    assert.deepEqual(offendingLines(ttsSource, anyStatusJudgement), [],
+        "static/tts.js must decide the voice verdict from the server's `refusal` "
+        + "class, never from an HTTP status (issue #173)");
+
+    // Every script is swept by default; an exemption has to be written down
+    // with the route whose 422 it legitimately reads. settings.js is the one
+    // today: it branches on the 422 from GET /api/tts/capabilities?base_url=…
+    // ("that url has no scheme"), a form error on the Servers modal for a
+    // route that never answers a synthesis and never claims anything about a
+    // persona's voice.
+    const LEGAL_422_READERS = new Set(["settings.js"]);
+
+    for (const file of fs.readdirSync(path.join(__dirname, "..", "static"))) {
+        if (!file.endsWith(".js") || LEGAL_422_READERS.has(file)) continue;
+        const source = fs.readFileSync(path.join(__dirname, "..", "static", file), "utf8");
+        assert.deepEqual(offendingLines(source, (line) => overload.test(line)), [],
+            `${file} special-cases HTTP 422, a number /api/tts reserves for two unrelated things (issue #173)`);
+    }
+
+    // And the structural half: every verdict handler must sit behind the one
+    // predicate. A second call site that re-derives the decision "next to" the
+    // helper is how the rule gets copied a second time.
+    const handlerCalls = (ttsSource.match(/^\s+handleUnvoiceableVerdict\(item, err\);/gm) || []).length;
+    const guarded = (ttsSource.match(/if\s*\(\s*isVoiceVerdict\(err\)\s*\)/g) || []).length;
+    assert.ok(handlerCalls >= 2,
+        `both playback pipelines must be able to record a verdict, found ${handlerCalls}`);
+    assert.equal(guarded, handlerCalls,
+        "every circuit-breaker call must be guarded by isVoiceVerdict(err)");
+});
+
+test("refusalClassFixtures_matchTheConstantsTheBackendSends", () => {
+    // The client acts on a string the backend writes. Nothing in this repo
+    // would notice if one side renamed "engine" to "engine_verdict": the
+    // fixtures here would keep describing the OLD wire format, every verdict
+    // test would still pass against those fixtures, and the real browser would
+    // stop seeing verdicts altogether (silent muting on one side, silent
+    // re-asking on the other). So the fixtures are checked against the source
+    // of the truth.
+    const router = fs.readFileSync(
+        path.join(__dirname, "..", "app", "routers", "tts.py"), "utf8");
+    const backendConstant = (name) => {
+        const match = router.match(new RegExp(`^${name} = "([^"]+)"`, "m"));
+        assert.ok(match, `app/routers/tts.py no longer defines ${name} — the client's `
+            + "refusal classes and this suite's fixtures must be updated together");
+        return match[1];
+    };
+
+    assert.equal(REFUSAL_ENGINE, backendConstant("REFUSAL_ENGINE"));
+    assert.equal(REFUSAL_PERSONA_FILES, backendConstant("REFUSAL_PERSONA_FILES"));
+
+    // ...and the two bodies the verdict tests drive the pipeline with really
+    // carry those classes: a fixture that lost its `refusal` would quietly
+    // turn every "the breaker tripped" assertion into "it did not".
+    assert.equal(UNSPEAKABLE_TEXT_BODY.refusal, REFUSAL_ENGINE);
+    assert.equal(NO_SPEECH_IN_CLIP_BODY.refusal, REFUSAL_ENGINE);
+    assert.equal(MISSING_TRANSCRIPT_BODY.refusal, REFUSAL_PERSONA_FILES);
+
+    // And the three non-verdict shapes must stay distinguishable, because the
+    // client's rule is "a present, non-empty class" and the fixtures are what
+    // teach it the difference. `detailBody` is the ROUTER answering "not a
+    // verdict" (key present, null — app/routers/tts.py::_failure_body always
+    // stamps it); `validationBody` is FastAPI answering before the router ran
+    // (key absent); a non-JSON proxy page is neither, and reaches the client as
+    // `{ detail: "HTTP <status>", refusal: null }`. A fixture that drifted into
+    // another shape would leave the "keep asking" tests asserting a wire format
+    // nobody emits.
+    assert.equal("refusal" in detailBody("CUDA out of memory"), true,
+        "the router's own non-verdict body carries the key with a null value");
+    assert.equal(detailBody("CUDA out of memory").refusal, null,
+        "null means 'we answered, this is not a verdict' — never a class");
+    assert.equal("refusal" in validationBody("text"), false,
+        "the validation fixture must stay the UNLABELLED 422 (the router never ran)");
 });
 
 /* ==========================================================================

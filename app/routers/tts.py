@@ -40,20 +40,50 @@ router = APIRouter(tags=["tts"])
 # 422 (this text has nothing the engine can speak) and 400 (this persona's
 # reference clip has no recognizable speech inside the transcribable window).
 # Both are permanent verdicts about app-side configuration, so both are
-# forwarded as an app 422 — the frontend's "show the engine's reason, stop
-# asking for the rest of this reply" signal. Mapping the clip 400 to 502 kept
-# it out of that signal path, and LuxTTS raises it *after* encode_prompt
-# (Whisper ASR, inside the synthesis lock), so a client that kept asking paid
-# a near-full synthesis slot per sentence, per reply, forever. The engine's
-# own sentence carries the fix ("raise prompt_duration"), so the status only
-# has to classify permanence, not blame.
+# forwarded as an app 422 AND both carry a `refusal` class in the body (see
+# _voice_verdict_refusal). Mapping the clip 400 to 502 kept it out of that
+# signal path, and LuxTTS raises it *after* encode_prompt (Whisper ASR, inside
+# the synthesis lock), so a client that kept asking paid a near-full synthesis
+# slot per sentence, per reply, forever. The engine's own sentence carries the
+# fix ("raise prompt_duration"), so this table only has to classify
+# permanence, not blame.
+#
+# This is also the single source of the permanence decision: _http_status_for_failure()
+# and _voice_verdict_refusal() both read it, so the number a caller sees and
+# the class the caller acts on can never disagree.
 ENGINE_REFUSAL_STATUSES = (400, 422)
 
+# The machine-readable half of every POST /api/tts failure body, for the one
+# decision the browser makes about a synthesis: "is this persona's voice
+# permanently unavailable, so should the rest of this reply stop asking?"
+#
+# `detail` is the sentence for the human. `refusal` is the fact for the client,
+# because the HTTP status alone is NOT one: /api/tts answers 422 both for the
+# verdicts below and for FastAPI rejecting the request BODY (TTSRequest's
+# `text` is min_length=1) before this handler runs at all. Issue #173: the
+# browser tripped its breaker on `status === 422` either way, so one
+# malformed sentence muted a healthy reply and printed a serialized validation
+# list under the bubble with a sentence claiming the voice was unavailable.
+# The app already tells those two apart (`tts_client._is_content_refusal`);
+# the browser was re-deriving the difference from `typeof detail` — a second
+# copy of the rule, in a second language, guessing at a fact the server had
+# all along. It now reads the fact.
+#
+# A refusal value names WHO decided, for the log and the console:
+#   "engine"        — the engine's own pre-flight (422, or the clip 400),
+#                     forwarded: this text/clip cannot be voiced as configured.
+#   "persona_files" — this app's own pre-flight: the persona is missing a file
+#                     the connected engine demands (ref.txt).
+REFUSAL_ENGINE = "engine"
+REFUSAL_PERSONA_FILES = "persona_files"
+
 # The one place a SynthesisOutcome becomes a status code for OUR caller. The
-# axis is permanence, exactly as above and exactly what the frontend acts on:
-# 422 = "print this reason, stop asking for the rest of the reply", 502 =
-# "engine hiccup, ask again on the next sentence", 503 = "this app is not
-# configured to speak at all, and asking again changes nothing".
+# axis is permanence, exactly as above: 422 = "print this reason, stop asking
+# for the rest of the reply", 502 = "engine hiccup, ask again on the next
+# sentence", 503 = "this app is not configured to speak at all, and asking
+# again changes nothing". The browser does not read that axis off the number
+# any more (it reads `refusal`, which _voice_verdict_refusal derives from the
+# same table); the number still carries it for logs, proxies, and curl.
 #
 # _http_status_for_failure() SUBSCRIPTS this table rather than calling
 # .get(outcome, 502) on purpose: an outcome the table has never heard of raises
@@ -80,6 +110,50 @@ def _http_status_for_failure(result: SynthesisResult) -> int:
     if result.outcome is SynthesisOutcome.ENGINE_VERDICT:
         return 422 if result.engine_status in ENGINE_REFUSAL_STATUSES else 502
     return _FAILURE_HTTP_STATUS[result.outcome]
+
+
+def _voice_verdict_refusal(result: SynthesisResult) -> Optional[str]:
+    """The refusal class this result announces, or None when it is no verdict.
+
+    Non-None means: "asking again will not help — this is a permanent statement
+    about this persona's voice as configured", which is exactly the client's
+    circuit-breaker question. Every other failure (an engine hiccup, a dead
+    CUDA box, the feature switched off, this app giving up with no engine
+    verdict in hand) answers None and must leave the client asking on the next
+    sentence.
+
+    Note what that makes of a 422 that SURVIVES the stale-document self-heal
+    (`tts_client._self_heal_retry` returns the retry response verbatim, so it
+    arrives here as an ENGINE_VERDICT with engine_status 422): it is labelled
+    REFUSAL_ENGINE, not None. That is intended. The engine was asked twice,
+    the second time with a payload rebuilt from a freshly fetched capabilities
+    document, and refused both times — which is a permanent statement about the
+    configured `tts.parameters`, and every remaining sentence of the reply is
+    built from those same parameters, so the breaker's prediction holds.
+    `docs/feature_tts_voice_verdict.md` records the same ruling; only its
+    wording was poor, and `tts_client.PAYLOAD_REJECTION_DETAIL` fixes that.
+
+    Deliberately derived from the same `ENGINE_REFUSAL_STATUSES` table the
+    status code comes from: the number and the class are one decision read two
+    ways, never two rules that can drift.
+    """
+    if result.outcome is SynthesisOutcome.LOCAL_REFUSAL:
+        return REFUSAL_PERSONA_FILES
+    if (result.outcome is SynthesisOutcome.ENGINE_VERDICT
+            and result.engine_status in ENGINE_REFUSAL_STATUSES):
+        return REFUSAL_ENGINE
+    return None
+
+
+def _failure_body(detail: str, refusal: Optional[str]) -> dict:
+    """One POST /api/tts failure body: the sentence for the user, the class for the client.
+
+    `refusal` is always present as a KEY — null included — so a body that lacks
+    the key altogether is provably not this router's answer (FastAPI's request
+    validation, a reverse proxy's error page, someone else's server). That
+    distinction is the client's, and it is free here.
+    """
+    return {"detail": detail, "refusal": refusal}
 
 
 def _capabilities_for_current_engine() -> Optional[dict]:
@@ -196,19 +270,37 @@ async def tts_proxy(req: TTSRequest):
 
     Looks up the persona's reference audio and transcript, then calls
     the TTS server's /synthesize endpoint.
+
+    Every failure body this handler produces is `{"detail": <sentence>,
+    "refusal": <class or null>}`: the sentence is for the user's bubble, the
+    class tells the client whether its circuit breaker applies at all. A 4xx/5xx
+    body WITHOUT that key was never this handler's answer (FastAPI rejected the
+    request model, a proxy answered instead) — see _failure_body().
     """
     config = get_personas()
     persona = next((p for p in config.personas if p.name == req.persona_name), None)
     if not persona:
-        return JSONResponse(status_code=404, content={"detail": f"Persona '{req.persona_name}' not found"})
+        return JSONResponse(
+            status_code=404,
+            content=_failure_body(f"Persona '{req.persona_name}' not found", None),
+        )
 
     # The persona axis: does this persona have a reference clip at all? A
     # transcript is NOT part of this question — that requirement belongs to the
     # engine and is asked of the capabilities document below (issue #164).
+    #
+    # Deliberately NO refusal class: this is permanent, but it is not a verdict
+    # the client has to act on, because the client never asks — chat.js gates
+    # enqueueing on the persona summary's `tts_capable` flag and the sidebar
+    # already badges the persona (utils.js personaVoiceBlock). Labeling a 400
+    # would hand the browser a breaker to trip on a request that is a client
+    # bug or a hand-built probe — issue #173's mistake wearing another number.
     if not persona.tts_capable:
         return JSONResponse(
             status_code=400,
-            content={"detail": "This persona has no reference audio for voice cloning"},
+            content=_failure_body(
+                "This persona has no reference audio for voice cloning", None
+            ),
         )
 
     # A non-cloning engine (its capabilities doc says reference_audio: null)
@@ -220,7 +312,9 @@ async def tts_proxy(req: TTSRequest):
     if engine_doc is not None and not doc_supports_reference_audio(engine_doc):
         return JSONResponse(
             status_code=503,
-            content={"detail": "The connected TTS engine does not support reference-audio voice cloning"},
+            content=_failure_body(
+                "The connected TTS engine does not support reference-audio voice cloning", None
+            ),
         )
 
     # Load reference audio and transcript
@@ -228,20 +322,26 @@ async def tts_proxy(req: TTSRequest):
     transcript = read_transcript(persona.reference_audio_transcript)
 
     if not audio_b64:
-        return JSONResponse(status_code=503, content={"detail": "TTS reference audio file is unreadable"})
+        return JSONResponse(
+            status_code=503,
+            content=_failure_body("TTS reference audio file is unreadable", None),
+        )
 
     # The engine axis, answered from the document (warm cache only — synthesize()
     # repeats this check against the doc it has in hand, which is the backstop
-    # for a cold slot). Answering 422 rather than 400 is load-bearing: 422 is
-    # the frontend's "permanent verdict about this persona's voice" signal, which
-    # prints the reason under the reply and stops re-asking for the rest of it.
-    # Refusing locally also keeps a doomed request off the engine: a missing
-    # required field is a FastAPI validation 422, which the client would read as
-    # "stale document" and self-heal-retry once per sentence.
+    # for a cold slot). Answering 422 + REFUSAL_PERSONA_FILES is load-bearing:
+    # that pair is the frontend's "permanent verdict about this persona's voice"
+    # signal, which prints the reason under the reply and stops re-asking for
+    # the rest of it. Refusing locally also keeps a doomed request off the
+    # engine: a missing required field is a FastAPI validation 422, which the
+    # app would read as "stale document" and self-heal-retry once per sentence.
     refusal = reference_text_refusal(persona.name, engine_doc, transcript)
     if refusal:
         warn_missing_reference_text(get_settings().tts.base_url, persona.name)
-        return JSONResponse(status_code=422, content={"detail": refusal})
+        return JSONResponse(
+            status_code=422,
+            content=_failure_body(refusal, REFUSAL_PERSONA_FILES),
+        )
 
     result = await synthesize(
         text=req.text,
@@ -262,5 +362,5 @@ async def tts_proxy(req: TTSRequest):
     # decided by a sentence again.
     return JSONResponse(
         status_code=_http_status_for_failure(result),
-        content={"detail": result.reason()},
+        content=_failure_body(result.reason(), _voice_verdict_refusal(result)),
     )

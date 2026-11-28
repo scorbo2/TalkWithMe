@@ -5,7 +5,9 @@ monkeypatched at the router's import site; the reference-file handling is
 exercised for real against tmp_path files.
 """
 
+import ast
 import base64
+from pathlib import Path
 
 import httpx
 import pytest
@@ -148,27 +150,31 @@ class TestTTSHealth:
 # TTS proxy
 # ---------------------------------------------------------------------------
 
+def _persona_with_reference_files(tmp_path, name="Luna", transcript=True):
+    """A persona whose reference files really exist under tmp_path.
+
+    `transcript=False` builds the issue-#164 persona: a real clip and no
+    ref.txt at all, which is exactly what a LuxTTS user uploads.
+    """
+    wav = tmp_path / f"{name.lower()}.wav"
+    wav.write_bytes(b"RIFF-ref")
+    txt = None
+    if transcript:
+        txt = tmp_path / f"{name.lower()}.txt"
+        txt.write_text("a reference transcript", encoding="utf-8")
+    return Persona(
+        name=name,
+        system_prompt=f"You are {name}.",
+        router_hints="philosophy",
+        reference_audio=str(wav),
+        reference_audio_transcript=str(txt) if txt else None,
+        reference_audio_language="en",
+    )
+
+
 class TestTTSProxy:
     def _tts_capable_persona(self, tmp_path, transcript=True):
-        """A persona whose reference files really exist under tmp_path.
-
-        `transcript=False` builds the issue-#164 persona: a real clip and no
-        ref.txt at all, which is exactly what a LuxTTS user uploads.
-        """
-        wav = tmp_path / "luna.wav"
-        wav.write_bytes(b"RIFF-ref")
-        txt = None
-        if transcript:
-            txt = tmp_path / "luna.txt"
-            txt.write_text("a reference transcript", encoding="utf-8")
-        return Persona(
-            name="Luna",
-            system_prompt="You are Luna.",
-            router_hints="philosophy",
-            reference_audio=str(wav),
-            reference_audio_transcript=str(txt) if txt else None,
-            reference_audio_language="en",
-        )
+        return _persona_with_reference_files(tmp_path, transcript=transcript)
 
     def _cache_doc(self, monkeypatch, doc):
         """Warm the capabilities slot for the router's own base_url."""
@@ -696,6 +702,355 @@ class TestTTSProxy:
         assert resp.status_code == 503
         assert "cloning" in resp.json()["detail"]
         assert calls == []
+
+
+# ---------------------------------------------------------------------------
+# The refusal class: issue #173
+#
+# Every POST /api/tts failure body carries `detail` (the sentence for the
+# bubble) AND `refusal` (the fact the browser's circuit breaker acts on). The
+# status code is NOT that fact: the same 422 means "this voice cannot be had"
+# when this handler decided it, and "your request body is malformed" when
+# Pydantic decided it before the handler ran. The frontend used to trip on
+# either, which muted healthy replies and printed a serialized validation list
+# under a bubble whose voice was fine.
+# ---------------------------------------------------------------------------
+
+class TestTTSRefusalClasses:
+    def _cache_doc(self, monkeypatch, doc):
+        monkeypatch.setattr(tts_client, "_capabilities_base_url", "http://tts.local:5500")
+        monkeypatch.setattr(tts_client, "_capabilities_cache", doc)
+
+    # -- the two 422s that mean opposite things ---------------------------
+
+    def test_request_model_validation_422_carries_no_refusal_class(
+        self, client, monkeypatch, tmp_path
+    ):
+        # The issue #173 reproduction, run against the real request model:
+        # GIVEN a synthesis request whose `text` is blank (TTSRequest declares
+        # min_length=1) for a persona that exists and is configured,
+        _persona_cache(monkeypatch, PersonasConfig(
+            personas=[_persona_with_reference_files(tmp_path)]))
+        _active_tts_settings(monkeypatch)
+
+        # WHEN the request is posted, THEN the handler never runs (no engine,
+        # no persona files consulted) and the answer is the very 422 the
+        # browser used to read as a permanent voice verdict:
+        resp = client.post("/api/tts", json={"text": "", "persona_name": "Luna"})
+
+        assert resp.status_code == 422
+        body = resp.json()
+        # THEN it is identified as what it is: a FastAPI validation list, and
+        # NOT a refusal this app authored. `refusal` is absent rather than null
+        # because this body was built by FastAPI's validation handler, not by
+        # _failure_body() — and "the key is missing" is exactly the signal the
+        # client reads as "the answer did not come from the TTS router".
+        assert isinstance(body["detail"], list), "a validation failure, not a sentence"
+        assert "loc" in body["detail"][0]
+        assert "refusal" not in body, (
+            "a 422 this app never authored must not be labelled as a verdict"
+        )
+
+    def test_engine_content_refusal_declares_the_engine_refusal_class(
+        self, client, monkeypatch, tmp_path
+    ):
+        # GIVEN the engine's own pre-flight: this text has nothing it can speak.
+        _persona_cache(monkeypatch, PersonasConfig(
+            personas=[_persona_with_reference_files(tmp_path)]))
+        _active_tts_settings(monkeypatch)
+
+        async def refusing_synthesize(**kwargs):
+            return make_engine_verdict(422, "text contains nothing this engine can speak: ...")
+
+        monkeypatch.setattr(tts_router, "synthesize", refusing_synthesize)
+
+        resp = client.post("/api/tts", json={"text": "|---|---|", "persona_name": "Luna"})
+
+        # THEN the client may mute the rest of the reply over it:
+        assert resp.status_code == 422
+        assert resp.json()["refusal"] == tts_router.REFUSAL_ENGINE
+
+    def test_engine_clip_refusal_is_forwarded_with_the_engine_refusal_class(
+        self, client, monkeypatch, tmp_path
+    ):
+        # The clip 400 reaches the caller as an app 422 (issue #169), so its
+        # refusal class has to travel with it: the status was re-decided here,
+        # and a body that only carried the number would lose the verdict on the
+        # way through the re-mapping.
+        _persona_cache(monkeypatch, PersonasConfig(
+            personas=[_persona_with_reference_files(tmp_path)]))
+        _active_tts_settings(monkeypatch)
+
+        async def refusing_synthesize(**kwargs):
+            return make_engine_verdict(
+                400, "reference audio contains no recognizable speech: raise prompt_duration")
+
+        monkeypatch.setattr(tts_router, "synthesize", refusing_synthesize)
+
+        resp = client.post("/api/tts", json={"text": "hello there", "persona_name": "Luna"})
+
+        assert resp.status_code == 422
+        assert resp.json()["refusal"] == tts_router.REFUSAL_ENGINE
+
+    def test_missing_required_transcript_declares_the_persona_files_refusal_class(
+        self, client, monkeypatch, tmp_path
+    ):
+        # This app's own pre-flight, before any engine is asked: the persona is
+        # missing ref.txt and the connected engine demands it.
+        _persona_cache(monkeypatch, PersonasConfig(
+            personas=[_persona_with_reference_files(tmp_path, transcript=False)]))
+        _active_tts_settings(monkeypatch)
+        doc = make_minimal_capabilities_doc(engine="breeze-blue")
+        for spec in doc["parameters"]:
+            if spec["name"] == "reference_text":
+                spec["required"] = True
+        self._cache_doc(monkeypatch, doc)
+
+        async def failing_synthesize(**kwargs):
+            raise AssertionError("the refusal must happen before synthesis")
+
+        monkeypatch.setattr(tts_router, "synthesize", failing_synthesize)
+
+        resp = client.post("/api/tts", json={"text": "hi", "persona_name": "Luna"})
+
+        assert resp.status_code == 422
+        assert resp.json()["refusal"] == tts_router.REFUSAL_PERSONA_FILES
+
+    # -- what is NOT a verdict -------------------------------------------
+
+    def test_engine_hiccup_502_declares_no_refusal_class(self, client, monkeypatch, tmp_path):
+        # GIVEN an engine that merely fell over (CUDA out of memory),
+        _persona_cache(monkeypatch, PersonasConfig(
+            personas=[_persona_with_reference_files(tmp_path)]))
+        _active_tts_settings(monkeypatch)
+
+        async def failing_synthesize(**kwargs):
+            return make_engine_verdict(500, "CUDA out of memory")
+
+        monkeypatch.setattr(tts_router, "synthesize", failing_synthesize)
+
+        resp = client.post("/api/tts", json={"text": "hi", "persona_name": "Luna"})
+
+        # THEN the key IS present (this router answered) and IS null: the next
+        # sentence of the reply must still be asked. A null value and a missing
+        # key both mean "not a verdict" to the client; only the second one says
+        # "and this answer did not come from us".
+        assert resp.status_code == 502
+        body = resp.json()
+        assert "refusal" in body
+        assert body["refusal"] is None
+
+    def test_inactive_503_declares_no_refusal_class(self, client, monkeypatch, tmp_path):
+        # "This app is not configured to speak at all" is permanent, but it is
+        # not a statement about one persona's voice — and the client's breaker
+        # is per-message, so reading it as a verdict would blame the persona for
+        # a settings toggle.
+        _persona_cache(monkeypatch, PersonasConfig(
+            personas=[_persona_with_reference_files(tmp_path)]))
+        monkeypatch.setattr(app_config, "_settings_cache",
+                            make_settings(tts=TTSConfig(enabled=False, base_url=None)))
+
+        resp = client.post("/api/tts", json={"text": "hi", "persona_name": "Luna"})
+
+        assert resp.status_code == 503
+        assert resp.json()["refusal"] is None
+
+    def test_persona_without_reference_clip_400_declares_no_refusal_class(
+        self, client, monkeypatch, tmp_path
+    ):
+        # Permanent, and still deliberately unlabelled: the frontend never asks
+        # for a persona without a clip (chat.js gates enqueueing on `tts_capable`
+        # and the sidebar badges it), so a 400 here means a client bug or a
+        # hand-built probe — labelling it would re-run issue #173 with the
+        # number changed.
+        _persona_cache(monkeypatch, PersonasConfig(
+            personas=[_persona_with_reference_files(tmp_path, transcript=False)]))
+        personas = app_config.get_personas()
+        personas.personas[0].reference_audio = None
+
+        resp = client.post("/api/tts", json={"text": "hi", "persona_name": "Luna"})
+
+        assert resp.status_code == 400
+        assert resp.json()["refusal"] is None
+
+    # -- the classification itself ---------------------------------------
+
+    def test_every_synthesis_outcome_declares_whether_it_is_a_voice_verdict(self):
+        # The refusal-class twin of test_every_synthesis_outcome_is_classified_
+        # by_the_router: the client derives its one behavioural decision from
+        # this mapping, so an outcome that reaches it unannounced must be a
+        # decision made here, not a fall-through to None.
+        expected = {
+            # Success never reaches the classifier; listed to keep the walk
+            # exhaustive (an outcome that COULD be a verdict cannot hide).
+            SynthesisOutcome.AUDIO: None,
+            SynthesisOutcome.ENGINE_VERDICT: tts_router.REFUSAL_ENGINE,
+            SynthesisOutcome.LOCAL_REFUSAL: tts_router.REFUSAL_PERSONA_FILES,
+            SynthesisOutcome.LOCAL_FAILURE: None,
+            SynthesisOutcome.INACTIVE: None,
+        }
+        assert set(expected) == set(SynthesisOutcome), (
+            "every SynthesisOutcome needs a row in this test: say whether it "
+            "is a permanent voice verdict for the client's circuit breaker"
+        )
+
+        permanent_engine_verdict = make_engine_verdict(422, "nothing to speak")
+        transient_engine_verdict = make_engine_verdict(500, "CUDA out of memory")
+        audio = make_synthesis_audio()
+        local_refusal = SynthesisResult(
+            outcome=SynthesisOutcome.LOCAL_REFUSAL, detail="no transcript")
+        local_failure = SynthesisResult(
+            outcome=SynthesisOutcome.LOCAL_FAILURE, detail="engine unreachable")
+        inactive = SynthesisResult(outcome=SynthesisOutcome.INACTIVE, detail="off")
+
+        # GIVEN each outcome as the router receives it,
+        # THEN the declared class is the one the client is told, and an
+        # ENGINE_VERDICT's class follows the SAME permanence table its status
+        # code does (one decision, read two ways).
+        assert tts_router._voice_verdict_refusal(audio) == expected[SynthesisOutcome.AUDIO]
+        assert (tts_router._voice_verdict_refusal(permanent_engine_verdict)
+                == expected[SynthesisOutcome.ENGINE_VERDICT])
+        assert tts_router._voice_verdict_refusal(transient_engine_verdict) is None
+        assert (tts_router._voice_verdict_refusal(local_refusal)
+                == expected[SynthesisOutcome.LOCAL_REFUSAL])
+        assert tts_router._voice_verdict_refusal(local_failure) is None
+        assert tts_router._voice_verdict_refusal(inactive) is None
+
+    def test_every_failure_body_this_router_authors_carries_the_refusal_key(
+        self, client, monkeypatch, tmp_path
+    ):
+        # The invariant the client's rule rests on: a POST /api/tts failure from
+        # THIS app always carries the key (null included), so a body without it
+        # is provably somebody else's answer. Written as a walk over the
+        # handler's own exits, because a failure site that forgets the helper
+        # would otherwise just make one more 422 look like a proxy's. The
+        # companion AST guard below is what makes the walk's coverage claim
+        # true: it fails if an exit exists that this list does not drive.
+        _persona_cache(monkeypatch, PersonasConfig(
+            personas=[_persona_with_reference_files(tmp_path, transcript=False)]))
+        _active_tts_settings(monkeypatch)
+        cloning_doc = make_minimal_capabilities_doc(engine="luxTTS")
+        self._cache_doc(monkeypatch, cloning_doc)
+
+        async def refusing_synthesize(**kwargs):
+            return make_engine_verdict(422, "text contains nothing this engine can speak")
+
+        async def hiccup_synthesize(**kwargs):
+            return make_engine_verdict(500, "CUDA out of memory")
+
+        def post():
+            return client.post("/api/tts", json={"text": "hi", "persona_name": "Luna"})
+
+        monkeypatch.setattr(tts_router, "synthesize", refusing_synthesize)
+        # Every exit of tts_proxy(), one per label. Each pins its own status:
+        # a set-up that quietly lands on a different exit would otherwise walk
+        # a body nobody meant to check (and the AST guard names the exit whose
+        # label is missing here).
+        labelled = {
+            "engine-verdict-422": (422, post()),
+            "unknown-persona-404": (404, client.post(
+                "/api/tts", json={"text": "hi", "persona_name": "Nobody"})),
+        }
+        monkeypatch.setattr(tts_router, "synthesize", hiccup_synthesize)
+        labelled["hiccup-502"] = (502, post())
+
+        # The two 503s the handler answers before synthesis is even possible:
+        # an engine that cannot clone at all, and a persona whose clip is
+        # configured but unreadable. Both are permanent, both are about the app
+        # or the engine rather than one persona's voice — and both must still
+        # carry the key, or the client cannot tell them from a proxy's page.
+        self._cache_doc(monkeypatch, make_minimal_capabilities_doc(
+            engine="pocket-tts", reference_audio=None))
+        labelled["non-cloning-engine-503"] = (503, post())
+
+        self._cache_doc(monkeypatch, cloning_doc)
+        personas = app_config.get_personas()
+        personas.personas[0].reference_audio = str(tmp_path / "deleted-between-requests.wav")
+        labelled["unreadable-clip-503"] = (503, post())
+
+        personas.personas[0].reference_audio = None
+        labelled["no-clip-400"] = (400, post())
+
+        for label, (expected_status, resp) in labelled.items():
+            assert resp.status_code == expected_status, (
+                f"{label}: got {resp.status_code}, so this walk checked the "
+                "wrong failure site"
+            )
+            assert "refusal" in resp.json(), f"{label} body lost its refusal class"
+
+
+def _tts_proxy_json_response_nodes() -> list:
+    """Every JSONResponse(...) call inside app/routers/tts.py::tts_proxy."""
+    source_path = Path(__file__).resolve().parent.parent / "app" / "routers" / "tts.py"
+    tree = ast.parse(source_path.read_text(encoding="utf-8"), filename=str(source_path))
+    handler = next(
+        (node for node in tree.body
+         if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+         and node.name == "tts_proxy"),
+        None,
+    )
+    assert handler is not None, "tts_proxy() is gone from app/routers/tts.py"
+    return [
+        node for node in ast.walk(handler)
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Name)
+        and node.func.id == "JSONResponse"
+    ]
+
+
+def test_every_json_response_the_tts_proxy_returns_is_a_failure_body():
+    """No JSONResponse may leave tts_proxy() with a hand-written body.
+
+    The client's whole rule rests on "a POST /api/tts body without a `refusal`
+    key did not come from this router" — so ONE failure exit that hand-writes
+    {"detail": ...} turns a real voice verdict into "somebody else answered",
+    un-mutes a reply the server already condemned, and stays invisible to every
+    request-level test that does not happen to hit that exact exit. That is why
+    the runtime walk above is not enough on its own: it can only check the exits
+    someone remembered to drive. This guard reads the handler's syntax tree, so
+    a new `return JSONResponse(...)` is covered the moment it is written (the
+    same trick tests/test_yaml_io.py plays on open()).
+
+    The success path returns result.audio directly, so every JSONResponse in
+    this handler is a failure and every one of them must go through
+    _failure_body().
+    """
+    offenders = [
+        f"app/routers/tts.py:{node.lineno}"
+        for node in _tts_proxy_json_response_nodes()
+        if not any(
+            keyword.arg == "content"
+            and isinstance(keyword.value, ast.Call)
+            and isinstance(keyword.value.func, ast.Name)
+            and keyword.value.func.id == "_failure_body"
+            for keyword in node.keywords
+        )
+    ]
+
+    assert offenders == [], (
+        "a tts_proxy() JSONResponse whose content was not built by "
+        f"_failure_body() — the refusal key is not optional: {offenders}"
+    )
+
+
+def test_the_tts_proxy_failure_exits_all_go_through_the_helper():
+    """Self-check for the guard above: it must actually see the handler's exits.
+
+    A guard whose finder silently matches nothing is greener than the bug it
+    was written for (the same reason tests/test_modal_backdrop.js self-checks
+    its modal scraper). Today tts_proxy() answers six failure bodies; the count
+    is asserted so a rename of JSONResponse, or the handler moving to another
+    module, fails HERE instead of quietly emptying the guard.
+    """
+    nodes = _tts_proxy_json_response_nodes()
+
+    assert len(nodes) == 6, (
+        "expected 6 JSONResponse failure exits in tts_proxy() (404 unknown "
+        f"persona, 400 no clip, 503 non-cloning engine, 503 unreadable clip, "
+        f"422 missing transcript, final verdict/hiccup), found {len(nodes)} at "
+        f"lines {sorted(node.lineno for node in nodes)}: update this count AND "
+        "the refusal-key walk's labels together"
+    )
 
 
 # ---------------------------------------------------------------------------

@@ -700,6 +700,82 @@ class TestSynthesize:
         listed = json_response(422, make_unexpected_field_422("num_steps", 999))
         assert "num_steps" in tts_client._response_detail(listed)
 
+    # -- the surviving shape rejection: log the list, show a sentence --------
+    #
+    # A FastAPI validation failure is the one engine failure body that is not
+    # written for a human reader, and by the time one reaches the caller the
+    # stale-document self-heal has already rebuilt the payload from a fresh
+    # capabilities document and asked again. Serializing that list into the
+    # .tts-note is the symptom issue #173 set out to remove, re-entering
+    # through the ENGINE_VERDICT path rather than through the status code.
+
+    def test_synthesize_shape_rejection_surviving_the_self_heal_returns_a_sentence(
+        self, monkeypatch, caplog
+    ):
+        # GIVEN an engine whose request model rejects our payload twice (a
+        # tts.parameters entry the current engine never advertised):
+        _active_tts(monkeypatch, parameters={"num_steps": 999})
+        _cache_capabilities(monkeypatch, make_capabilities_doc(engine="omnivoice"))
+        posts = []
+
+        def responder(method, url, **kw):
+            if url.endswith("/capabilities"):
+                return json_response(200, make_capabilities_doc(engine="omnivoice"))
+            posts.append(kw.get("json"))
+            return json_response(422, make_unexpected_field_422("num_steps", 999))
+
+        _patch_http(monkeypatch, responder)
+        with caplog.at_level(logging.WARNING, logger="app.services.tts_client"):
+            result = _run(tts_client.synthesize("hi", "p", "QUJD"))
+
+        # THEN the caller (and through it the user's bubble) gets a sentence
+        # naming where to fix it, not a serialized field list:
+        assert len(posts) == 2, "the self-heal must still run first"
+        assert result.outcome is SynthesisOutcome.ENGINE_VERDICT
+        assert result.engine_status == 422
+        assert result.reason() == tts_client.PAYLOAD_REJECTION_DETAIL
+        assert "loc" not in result.detail and "num_steps" not in result.detail, (
+            f"the bubble must not quote a validation list: {result.detail}"
+        )
+        # ...and the field name is NOT lost: it is in the log line, which is
+        # the only place it was ever readable.
+        assert "num_steps" in caplog.text
+
+    def test_payload_rejection_detail_only_fires_for_a_validation_list(self):
+        # GIVEN each body a failed /synthesize can arrive as,
+        string_detail = json_response(422, {"detail": self.UNSPEAKABLE_TEXT_DETAIL})
+        list_detail = json_response(422, make_unexpected_field_422("speaker_scale", 1.5))
+        bodyless = json_response(422, {})
+        foreign_envelope = json_response(422, {"error": {"message": "bad payload"}})
+        html = httpx.Response(
+            422, text="<html>gateway rejected the request</html>",
+            headers={"content-type": "text/html"},
+            request=httpx.Request("POST", "http://tts.local:5500/synthesize"),
+        )
+
+        # THEN only the list — the one body provably not written for a human —
+        # is replaced. The engine's own sentence, a foreign envelope, and a
+        # proxy's page all keep their words: we can't improve on them, and
+        # inventing a cause we cannot see would be a worse lie than quoting
+        # what the box actually said.
+        assert tts_client._payload_rejection_detail(list_detail) == (
+            tts_client.PAYLOAD_REJECTION_DETAIL
+        )
+        assert tts_client._payload_rejection_detail(string_detail) is None
+        assert tts_client._payload_rejection_detail(bodyless) is None
+        assert tts_client._payload_rejection_detail(foreign_envelope) is None
+        assert tts_client._payload_rejection_detail(html) is None
+
+    def test_payload_rejection_detail_is_a_sentence_not_a_field_dump(self):
+        # This string reaches a bubble. It must read as advice and name the
+        # place to fix, while claiming only the likeliest cause.
+        sentence = tts_client.PAYLOAD_REJECTION_DETAIL
+
+        assert sentence.startswith("the connected engine")
+        assert "parameters" in sentence and "Servers dialog" in sentence
+        assert not sentence.startswith(("{", "["))
+        assert "loc" not in sentence and "msg" not in sentence
+
 
 class TestReferenceTextRequirement:
     """Whose transcript is it anyway? (issue #164)

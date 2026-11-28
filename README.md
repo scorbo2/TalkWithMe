@@ -447,6 +447,22 @@ An engine *hiccup* (the TTS server restarting, a network blip) is deliberately
 treated differently: every remaining sentence is still requested, and nothing
 is printed.
 
+That line also never appears for a problem that isn't about a voice. When the
+app itself rejects a request (a blank sentence, say) or something in front of it
+answers instead, the browser keeps asking for the rest of the reply and stays
+quiet in the chat: nothing in that exchange said anything about your persona's
+voice, so the app doesn't either. It logs the failure instead, where it can
+actually be diagnosed.
+
+And if the line says the engine `rejected this synthesis request's parameters
+even after its capabilities document was refetched`, that is almost always a
+leftover from swapping TTS servers in the Servers dialog: a parameter saved for
+the old engine (a `num_steps`, a `speaker_scale`) that the new one never
+advertised. Open **Servers → TTS parameters**, reset or clear the offending
+values, and save — no restart needed. (The exact field name is not in that
+line because it would be unreadable there; it is in the server log, right next
+to the second request the app retried.)
+
 If the refusal is about the **reference clip** instead —
 `reference audio contains no recognizable speech in its first 5 s` — the fix is
 in the persona, not the prompt: `ref.wav` must begin with audible speech, and
@@ -798,6 +814,7 @@ standalone script under `impl/` with per-engine install notes.
   - Bug fix: don't do control flow with strings (#171)
   - Bug fix: smarten up the deny list for chat room history (#170)
   - Bug fix: better click handling for closing modals (#172)
+  - Bug fix: better 422 handling (#173)
 
 ## License
 
