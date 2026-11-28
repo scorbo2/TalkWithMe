@@ -50,17 +50,41 @@ async function loadChatRooms() {
 }
 
 /**
+ * The personas visible in the current chat room: everyone in "default", only
+ * the assigned ones in a named room. Shared by applyChatRoomFilter() and
+ * refreshPersonaSidebar() so the room filter is derived in exactly one place.
+ */
+function currentRoomPersonas() {
+    if (currentChatRoom === "default") return [...personas];
+    const roomPersonaNames = roomPersonas[currentChatRoom] || [];
+    return personas.filter(p => roomPersonaNames.includes(p.name));
+}
+
+/**
+ * Re-render the sidebar for a fact that changed about the ENGINE, not about
+ * the personas (today: /api/tts/health reporting that the connected engine
+ * demands a reference transcript — issue #164 phase 2).
+ *
+ * Deliberately NOT applyChatRoomFilter(): that also posts the room's active
+ * personas to the session, which a mere repaint must not re-trigger, and it
+ * touches the dropdown and the echo-chamber checkbox. Same filter, same
+ * remove-button rule, no side effects.
+ */
+function refreshPersonaSidebar() {
+    const isActiveRoom = currentChatRoom !== "default";
+    renderPersonaList(currentRoomPersonas(), isActiveRoom);
+    highlightSelectedPersona();
+}
+
+/**
  * Apply the current chat room filter: update persona list, active session,
  * and UI controls (add/remove buttons).
  */
 function applyChatRoomFilter() {
     const isActiveRoom = currentChatRoom !== "default";
-    const roomPersonaNames = roomPersonas[currentChatRoom] || [];
 
     // Filter the persona list to only those in this room
-    const filtered = isActiveRoom
-        ? personas.filter(p => roomPersonaNames.includes(p.name))
-        : [...personas];
+    const filtered = currentRoomPersonas();
 
     // Update the persona list rendering
     renderPersonaList(filtered, isActiveRoom);
@@ -154,23 +178,15 @@ function setupChatRoomEventListeners() {
         crConfirmOverlay.classList.add("hidden");
     });
 
-    // Backdrop click to close
-    chatroomsOverlay.addEventListener("click", (e) => {
-        if (e.target === chatroomsOverlay) closeChatRoomsEditor();
-    });
-    crConfirmOverlay.addEventListener("click", (e) => {
-        if (e.target === crConfirmOverlay) {
-            crConfirmOverlay.classList.add("hidden");
-        }
-    });
+    // Backdrop click to close (press + release on the backdrop itself).
+    installBackdropClose(chatroomsOverlay, closeChatRoomsEditor);
+    installBackdropClose(crConfirmOverlay, () => crConfirmOverlay.classList.add("hidden"));
 
     // Persona picker
     document.getElementById("pp-btn-close").addEventListener("click", closePersonaPicker);
     document.getElementById("pp-btn-cancel").addEventListener("click", closePersonaPicker);
     document.getElementById("pp-btn-add").addEventListener("click", addSelectedPersonasToRoom);
-    personaPickerOverlay.addEventListener("click", (e) => {
-        if (e.target === personaPickerOverlay) closePersonaPicker();
-    });
+    installBackdropClose(personaPickerOverlay, closePersonaPicker);
 }
 
 /* ==========================================================================
@@ -449,16 +465,25 @@ function closePersonaPicker() {
 function renderPersonaPickerList() {
     ppListEl.innerHTML = "";
 
-    // Get personas already in this room
+    // Personas already in this room are NOT offered — the whole point of
+    // the dialog is picking who is missing (the old "(already in room)"
+    // annotation just cluttered the list with unselectable rows). The
+    // exact-name match mirrors applyChatRoomFilter(): both sides come
+    // from the same canonical personas list.
     const alreadyInRoom = new Set(roomPersonas[currentChatRoom] || []);
+    const candidates = personas.filter(p => !alreadyInRoom.has(p.name));
 
     if (personas.length === 0) {
         ppListEl.innerHTML = '<p class="pp-empty">No personas configured.</p>';
         return;
     }
+    if (candidates.length === 0) {
+        ppListEl.innerHTML = '<p class="pp-empty">All configured personas are already in this room.</p>';
+        return;
+    }
 
     // Render alphabetically (case-insensitive), not in creation order.
-    const sorted = [...personas].sort(comparePersonasByName);
+    const sorted = [...candidates].sort(comparePersonasByName);
     for (const p of sorted) {
         const item = document.createElement("div");
         item.className = "pp-list-item";
@@ -473,10 +498,12 @@ function renderPersonaPickerList() {
             togglePickerSelection(p.name, checkbox.checked, item);
         });
 
+        // Same avatar rule as the sidebar and the Persona Editor list:
+        // the persona's image when it has one, the colored first-initial
+        // bubble only as a fallback (renderPersonaAvatar in utils.js).
         const avatar = document.createElement("div");
         avatar.className = "pp-list-item-avatar";
-        avatar.style.backgroundColor = p.avatar_color;
-        avatar.textContent = p.name.charAt(0).toUpperCase();
+        renderPersonaAvatar(avatar, p);
 
         const info = document.createElement("div");
         info.className = "pp-list-item-info";
@@ -487,7 +514,7 @@ function renderPersonaPickerList() {
 
         const descEl = document.createElement("div");
         descEl.className = "pp-list-item-desc";
-        descEl.textContent = alreadyInRoom.has(p.name) ? (p.description || "") + " (already in room)" : (p.description || "");
+        descEl.textContent = p.description || "";
 
         info.appendChild(nameEl);
         info.appendChild(descEl);

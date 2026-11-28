@@ -15,8 +15,11 @@ import re
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-import yaml
 from pydantic import BaseModel, Field, field_validator, model_validator
+
+# All YAML file I/O goes through yaml_io (UTF-8 pinned + atomic writes) — see
+# app/services/yaml_io.py for why a bare open() here broke Windows.
+from app.services import yaml_io
 
 logger = logging.getLogger(__name__)
 
@@ -316,8 +319,25 @@ class Persona(BaseModel):
 
     @property
     def tts_capable(self) -> bool:
-        """TTS requires both reference audio AND its transcript."""
-        return bool(self.reference_audio and self.reference_audio_transcript)
+        """Does this persona carry the voice material this app can work with?
+
+        The reference CLIP is the only persona-side requirement. Whether a
+        transcript of that clip is *also* mandatory is a property of the
+        connected ENGINE, never of the persona: the tts-serve fleet splits
+        three ways (four engines never accept a transcript and Whisper the
+        clip themselves, most accept one optionally, three require one), and
+        a persona directory outlives whichever engine happens to be configured
+        in settings.yaml. Baking an engine verdict into persona data — or into
+        the Persona form — would go stale on the next engine switch, and
+        demanding a transcript the engine never wanted is exactly issue #164:
+        permanent silence from a persona the engine would have voiced happily.
+
+        The engine's own requirement is therefore enforced at the synthesis
+        boundary, where its capabilities document is actually in hand — see
+        `tts_client.doc_requires_reference_text()` /
+        `tts_client.reference_text_refusal()`.
+        """
+        return bool(self.reference_audio)
 
 
 class PersonasConfig(BaseModel):
@@ -409,8 +429,7 @@ def load_settings(path: Optional[Path] = None) -> AppSettings:
     target = path or _PROJECT_ROOT / "settings.yaml"
     if not target.exists():
         return AppSettings()
-    with open(target) as f:
-        raw = yaml.safe_load(f) or {}
+    raw = yaml_io.load_yaml_file(target) or {}
     _settings_cache = AppSettings(
         llm=LLMSettings(**raw.get("llm", {})),
         tts=TTSConfig(**raw.get("tts", {})),
@@ -550,8 +569,7 @@ def save_settings(config: AppSettings, path: Optional[Path] = None) -> None:
         "general": config.general.model_dump(exclude_none=False),
         "mcp": config.mcp.model_dump(exclude_none=False),
     }
-    with open(target, "w") as f:
-        yaml.dump(raw, f, default_flow_style=False, allow_unicode=True, sort_keys=False)
+    yaml_io.save_yaml_file(target, raw)
     _settings_cache = config
 
 
@@ -568,8 +586,7 @@ def load_chatrooms(path: Optional[Path] = None) -> ChatRoomsConfig:
     target = path or _PROJECT_ROOT / "chatrooms.yaml"
     if not target.exists():
         return ChatRoomsConfig()
-    with open(target) as f:
-        raw = yaml.safe_load(f) or {}
+    raw = yaml_io.load_yaml_file(target) or {}
     _chatrooms_cache = ChatRoomsConfig(
         chat_rooms=[ChatRoom(**cr) for cr in raw.get("chat_rooms", [])],
         # A bare key ("default_echo_chamber:") is YAML null — treat it as
@@ -593,8 +610,7 @@ def save_chatrooms(config: ChatRoomsConfig, path: Optional[Path] = None) -> None
         # serializes every field.
         "default_echo_chamber": config.default_echo_chamber,
     }
-    with open(target, "w") as f:
-        yaml.dump(raw, f, default_flow_style=False, allow_unicode=True, sort_keys=False)
+    yaml_io.save_yaml_file(target, raw)
     _chatrooms_cache = config
 
 

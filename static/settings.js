@@ -41,10 +41,9 @@ document.getElementById("settings-btn-close").addEventListener("click", closeSet
 document.getElementById("settings-btn-cancel").addEventListener("click", closeSettings);
 settingsForm.addEventListener("submit", submitSettings);
 
-// Close on backdrop click
-settingsOverlay.addEventListener("click", (e) => {
-    if (e.target === settingsOverlay) closeSettings();
-});
+// Close on a genuine backdrop click (press + release on the backdrop,
+// see installBackdropClose() in utils.js).
+installBackdropClose(settingsOverlay, closeSettings);
 
 // Toggle TTS/STT fields visibility on checkbox change
 sfTtsEnabled.addEventListener("change", () => {

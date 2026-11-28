@@ -99,8 +99,17 @@ personas:
 
 Avatar display priority: if `avatar_image` is set and the file exists, show the image; otherwise fall back to a colored circle using `avatar_color` with the persona's initial letter.
 
-TTS support: reference audio and transcript are both required to enable TTS for this persona. UI should show a "mute"
-or "no volume" or similar symbol with the avatar if the persona cannot speak.
+TTS support: ~~reference audio and transcript are both required to enable TTS for this persona.~~
+UI should show a "mute" or "no volume" or similar symbol with the avatar if the persona cannot speak.
+
+> **Superseded (issue #164).** The transcript half of that rule was wrong, and it
+> muted four tts-serve engines that never ask for one. The persona supplies the
+> reference clip; whether a transcript of it is also mandatory is a property of the
+> connected TTS engine, read from its `/capabilities` document at synthesis time —
+> never baked into the persona. See
+> [`feature_tts_transcript_requirement.md`](feature_tts_transcript_requirement.md).
+> The mute-symbol half of this note is still exactly what ships (and now carries a
+> tooltip naming the reason).
 
 ---
 
@@ -166,7 +175,11 @@ When the `streaming` config property is set to `false` (or when it is omitted):
 3. POST `{text}` to `/api/tts`
 4. Backend calls TTS server `/synthesize` with `{text, num_steps, prompt_text, audio_base64, guidance_scale, seed}`.
    `text` is the text to be synthesized into speech.
-   `prompt_text` is the reference audio transcript from the persona. If no transcript provided, disable speech for this persona.
+   `prompt_text` is the reference audio transcript from the persona. ~~If no transcript provided, disable speech for this persona.~~
+   *(Superseded — see [`feature_tts_transcript_requirement.md`](feature_tts_transcript_requirement.md): the engine decides
+   whether the transcript is required, via its advertised `reference_text` parameter. The payload now carries the
+   transcript only when the engine advertises a slot for it, and a persona missing a genuinely required one gets a
+   visible explanation instead of silence.)*
    `audio_base64` is the Base64-encoded reference audio from the persona. If no audio provided, disable speech for this persona.
    Note: backend must perform Base64-encoding on the supplied reference audio WAV file.
 5. Returns `{audio_base64, sample_rate}` to frontend

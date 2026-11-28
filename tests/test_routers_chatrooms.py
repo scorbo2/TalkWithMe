@@ -5,7 +5,11 @@ The implicit "default" room is not in chatrooms.yaml.
 """
 
 from app import persistence
+from app.config import Persona
 from app.models import ChatMessage
+
+import app.config as app_config
+from tests.factories import make_personas
 
 
 # ---------------------------------------------------------------------------
@@ -342,3 +346,66 @@ class TestEchoChamber:
     def test_echo_chamber_unknown_room_404(self, client):
         resp = client.put("/api/chatrooms/NoSuchRoom/echo-chamber", json={"echo_chamber": True})
         assert resp.status_code == 404
+
+
+# ---------------------------------------------------------------------------
+# Non-ASCII persona names (issue #166: chatrooms.yaml must always be UTF-8)
+# ---------------------------------------------------------------------------
+
+# Persona NAMES are free text — only room names are restricted to the ASCII
+# room alphabet — so a persona called "Björk" or "佐藤" lands verbatim in
+# chatrooms.yaml on every room mutation. Before the yaml_io chokepoint those
+# writes used the interpreter's locale default, which on Windows meant a 500
+# on every create/assign/rename-cascade touching such a room.
+CJK_NAME = "\u4f50\u85e4"
+LATIN_NAME = "Bj\u00f6rk"
+
+
+def seed_non_ascii_personas(monkeypatch):
+    """Add non-ASCII-named personas to the cached persona list."""
+    current = make_personas()
+    current.personas.append(Persona(name=CJK_NAME, system_prompt="I am Sato."))
+    current.personas.append(Persona(name=LATIN_NAME, system_prompt="I am Bjork."))
+    monkeypatch.setattr(app_config, "_personas_cache", current)
+
+
+class TestNonAsciiPersonaNames:
+    def test_assign_non_ascii_persona_to_room_succeeds(self, client, monkeypatch):
+        # GIVEN a room and a persona whose name is outside cp1252 entirely:
+        seed_non_ascii_personas(monkeypatch)
+
+        # WHEN it is assigned to a room,
+        resp = client.put("/api/chatrooms/TNG/personas", json={"persona_names": [CJK_NAME]})
+
+        # THEN the request succeeds and the name comes back intact (pre-fix:
+        # UnicodeEncodeError inside save_chatrooms -> HTTP 500):
+        assert resp.status_code == 200
+        assert CJK_NAME in resp.json()["persona_names"]
+
+    def test_assign_non_ascii_persona_writes_raw_utf8_chatrooms_yaml(self, client, monkeypatch, tmp_path, ansi_codepage_io_default):
+        # GIVEN a Windows-style default text encoding (cp1252):
+        seed_non_ascii_personas(monkeypatch)
+
+        # WHEN a room is created and the persona assigned,
+        assert client.post("/api/chatrooms", json={"name": "Ops"}).status_code == 201
+        assert client.put("/api/chatrooms/Ops/personas", json={"persona_names": [CJK_NAME, LATIN_NAME]}).status_code == 200
+
+        # THEN chatrooms.yaml holds raw UTF-8 bytes — not \u escapes, and not
+        # a truncated file left behind by a failed write:
+        saved = (tmp_path / "chatrooms.yaml").read_bytes()
+        assert CJK_NAME.encode("utf-8") in saved
+        assert LATIN_NAME.encode("utf-8") in saved
+        assert b"\\u" not in saved
+        assert list(tmp_path.glob("*.tmp")) == []
+
+    def test_room_history_round_trips_non_ascii_persona_name(self, client, monkeypatch):
+        # The assignment cascades (persona rename/delete, room mutations) all
+        # rewrite chatrooms.yaml; the name must never drift across them.
+        seed_non_ascii_personas(monkeypatch)
+        client.put("/api/chatrooms/TNG/personas", json={"persona_names": [CJK_NAME]})
+        client.put("/api/chatrooms/TNG/echo-chamber", json={"echo_chamber": True})
+        client.delete("/api/chatrooms/TNG/personas/" + CJK_NAME)
+        client.put("/api/chatrooms/TNG/personas", json={"persona_names": [LATIN_NAME]})
+
+        room = next(r for r in client.get("/api/chatrooms").json() if r["name"] == "TNG")
+        assert room["persona_names"] == ["Alex", "Luna", LATIN_NAME]

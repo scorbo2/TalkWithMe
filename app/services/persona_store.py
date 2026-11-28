@@ -39,6 +39,8 @@ from app.config import (
     MAX_MEMORY_SIZE,
     Persona,
 )
+# Shared UTF-8-pinned YAML file I/O (see app/services/yaml_io.py).
+from app.services import yaml_io
 
 logger = logging.getLogger(__name__)
 
@@ -688,8 +690,7 @@ def load_personas_yaml(path: Path) -> List[Persona]:
     app reads personas from the directory and never from this file again.
     Raises on malformed content; the migration turns that into a fatal error.
     """
-    with open(path) as f:
-        raw = yaml.safe_load(f)
+    raw = yaml_io.load_yaml_file(path)
     if not isinstance(raw, dict):
         raise PersonaMigrationError(
             f"{path.name} is malformed: expected a top-level mapping with a 'personas' list"

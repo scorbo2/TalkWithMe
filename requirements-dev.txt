@@ -3,3 +3,6 @@
 # on a fresh checkout (pip supports stacked requirement files).
 -r requirements.txt
 pytest
+# Per-test hang watchdog; the limit itself (and the reason for it) lives in
+# pytest.ini's `timeout`.
+pytest-timeout==2.4.0

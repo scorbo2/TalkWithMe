@@ -80,6 +80,9 @@ async function checkTTSHealth() {
         ttsStreaming = data.streaming || false;
         ttsEnabled = data.available; // Default on if server is available
         ttsServerType = data.server_type || "";
+        // "not required" and "not known" share one value; both mean the
+        // sidebar has no engine-side reason to distrust a persona's voice.
+        ttsReferenceTextRequired = !!data.reference_text_required;
         updateTTSToggleUI();
     } catch (err) {
         console.warn("TTS health check failed:", err);
@@ -87,8 +90,15 @@ async function checkTTSHealth() {
         ttsStreaming = false;
         ttsEnabled = false;
         ttsServerType = "";
+        ttsReferenceTextRequired = false;
         updateTTSToggleUI();
     }
+    // init() renders the persona sidebar before this check resolves, so the
+    // mute badges were drawn without knowing what the connected engine demands.
+    // A no-op until both modules are up (they load as classic scripts, so in
+    // the browser they always are — the guard is for the Node test harnesses
+    // that load a subset of static/).
+    if (typeof refreshPersonaSidebar === "function") refreshPersonaSidebar();
 }
 
 async function checkSTTHealth() {

@@ -28,6 +28,7 @@ Follow the development of this app on my YouTube channel:
 - Fully local — no internet required, no authentication. You can connect to remote LLMs with an API key if you wish, but TalkWithMe can be run 100% locally. NOTE: only connect to remote LLMs that you trust.
 - Theme chooser in the top-right: Dark (default), Light, Matrix, and Blues
 - Each room persists its text and audio messages
+- Copy any message's text with one click (hover a bubble: 📋 sits beside 🗑)
 
 ## Prerequisites
 
@@ -222,7 +223,7 @@ Personas/Alex/
 ├── prompt.md        # YAML frontmatter + system prompt body
 ├── language.txt     # reference-audio language code (optional)
 ├── ref.wav          # TTS reference audio (optional, fixed name)
-├── ref.txt          # transcript of ref.wav (optional)
+├── ref.txt          # transcript of ref.wav (optional for most engines, required by a few)
 └── image.png        # avatar (optional, png/jpg/jpeg/gif/webp)
 ```
 
@@ -277,12 +278,12 @@ sanitized form is already the directory's name has nothing to move either.
 | `avatar_color` | `prompt.md` frontmatter | Hex color for the avatar circle fallback |
 | avatar image | `image.<ext>` file | Uploaded image for the persona (optional) |
 | reference audio | `ref.wav` file | WAV for TTS voice cloning (optional) |
-| reference transcript | `ref.txt` file | Transcript of the reference audio (required for TTS) |
+| reference transcript | `ref.txt` file | Transcript of the reference audio (required by some TTS engines, optional for others — see **TTS support** below) |
 | reference audio language | `language.txt` file | Two-letter code describing the reference audio |
 | `memory_size` | `prompt.md` frontmatter | If 0, memories are disabled for this persona. Otherwise, maximum byte size of the memories file. |
 | `allow_tool_calls` | `prompt.md` frontmatter | If `true`, this persona may call MCP tools while replying (if at least one MCP server is configured) |
 
-**TTS support**: Both `ref.wav` and a non-blank `ref.txt` must be present for a persona to have TTS capability.
+**TTS support**: a persona can speak when it has a `ref.wav` reference clip — that is the only requirement the *persona* owns. Whether a `ref.txt` transcript is also mandatory is a property of the connected TTS **engine**, not of the persona, and the two never travel together: a persona directory outlives whichever engine you happen to have configured tomorrow. TalkWithMe therefore never demands a transcript the engine never wanted (that combination used to mean absolute silence — see [Which TTS engines need a transcript?](#which-tts-engines-need-a-transcript)).
 
 #### Who answers next?
 
@@ -358,9 +359,51 @@ If your reference audio is in English, you're all set.
 
 If your reference audio is in some other language, you must specify the language code in the `reference_audio_language` field for the persona in question. This helps the voice cloner understand the reference audio. This may also prevent the cloned voice from speaking in languages other than the reference audio language, but your mileage may vary.
 
+## Which TTS engines need a transcript?
+
+Short answer: **it depends on the engine, and you never have to decide.** The Persona form
+will never block you on it.
+
+The transcript of the reference clip (`ref.txt`, "Reference Audio Transcript" in the Persona
+editor) tells a cloning engine what words its reference audio contains. Some engines need that
+to build a clean voice embedding, most treat it as a nice-to-have, and a few have no use for it
+at all because they transcribe the clip themselves with Whisper:
+
+| The engine's `reference_text` field | Example engines | What happens if `ref.txt` is missing |
+|---|---|---|
+| not offered at all | chatterbox, indexTTS, LuxTTS, PocketTTS | Nothing — the transcript is never sent (sending it would actually be rejected). The engine transcribes `ref.wav` itself; only its first `prompt_duration` seconds are heard |
+| optional | dots.tts, OmniVoice, Qwen3-TTS, VoxCPM, KittenTTS, Ming3-TTS, audio8TTS, faster-Qwen3 | Nothing — the engine falls back to auto-transcription or a speaker-embedding-only clone. Quality may drop slightly |
+| **required** | Breeze Blue, Ming3-TTS-MoE, Qwen3-TTS-MLX | That persona stays silent, **and says why**: the reply appears with one line under it — `Voice unavailable for this reply: Persona 'Alex' has no reference-audio transcript, and the 'breeze-blue' engine requires one…` — and the rest of that reply stops asking for audio. Add the transcript in the Persona editor and the voice comes back |
+
+Each tts-serve engine publishes its own answer in its `/capabilities` document, and TalkWithMe
+reads that document to decide — which is why the requirement cannot live in the persona. Your
+personas are permanent; your TTS server is whatever is running today, and the Servers dialog can
+swap one engine for another between two messages. Asking a persona for a transcript that the
+connected engine would have ignored is how a perfectly good voice ends up permanently mute, so
+TalkWithMe never out-of-rules the engine: it sends the transcript when the engine advertises a
+slot for it, and refuses a request only when the document proves the engine will refuse it.
+
+**The sidebar tells you, before you ask.** Each persona's 🔇 badge now means one of two things,
+and hovering says which: the persona has no reference clip at all, or it has one that the
+*currently connected* engine cannot use because that engine demands a transcript this persona does
+not have. Switch to a different TTS server and the badge can disappear without a single change to
+the persona — that asymmetry is the whole point. The badge is a hint, not a switch: the reply is
+still attempted, so you always get the plain-language reason under it rather than quiet.
+
+**Gotchas:**
+
+- If no `/capabilities` document is available at all (a hand-rolled or pre-ported TTS server,
+  not a tts-serve release), TalkWithMe cannot know the rule. It then sends whatever the persona
+  has and lets the server decide; if that server does require a transcript you get its own
+  error text under the reply instead of the friendly sentence above. The sidebar shows no
+  transcript badge in that state — an unknown requirement is never drawn as a confident 🔇.
+- The engine's requirement is checked *before* any synthesis is requested, so a persona that is
+  missing a required transcript costs zero GPU time — no audio is generated and thrown away.
+- A transcript that is blank (whitespace only) is stored as no transcript at all.
+
 ## Streaming TTS responses
 
-If `streaming` is enabled in the TTS configuration, text responses from AI personas will be chunked into sentences using common punctuation, and each sentence will be queued up as a separate TTS request. A separate audio playback queue is used to queue up and play the responses sequentially. 
+If `streaming` is enabled in the TTS configuration, text responses from AI personas will be chunked into sentences using common punctuation and line breaks (so each list item is its own chunk), and each sentence will be queued up as a separate TTS request. Periods that don't end a sentence - titles like "Mrs. Hudson", initials, "e.g.", numbered-list markers, decimals - don't split it. A separate audio playback queue is used to queue up and play the responses sequentially. 
 
 - Advantage: the initial lag time before playback begins is reduced. The user only has to wait for the first sentence to generate and not the entire text response. As each sentence plays, the next sentence is being processed by the TTS service. Ideally, the lag between sentences is minimal.
 - Disadvantage: sentence length variance can lead to large pauses between sentences. A short sentence followed by a long sentence is the worst case scenario, because the short sentence will process and play very quickly, but the longer sentence will take much longer for the TTS server to process.
@@ -370,6 +413,67 @@ If you prefer to hear the persona's response in one clear, contiguous audio play
 If you want to hear each sentence as soon as it has been synthesized, without having to wait for the ENTIRE response to be synthesized, and you don't mind the occasional pause in between sentences, then enable streaming mode in configuration.
 
 For lowest lag time, consider OmniVoice as the TTS server. It is considerably faster than `dots.tts` or `Qwen3-TTS`.
+
+### When a sentence has nothing to speak
+
+**Needs tts-serve 1.5 or newer.** Older tts-serve servers crash the vocoder on
+unvoiceable text and answer 500, which TalkWithMe can only report as a generic
+engine hiccup (every sentence is retried, nothing is explained). The
+plain-language behaviour below is the 1.5 pre-flight.
+
+Some engines can only voice certain text. LuxTTS, for example, speaks English
+and Chinese. A chunk made only of punctuation, digits, Markdown (a closing code
+fence, a `|---|` table rule), a timestamp, emoji, or Cyrillic / Japanese /
+Korean text has nothing for it to say, and its tts-serve server answers with a
+plain-language refusal. Because streaming mode asks for one sentence per
+request, the client handles that per sentence:
+
+- A chunk that plainly contains nothing any engine can voice is skipped before
+  a request is even made (a console line, no audio, no waiting).
+- If the server refuses a sentence, its own reason is shown under that reply as
+  one muted line — `Voice unavailable for this reply: text contains nothing
+  this engine can speak: …` — and the rest of *that reply* stops asking for
+  audio. The verdict is about the engine and the voice, not the sentence, and
+  each sentence is a full synthesis slot on engines like LuxTTS (they serialize
+  synthesis, so a queued sentence is a queue-jump, not a freebie).
+- Each reply is judged on its own verdict. In a multi-reply turn (or the echo
+  chamber) a voice that refuses one persona does not mute the others, and a
+  refusal is never printed on somebody else's bubble — a synthesis is still in
+  flight long after the next persona has started answering.
+- The next reply starts fresh. One persona's broken voice never mutes the
+  session.
+
+An engine *hiccup* (the TTS server restarting, a network blip) is deliberately
+treated differently: every remaining sentence is still requested, and nothing
+is printed.
+
+That line also never appears for a problem that isn't about a voice. When the
+app itself rejects a request (a blank sentence, say) or something in front of it
+answers instead, the browser keeps asking for the rest of the reply and stays
+quiet in the chat: nothing in that exchange said anything about your persona's
+voice, so the app doesn't either. It logs the failure instead, where it can
+actually be diagnosed.
+
+And if the line says the engine `rejected this synthesis request's parameters
+even after its capabilities document was refetched`, that is almost always a
+leftover from swapping TTS servers in the Servers dialog: a parameter saved for
+the old engine (a `num_steps`, a `speaker_scale`) that the new one never
+advertised. Open **Servers → TTS parameters**, reset or clear the offending
+values, and save — no restart needed. (The exact field name is not in that
+line because it would be unreadable there; it is in the server log, right next
+to the second request the app retried.)
+
+If the refusal is about the **reference clip** instead —
+`reference audio contains no recognizable speech in its first 5 s` — the fix is
+in the persona, not the prompt: `ref.wav` must begin with audible speech, and
+the window the engine listens to is the `prompt_duration` parameter (5 seconds
+by default), which you can raise in the Servers dialog while a LuxTTS engine is
+selected. LuxTTS never reads `ref.txt`: it transcribes the clip itself with
+Whisper, and only English / Chinese speech survives that transcription, so a
+silent or music-only clip gives it no voice to clone. That refusal is shown
+under the reply like any other, and TalkWithMe stops asking for the rest of the
+reply: the clip is the same for every sentence, so every sentence would hear the
+same answer (and cost the same synthesis slot).
 
 ## Persona-to-persona chat
 
@@ -520,6 +624,26 @@ In streaming mode, there will be one replay icon per sentence in the response. C
 will play the respective sentence:
 
 ![Chat replay streaming](screenshots/chat_audio_replay_streaming.png)
+
+## Copying a message
+
+Hover over any chat bubble and two small buttons appear underneath it: 📋 to
+copy that message's text to the clipboard, and 🗑 to delete the message. Both
+are hidden until you hover (on a phone or tablet they are always visible).
+
+Clicking 📋 copies the text of that one bubble - nothing else. The persona's
+name, the tool chips, and the audio replay buttons are not included. The
+button then shows a brief ✅ so you know the text actually landed.
+
+A couple of details worth knowing:
+
+- If you reach TalkWithMe over plain HTTP from another device (e.g.
+  `http://192.168.1.20:8000`), browsers hide their modern clipboard API for
+  security reasons. Copying still works there via a fallback path, but if a
+  browser blocks both paths you will see ❌ instead of ✅.
+- Copying a message that is still streaming copies whatever has been written
+  so far. A bubble that has no text yet is not copied at all - it would
+  otherwise replace whatever you had previously copied with nothing.
 
 ## Echo chamber
 
@@ -676,6 +800,22 @@ standalone script under `impl/` with per-engine install notes.
   - MCP Server access control (#138)
   - Chat bubbles should "glow" when speaking (#139)
   - Add a "stop" button to halt audio output (#142)
+- **Work in progress, add release date when ready** v7.3
+  - Bug fix: Send button throws error when using http over LAN (#145)
+  - Better sentence chunking in streaming mode (#153)
+  - Cosmetic improvements in Persona Editor / Add Persona dialogs (#155)
+  - Bug fix: unit tests can hang on a fresh clone (#159)
+  - Add a "copy to clipboard" button beside every chat bubble (#158)
+  - Better handling of "unspeakable" text (#162)
+  - Better mouse handling on modals (#165)
+  - Some fixes for Windows users (#166)
+  - Better handling of reference transcript per-engine (#164)
+  - Bug fix: isSpeakableText() was over-zealous (#169)
+  - Bug fix: don't do control flow with strings (#171)
+  - Bug fix: smarten up the deny list for chat room history (#170)
+  - Bug fix: better click handling for closing modals (#172)
+  - Bug fix: better 422 handling (#173)
+  - Bug fix: bad guard could mute all pending sentences (#174)
 
 ## License
 

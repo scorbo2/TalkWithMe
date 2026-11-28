@@ -581,6 +581,19 @@ html, body {
     border-color: #ff6b6b;
 }
 
+/* One muted line under a reply whose streaming voice died (noteTtsUnavailable
+   -ForReply in tts.js). It is appended to the row's .bubble-content column,
+   NOT to the row: .message-row is a flex row (avatar | content), so a direct
+   row child renders beside the bubble as a squeezed third column. Muted, not
+   red: it reports "this reply has no audio", not a broken app. */
+.tts-note {
+    font-size: 0.8rem;
+    line-height: 1.4;
+    margin-top: 6px;
+    padding: 0 4px;
+    color: var(--text-secondary);
+}
+
 /* Loading indicator */
 .loading-bubble {
     display: flex;
@@ -886,6 +899,16 @@ html, body {
     color: #fff;
     flex-shrink: 0;
     overflow: hidden;
+}
+
+/* Avatar image fills the bubble (same treatment as the sidebar's
+   .persona-avatar img); the colored initial only shows when the
+   persona has no image, or the avatar endpoint fails. */
+.pe-list-item-avatar img {
+    width: 100%;
+    height: 100%;
+    object-fit: cover;
+    border-radius: 50%;
 }
 
 .pe-list-item-info {
@@ -1587,6 +1610,17 @@ html, body {
     font-size: 0.8rem;
     color: #fff;
     flex-shrink: 0;
+    overflow: hidden;
+}
+
+/* Avatar image fills the bubble (same treatment as the sidebar's
+   .persona-avatar img); the colored initial only shows when the
+   persona has no image, or the avatar endpoint fails. */
+.pp-list-item-avatar img {
+    width: 100%;
+    height: 100%;
+    object-fit: cover;
+    border-radius: 50%;
 }
 
 .pp-list-item-info {
@@ -1667,11 +1701,27 @@ html, body {
     transform: scale(0.95);
 }
 
-/* Delete button per message row. Styled after .audio-play-btn, but kept
-   out of the way: invisible until the row is hovered (or the button is
-   keyboard-focused), and always visible on touch devices (no hover state).
-   A disabled button (streaming, not yet persisted) stays hidden even on
-   hover — there is nothing to delete mid-stream. */
+/* Wrapper for the per-message copy + delete buttons. The content containers
+   are column flex boxes, so this wrapper lets the two buttons sit in one row
+   instead of stacking vertically. It is also the anchor the audio replay
+   container is inserted before — see getAudioContainer() in chat.js. */
+.message-actions {
+    display: flex;
+    gap: 4px;
+    margin-top: 2px;
+}
+
+.user-message-content .message-actions {
+    align-self: flex-end;
+}
+
+.bubble-content .message-actions {
+    align-self: flex-start;
+}
+
+/* Shared base styles for both buttons: invisible until the row is hovered
+   (or keyboard-focused), always visible on touch devices. */
+.message-copy-btn,
 .message-delete-btn {
     background: transparent;
     border: 1px solid transparent;
@@ -1683,39 +1733,41 @@ html, body {
     transition: background 0.15s, color 0.15s;
     line-height: 1;
     opacity: 0;
-    margin-top: 2px;
 }
 
-/* Align the button with the bubble edge: right for user rows, left for
-   persona rows (the two content containers stack in opposite corners). */
-.user-message-content .message-delete-btn {
-    align-self: flex-end;
-}
-
-.bubble-content .message-delete-btn {
-    align-self: flex-start;
-}
-
+.message-row:hover .message-copy-btn,
+.message-row:focus-within .message-copy-btn,
 .message-row:hover .message-delete-btn,
 .message-row:focus-within .message-delete-btn {
     opacity: 1;
 }
 
+.message-copy-btn:hover,
 .message-delete-btn:hover {
     background: var(--bg-tertiary);
     color: var(--text-secondary);
     border-color: var(--border-color);
 }
 
+.message-copy-btn:active,
 .message-delete-btn:active {
     transform: scale(0.95);
 }
 
+/* The copy button confirms with a ✅/❌ for a moment; emoji are not all the
+   same width, so reserving the box keeps the action row from twitching. */
+.message-copy-btn {
+    min-width: 1.7em;
+    text-align: center;
+}
+
+/* Disabled rules below are delete-only on purpose: a mid-stream delete button
+   has nothing to delete yet, so it stays hidden even on hover. A copy button
+   is never disabled, so styling that state would be dead code. */
 .message-delete-btn:disabled {
     cursor: default;
 }
 
-/* Disabled = still streaming = invisible even while hovering. */
 .message-row:hover .message-delete-btn:disabled,
 .message-row:focus-within .message-delete-btn:disabled {
     opacity: 0;
@@ -1723,7 +1775,8 @@ html, body {
 }
 
 @media (hover: none) {
-    /* Touch devices: no hover to reveal the button, so keep it visible. */
+    /* Touch devices: no hover to reveal the buttons, so keep them visible. */
+    .message-copy-btn,
     .message-delete-btn:not(:disabled) {
         opacity: 1;
     }

@@ -15,6 +15,9 @@
  * it is sent only after an explicit "Clear saved memories" click, and
  * memory_size is ALWAYS sent (the update endpoint requires it — an
  * omitted value must not silently reset the persona's memory budget).
+ * A second group of tests covers the editor LIST's avatar bubbles: the
+ * persona's image when one exists, the colored initial only as a
+ * fallback (see renderPersonaAvatar() in static/utils.js).
  *
  * How it works: persona.js and its dependencies are browser scripts that
  * share globals (no ES modules), so each test evaluates them in a fresh
@@ -593,4 +596,90 @@ test("submitPersonaForm_invalidMemorySize_showsErrorAndSendsNoRequest", async ()
         assert.ok(errEl.textContent.includes("Memory size"), `unexpected error for ${JSON.stringify(bad)}: ${errEl.textContent}`);
         assert.equal(mutationCall(h), undefined, `request sent for invalid budget ${JSON.stringify(bad)}`);
     }
+});
+
+/* ==========================================================================
+    Persona Editor list — avatar rendering
+
+    The list must show the persona's avatar image (like the sidebar does),
+    with the colored first-initial bubble ONLY as a fallback: no image on
+    the server, or the avatar endpoint failing behind a stale presence
+    flag. renderPersonaAvatar() in utils.js is shared by both lists, so
+    these cases lock the editor list to the sidebar's behavior.
+    ========================================================================== */
+
+/** Persona-summary fixture matching PersonaResponse in app/models.py. */
+function summaryFixture({ name = "Al", avatarImage = false } = {}) {
+    return {
+        name,
+        description: "A test persona",
+        avatar_color: "#123456",
+        allow_tool_calls: false,
+        tts_capable: false,
+        avatar_image: avatarImage,
+    };
+}
+
+/** Render the editor list against a canned GET /api/personas payload. */
+async function renderEditorList(h, personas) {
+    h.fetchStub.state.personas = personas;
+    await h.sandbox.renderPersonaEditorList();
+    return h.elementById("pe-list");
+}
+
+/** The avatar bubble div of the index-th rendered pe-list-item. */
+function avatarBubbleOf(peListEl, index) {
+    const item = peListEl.children[index];
+    const avatar = item.children.find((c) => c.className === "pe-list-item-avatar");
+    assert.ok(avatar, "pe-list-item has no .pe-list-item-avatar child");
+    return avatar;
+}
+
+test("renderPersonaEditorList_personaWithAvatarImage_showsImageBubbleNotInitial", async () => {
+    // GIVEN one persona whose summary reports an avatar image on the server:
+    const h = createFormHarness();
+
+    // WHEN the editor list renders:
+    const peListEl = await renderEditorList(h, [summaryFixture({ name: "Ada Lovelace", avatarImage: true })]);
+
+    // THEN the bubble holds an <img> aimed at the avatar endpoint (name
+    // percent-encoded), and NO initial text competes with the image:
+    const avatar = avatarBubbleOf(peListEl, 0);
+    assert.equal(avatar.children.length, 1, "avatar bubble should contain exactly the image");
+    const img = avatar.children[0];
+    assert.equal(img.tagName, "img");
+    assert.equal(img.src, "/api/personas/Ada%20Lovelace/avatar");
+    assert.equal(img.alt, "Ada Lovelace");
+    assert.equal(avatar.textContent, "", "initial text must not be rendered alongside the image");
+});
+
+test("renderPersonaEditorList_personaWithoutAvatarImage_showsColoredInitialBubble", async () => {
+    // GIVEN one persona with no avatar image on the server:
+    const h = createFormHarness();
+
+    // WHEN the editor list renders:
+    const peListEl = await renderEditorList(h, [summaryFixture({ name: "Ada Lovelace", avatarImage: false })]);
+
+    // THEN the bubble is the fallback: uppercase initial on the persona's
+    // configured color, and no image element:
+    const avatar = avatarBubbleOf(peListEl, 0);
+    assert.equal(avatar.children.length, 0, "no <img> for a persona without an avatar image");
+    assert.equal(avatar.textContent, "A");
+    assert.equal(avatar.style.backgroundColor, "#123456");
+});
+
+test("renderPersonaEditorList_avatarImageFailsToLoad_fallsBackToInitialBubble", async () => {
+    // GIVEN a persona whose presence flag is stale — the avatar endpoint
+    // answers with an error once the browser actually requests the file:
+    const h = createFormHarness();
+    const peListEl = await renderEditorList(h, [summaryFixture({ name: "Ada Lovelace", avatarImage: true })]);
+    const avatar = avatarBubbleOf(peListEl, 0);
+    assert.equal(avatar.children[0].tagName, "img");
+
+    // WHEN the image fails to load (onerror fires):
+    avatar.children[0].onerror();
+
+    // THEN the bubble degrades to the initial instead of a broken image:
+    assert.equal(avatar.children.length, 0, "failed image must be removed from the bubble");
+    assert.equal(avatar.textContent, "A");
 });

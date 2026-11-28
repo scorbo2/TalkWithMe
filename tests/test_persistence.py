@@ -12,6 +12,7 @@ import pytest
 
 from app import persistence
 from app.models import ChatMessage
+from app.services.mime import EXTENSION_SAFE_RE_CLASS
 
 B64_AUDIO = base64.b64encode(b"RIFF-fake-wav-bytes").decode("ascii")
 
@@ -137,6 +138,116 @@ class TestAudioFilenames:
 
     def test_audio_filename_is_deterministic(self):
         assert persistence._audio_filename("abc", 1, "audio/webm") == "abc_1.webm"
+
+
+class TestServeableAudioFilenames:
+    """is_serveable_audio_filename: join-safe is not the same as serveable."""
+
+    def test_persisted_clip_name_is_serveable(self):
+        # GIVEN the names the app itself writes:
+        # THEN they are serveable.
+        assert persistence.is_serveable_audio_filename("d4ee3044_1.wav") is True
+        assert persistence.is_serveable_audio_filename("d4ee3044_pending_a1b2c3d4.webm") is True
+
+    def test_history_json_is_join_safe_but_not_serveable(self):
+        # GIVEN the room's own bookkeeping file: it passes the join-safety rule
+        # (no separators, not "."/".."), which is exactly why the audio
+        # endpoint served the room's whole transcript when that was the only
+        # check — the transcript is not a clip to replay.
+        assert persistence._is_plain_filename(persistence.HISTORY_FILENAME) is True
+        assert persistence.is_serveable_audio_filename(persistence.HISTORY_FILENAME) is False
+
+    @pytest.mark.parametrize("name", ["../secrets.txt", "..\\secrets.txt", "nested/x.wav", "\x00.wav", "..", ".", 42, None])
+    def test_path_shaped_or_untrusted_names_are_neither_join_safe_nor_serveable(self, name):
+        assert persistence.is_serveable_audio_filename(name) is False
+
+    @pytest.mark.parametrize("name", [
+        # _write_history_file's scratch file is literally named this: in
+        # ``target.with_suffix(".tmp")`` the ".json" is REPLACED, so killing the
+        # process between the temp write and os.replace() leaves the blocked
+        # transcript behind under a name a "value != history.json" denylist waves through.
+        "history.tmp",
+        "history.json.tmp",
+        # Anything else that can only be room-internal clutter.
+        "history.json.bak",
+        "history.json.migrated",
+        ".DS_Store",
+        "sidecar_notes.txt",
+        "settings.yaml",
+    ])
+    def test_room_internal_and_stray_names_are_not_serveable(self, name):
+        # GIVEN a name that is a plain filename but is not named like a clip
+        # (crash residue of the transcript, or clutter someone dropped into a
+        # room directory),
+        # THEN the audio endpoint refuses it.
+        assert persistence._is_plain_filename(name) is True
+        assert persistence.is_serveable_audio_filename(name) is False
+
+    def test_history_tmp_is_join_safe_which_is_why_a_denylist_cannot_work(self):
+        # GIVEN the crash residue: it passes join-safety exactly like
+        # history.json did, which is the trap that made the single-name
+        # block useless — the rule has to say "what IS a clip", never
+        # "which internal files did I remember".
+        assert persistence._is_plain_filename("history.tmp") is True
+        assert persistence.is_serveable_audio_filename("history.tmp") is False
+
+    @pytest.mark.parametrize("mime", [
+        "audio/wav",
+        "audio/webm;codecs=opus",
+        "audio/ogg",
+        "audio/mp4",
+        "audio/x-m4a",     # -> .m4a: a real container no hand-written list has
+        "audio/3gpp",      # -> .3gpp
+        "audio/vnd.wave",  # -> .vndwave: whatever the MIME sanitizer emits is fine
+        "audio/nonsense",
+        # Adversarial-but-legal: mime_to_extension() filters a character SET,
+        # so an extension may legitimately start with "_" or "-". The first
+        # cut of the clip-shape allowlist required an alphanumeric first
+        # character, and uploads advertising these were written to disk and
+        # then 404'd on every replay attempt (write-only clips).
+        "audio/_foo",      # -> ._foo
+        "audio/-foo",      # -> .-foo
+        "audio/_",         # -> ._   (a whole extension of one underscore)
+        "audio/x-_weird",  # -> ._weird (vendor "x-" stripped, "_" survives)
+        None,              # -> the .bin fallback
+    ])
+    def test_every_name_the_writers_produce_is_serveable_whatever_the_container(self, mime):
+        # GIVEN either writer and any MIME a client may advertise: the shape
+        # rule must never be the reason a genuine recording stops playing.
+        # (An extension allowlist here would mute these silently — no error,
+        # just dead replay buttons.)
+        assert persistence.is_serveable_audio_filename(
+            persistence._audio_filename("d4ee3044-1", 3, mime)) is True
+        assert persistence.is_serveable_audio_filename(
+            persistence._staged_audio_filename("d4ee3044-1", mime)) is True
+
+    def test_allowlist_extension_class_is_imported_from_mime_never_recopied(self):
+        # GIVEN the clip-name allowlist,
+        # THEN its extension portion IS the character class app/services/mime.py
+        # exports, not a hand-typed approximation of it. That hand-copy is what
+        # drifted the first time (the writer saved "<id>_0._foo"; the endpoint
+        # refused to serve it), and this is the guard that stops a third copy.
+        assert EXTENSION_SAFE_RE_CLASS in persistence._CLIP_NAME_RE.pattern
+
+    def test_empty_message_id_yields_an_unserveable_name_which_is_why_the_endpoint_rejects_it(self):
+        # GIVEN the blank message_id that upload_audio 422s (see
+        # tests/test_routers_persistence.py):
+        # THEN the names the writers would build are NOT clip-shaped, proving
+        # the 422 is load-bearing rather than tidiness — the allowlist's base
+        # segment needs at least one character before the "_".
+        assert persistence.is_serveable_audio_filename(
+            persistence._audio_filename("", 0, "audio/wav")) is False
+        assert persistence.is_serveable_audio_filename(
+            persistence._staged_audio_filename("", "audio/wav")) is False
+
+    def test_file_named_exactly_like_a_clip_is_serveable_rule_boundary_is_the_name(self):
+        # THEN the rule's accepted boundary is pinned: it discriminates by
+        # name, so a file that is named exactly like a clip is indistinguishable
+        # from one. Such a file can only be in a room directory because an
+        # upload put it there (the writers derive names from message_id + MIME),
+        # or someone placed it by hand — and a name-only endpoint has no basis
+        # to refuse it. Deliberate, not an oversight.
+        assert persistence.is_serveable_audio_filename("history_0.tmp") is True
 
 
 class TestPersistAudio:

@@ -18,6 +18,11 @@ let ttsEnabled = false;
 let ttsAvailable = false;
 let ttsStreaming = false;
 let ttsServerType = "";
+// Engine-axis fact from /api/tts/health: does the CONNECTED TTS engine demand
+// a transcript of each persona's reference clip? Never stored on a persona —
+// the same persona may or may not need one depending on the server configured
+// right now (issue #164). Only the sidebar's mute badge reads it.
+let ttsReferenceTextRequired = false;
 let sttAvailable = false;
 let isStreaming = false;
 
@@ -50,6 +55,44 @@ const ttsRequestQueue = [];
 const audioBufferQueue = [];
 let isFetchingTTS = false;
 let isPlayingAudioBuffer = false;
+
+// Streaming TTS resilience: the message IDs whose voice has been refused for
+// good — a failure the SERVER labelled with a refusal class
+// (`refusal: "engine"`: text this engine has nothing to speak, or this
+// persona's reference clip has no recognizable speech inside the transcribable
+// window; `"persona_files"`: the persona is missing a file the connected
+// engine demands). Never a status code: /api/tts answers 422 for those verdicts
+// AND for a request body FastAPI rejected before the handler ran, and only the
+// first is a verdict (issue #173 — see isVoiceVerdict in static/tts.js).
+// The verdict is about the engine/persona pairing, not about the sentence, so
+// every remaining sentence of THAT message would burn a serialized synthesis
+// slot to hear the same answer.
+//
+// Keyed by message ID, deliberately NOT a single "this reply" flag: a TTS
+// fetch is in flight for as long as one synthesis (seconds), so a verdict for
+// persona A lands while persona B's row is already the current one. A shared
+// flag let A's late verdict mute B's whole reply and print A's explanation under
+// B's bubble — with max_persona_replies > 1, and routinely in the echo
+// chamber, where the LLM emits every responder long before the first
+// synthesis finishes. Each message is judged on its own verdict only.
+//
+// resetTtsReplyState() clears it on every "start" event — streaming or not,
+// because processAudioQueue records verdicts into this same set and has no
+// other clear site — so the set stays bounded to one reply and a broken voice
+// never mutes the session.
+//
+// A verdict needs an owner. An ID is added only when isKnownMessageId() says
+// the asking item carried one, so this set can never hold a blank key (issue
+// #174): when the "start" event carried no message_id it carried none for the
+// whole turn, and a null key would silently stand in for every responder in it
+// — see handleUnvoiceableVerdict and belongsToMessage().
+//
+// ACCEPTED CONSEQUENCE of reading a refusal as a statement about the pairing
+// (issue #169): a mixed-script reply on a narrow engine can lose audio the
+// old letter-table pre-filter kept, because ONE refused sentence condemns the
+// whole message. Deliberate — the alternative was the client-side script table
+// that caused #169 — and pinned by tests/test_tts_resilience.js.
+const ttsBrokenMessageIds = new Set();
 
 // Every BufferSource currently producing sound. A Set rather than a
 // single "current source" reference, because two sources can legitimately

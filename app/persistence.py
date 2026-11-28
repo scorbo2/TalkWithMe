@@ -19,6 +19,7 @@ import json
 import locale
 import logging
 import os
+import re
 import shutil
 import threading
 import uuid
@@ -27,7 +28,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 from app.models import ChatMessage
-from app.services.mime import mime_to_extension
+from app.services.mime import EXTENSION_SAFE_RE_CLASS, mime_to_extension
 
 logger = logging.getLogger(__name__)
 
@@ -54,6 +55,12 @@ _HISTORY_LOCK = threading.Lock()
 _pending_audio: Dict[Tuple[str, str], List[str]] = {}
 
 
+# The room's own bookkeeping file, by name. The audio endpoint never has to
+# name it to refuse it: history.json (and its .tmp residue) simply is not a
+# clip-shaped name — see is_serveable_audio_filename.
+HISTORY_FILENAME = "history.json"
+
+
 def _room_dir(room_name: str) -> Path:
     """Return the path to a chat room's persistence subdirectory."""
     return _PERSISTENCE_ROOT / room_name
@@ -61,7 +68,7 @@ def _room_dir(room_name: str) -> Path:
 
 def _history_path(room_name: str) -> Path:
     """Return the path to the JSON history file for a room."""
-    return _room_dir(room_name) / "history.json"
+    return _room_dir(room_name) / HISTORY_FILENAME
 
 
 def _audio_file_extension(mime_type: Optional[str]) -> str:
@@ -105,6 +112,62 @@ def _is_plain_filename(value: Any) -> bool:
         and value not in (".", "..")
         and not any(sep in value for sep in ("/", "\\", "\x00"))
     )
+
+
+# The only two names this module ever writes for a clip: "<message-id>_<index>.<ext>"
+# once the file is attached to a row (_audio_filename) and
+# "<message-id>_pending_<hex8>.<ext>" while the row does not exist yet
+# (_staged_audio_filename). This is an allowlist on that SHAPE, never on the
+# extension: app/services/mime.py derives it from the container the client
+# recorded into and its output set is open by design, so a closed "known audio
+# extensions" table here would be a second hand-maintained copy of that
+# knowledge, would stop nothing (mime_type is client-supplied), and would
+# silently mute replay for a real recording whose container simply was not in
+# the list (an .m4a or .3gpp capture).
+#
+# The extension therefore accepts exactly EXTENSION_SAFE_RE_CLASS — the
+# character class mime_to_extension() is able to emit, imported from that
+# module rather than re-typed. The first version of this rule hand-copied a
+# stricter guess ("an extension starts alphanumeric"), which the sanitizer
+# contradicts: an upload advertising "audio/_foo" was saved as "<id>_0._foo"
+# and then 404'd on every replay attempt, write-only forever. Importing the
+# constant makes that drift impossible.
+#
+# CAVEAT, spelled out because it spans two files: the leading [^/\\]+ requires
+# a NON-EMPTY message id. That is guaranteed by the blank-id 422 in
+# app/routers/persistence.py::upload_audio, not by anything here — relax one
+# side and the other starts producing files this endpoint refuses to serve
+# ("_pending_a1b2c3d4.wav" is unspeakable to this regex).
+_CLIP_NAME_RE = re.compile(
+    r"[^/\\]+_(?:\d+|pending_[0-9a-f]{8})\." + EXTENSION_SAFE_RE_CLASS + "+",
+    re.IGNORECASE,
+)
+
+
+def is_serveable_audio_filename(value: Any) -> bool:
+    """True when *value* names a file the audio playback endpoint may serve.
+
+    _is_plain_filename() only answers "is this safe to JOIN onto a room dir",
+    and history.json passes that test with flying colours — so the audio
+    endpoint, whose job is a persisted clip, would hand back the room's entire
+    transcript with a confident media_type="audio/*" on it. The name check is
+    the cheap half; the router also re-checks containment after resolve()
+    because a symlink planted in a room dir is a perfectly plain filename too.
+
+    This is an allowlist on the clip-name shape above, not a denylist of the
+    internal files one happened to think of. The previous rule ("anything but
+    history.json") still served the crash residue of that very file: in
+    _write_history_file, ``target.with_suffix(".tmp")`` *replaces* the ".json",
+    so a hard kill between the temp write and os.replace() leaves a
+    ``history.tmp`` holding the same transcript — plus ``.DS_Store`` and any
+    sidecar a future refactor parks in a room directory.
+
+    Accepted boundary (pinned by
+    test_file_named_exactly_like_a_clip_is_serveable_rule_boundary_is_the_name):
+    a file named *exactly* like a clip is indistinguishable from one, so this
+    refuses app-internal names, never lookalikes.
+    """
+    return _is_plain_filename(value) and _CLIP_NAME_RE.fullmatch(value) is not None
 
 
 def _find_message(data: Dict[str, Any], message_id: str) -> Optional[Dict[str, Any]]:

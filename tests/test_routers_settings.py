@@ -488,3 +488,63 @@ class TestApiKeyIsolation:
         # THEN no cleartext warning is logged:
         assert resp.status_code == 200
         assert "cleartext" not in caplog.text
+
+
+# ---------------------------------------------------------------------------
+# Non-ASCII values (issue #166: settings.yaml must always be UTF-8)
+# ---------------------------------------------------------------------------
+
+# The Global prompt is free text, so a user may well put an emoji or a CJK
+# phrase in it. save_settings() serializes with allow_unicode=True, i.e. the
+# characters go to disk raw — which used to blow up on a Windows box (the ANSI
+# codepage has no such characters), AFTER open(..., "w") had already truncated
+# settings.yaml. Latin-1-range values were worse: no error, just mojibake.
+NON_ASCII_PROMPT = "No markdown \U0001f643 \u4f50\u85e4 caf\u00e9"
+
+
+class TestNonAsciiSettingsSave:
+    def test_save_with_non_ascii_global_prompt_succeeds_and_rereads(self, client):
+        # WHEN the General dialog saves an emoji/CJK prompt,
+        resp = client.put("/api/settings", json=base_update(
+            general={"global_system_prompt": NON_ASCII_PROMPT}))
+
+        # THEN the save succeeds and the value is still exact afterwards
+        # (pre-fix: HTTP 500 on Windows, and a half-written settings.yaml):
+        assert resp.status_code == 200
+        assert resp.json()["general"]["global_system_prompt"] == NON_ASCII_PROMPT
+        assert (
+            client.get("/api/settings").json()["general"]["global_system_prompt"]
+            == NON_ASCII_PROMPT
+        )
+
+    def test_save_with_non_ascii_global_prompt_writes_raw_utf8_bytes(self, client, tmp_path, ansi_codepage_io_default):
+        # GIVEN a Windows-style default text encoding:
+        # WHEN the same save happens,
+        assert client.put("/api/settings", json=base_update(
+            general={"global_system_prompt": NON_ASCII_PROMPT})).status_code == 200
+
+        # THEN settings.yaml on disk is raw UTF-8 — no \u escape sequences, no
+        # codepage translation, and no .tmp left behind by a failed write:
+        saved = (tmp_path / "settings.yaml").read_bytes()
+        saved.decode("utf-8")  # raises if the file is not valid UTF-8
+        assert "\U0001f643".encode("utf-8") in saved
+        assert "\u4f50\u85e4".encode("utf-8") in saved
+        assert "caf\u00e9".encode("utf-8") in saved
+        assert b"\\u" not in saved
+        assert list(tmp_path.glob("*.tmp")) == []
+
+    def test_save_with_non_ascii_mcp_server_names_writes_utf8(self, client, monkeypatch, tmp_path, ansi_codepage_io_default):
+        """The mcp: section is yaml-only but is copied over verbatim on every
+        settings save (a UI save must not wipe it) — so a non-ASCII server name
+        or URL travels through the same write."""
+        monkeypatch.setattr(app_config, "_settings_cache", make_settings(
+            mcp=MCPConfig(servers=[make_mcp_server(
+                name="Nachttisch \u4f50\u85e4", url="http://mcp.local:9001")])))
+
+        resp = client.put("/api/settings", json=base_update())
+        assert resp.status_code == 200
+
+        saved = (tmp_path / "settings.yaml").read_bytes()
+        assert "Nachttisch \u4f50\u85e4".encode("utf-8") in saved
+        servers = app_config.load_settings(tmp_path / "settings.yaml").mcp.servers
+        assert servers[0].name == "Nachttisch \u4f50\u85e4"

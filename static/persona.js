@@ -61,30 +61,24 @@ function renderPersonaList(list, showRemoveButtons) {
         card.className = "persona-card";
         card.dataset.name = p.name;
 
-        // Avatar
+        // Avatar: image when the persona has one, colored initial otherwise
+        // (shared with the Persona Editor list via utils.js).
         const avatar = document.createElement("div");
         avatar.className = "persona-avatar";
-        avatar.style.backgroundColor = p.avatar_color;
+        renderPersonaAvatar(avatar, p);
 
-        if (p.avatar_image) {
-            const img = document.createElement("img");
-            img.src = `/api/personas/${encodeURIComponent(p.name)}/avatar`;
-            img.alt = p.name;
-            img.onerror = () => {
-                // Fallback to initial on error
-                avatar.innerHTML = "";
-                avatar.textContent = p.name.charAt(0).toUpperCase();
-            };
-            avatar.appendChild(img);
-        } else {
-            avatar.textContent = p.name.charAt(0).toUpperCase();
-        }
-
-        // Mute indicator if not TTS-capable
-        if (!p.tts_capable) {
+        // Mute indicator. Two different reasons, one badge, and the tooltip
+        // says which (issue #164 phase 2): the persona has no reference clip,
+        // or it has one the CONNECTED engine cannot use because that engine
+        // demands a transcript the persona never supplied. The second half is
+        // why checkTTSHealth() repaints this list via refreshPersonaSidebar():
+        // init() renders personas before the health check lands.
+        const voiceBlock = personaVoiceBlock(p, ttsReferenceTextRequired);
+        if (voiceBlock) {
             const mute = document.createElement("span");
             mute.className = "mute-indicator";
             mute.textContent = "\u{1F507}";  // 🔇
+            mute.title = `${p.name} will be silent: ${voiceBlock}`;
             avatar.appendChild(mute);
         }
 
@@ -165,13 +159,11 @@ document.getElementById("pe-confirm-cancel").addEventListener("click", () => {
     peConfirmOverlay.classList.add("hidden");
 });
 
-// Close modals on overlay backdrop click
-personaEditorOverlay.addEventListener("click", (e) => {
-    if (e.target === personaEditorOverlay) closePersonaEditor();
-});
-peConfirmOverlay.addEventListener("click", (e) => {
-    if (e.target === peConfirmOverlay) peConfirmOverlay.classList.add("hidden");
-});
+// Close modals on a genuine backdrop click (press AND release on the
+// backdrop — see installBackdropClose() in utils.js for why a plain
+// "click" handler made a drag off a checkbox close the whole modal).
+installBackdropClose(personaEditorOverlay, closePersonaEditor);
+installBackdropClose(peConfirmOverlay, () => peConfirmOverlay.classList.add("hidden"));
 
 /* ==========================================================================
    Persona Editor — modal lifecycle
@@ -217,10 +209,11 @@ async function renderPersonaEditorList() {
             const item = document.createElement("div");
             item.className = "pe-list-item";
 
+            // Same avatar rule as the sidebar: the persona's image when it
+            // has one, the colored first-initial bubble only as a fallback.
             const avatar = document.createElement("div");
             avatar.className = "pe-list-item-avatar";
-            avatar.style.backgroundColor = p.avatar_color;
-            avatar.textContent = p.name.charAt(0).toUpperCase();
+            renderPersonaAvatar(avatar, p);
 
             const info = document.createElement("div");
             info.className = "pe-list-item-info";
