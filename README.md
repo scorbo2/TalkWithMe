@@ -797,6 +797,7 @@ standalone script under `impl/` with per-engine install notes.
   - Bug fix: isSpeakableText() was over-zealous (#169)
   - Bug fix: don't do control flow with strings (#171)
   - Bug fix: smarten up the deny list for chat room history (#170)
+  - Bug fix: better click handling for closing modals (#172)
 
 ## License
 
