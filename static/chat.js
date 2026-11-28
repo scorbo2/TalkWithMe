@@ -104,7 +104,7 @@ async function sendMessage() {
 
     // Generate a UUID for this user message (used for audio association).
     // If STT already generated one (for audio upload), reuse it.
-    if (!pendingUserMessageId) {
+    if (!isKnownMessageId(pendingUserMessageId)) {
         pendingUserMessageId = generateMessageId();
     }
 
@@ -312,7 +312,7 @@ function handleSSEEvent(event) {
 function appendUserBubble(text, messageId) {
     const row = document.createElement("div");
     row.className = "message-row user";
-    if (messageId) {
+    if (isKnownMessageId(messageId)) {
         row.dataset.messageId = messageId;
     }
 
@@ -646,7 +646,7 @@ async function deleteMessageFromChat(row, messageId) {
 
     // No message ID (e.g. a pre-"start" error placeholder): nothing on disk
     // could ever reference this row, so it is a display-only cleanup.
-    if (!rowMessageId) {
+    if (!isKnownMessageId(rowMessageId)) {
         console.warn("Delete requested for a row without a message ID; removing from view only.");
         row.remove();
         return;
@@ -712,7 +712,7 @@ const speakingMessageIds = new Map(); // messageId -> active source count
  * @param {boolean} on - true while audio plays, false when it stops.
  */
 function setSpeakingHighlight(messageId, on) {
-    if (!messageId) return;
+    if (!isKnownMessageId(messageId)) return;
     const row = messagesEl.querySelector(`.message-row[data-message-id="${messageId}"]`);
     if (row) {
         row.classList.toggle("speaking", on);
@@ -721,7 +721,7 @@ function setSpeakingHighlight(messageId, on) {
 
 /** Mark one of a message's audio sources as starting playback. */
 function beginSpeaking(messageId) {
-    if (!messageId) return;
+    if (!isKnownMessageId(messageId)) return;
     const count = (speakingMessageIds.get(messageId) || 0) + 1;
     speakingMessageIds.set(messageId, count);
     if (count === 1) {
@@ -731,7 +731,7 @@ function beginSpeaking(messageId) {
 
 /** Mark one of a message's audio sources as finished. */
 function endSpeaking(messageId) {
-    if (!messageId) return;
+    if (!isKnownMessageId(messageId)) return;
     const count = (speakingMessageIds.get(messageId) || 0) - 1;
     if (count <= 0) {
         speakingMessageIds.delete(messageId);
@@ -905,14 +905,15 @@ async function playPersistedAudio(roomName, filename, row) {
 
         const audioBuffer = await audioCtx.decodeAudioData(arrayBuffer);
 
-        if (messageId) {
+        if (isKnownMessageId(messageId)) {
             beginSpeaking(messageId);
             startedSpeaking = true;
         }
         // playAudioSource() is the shared source-construction path (tts.js):
         // onEnd clears the highlight when playback finishes. If the promise
         // rejects instead, onended never fires and the catch below does it.
-        await playAudioSource(audioBuffer, messageId ? () => endSpeaking(messageId) : undefined);
+        await playAudioSource(audioBuffer,
+            isKnownMessageId(messageId) ? () => endSpeaking(messageId) : undefined);
     } catch (err) {
         // A failure after beginSpeaking() must still clear the highlight —
         // but only then: an earlier failure (fetch/decode) never began one,

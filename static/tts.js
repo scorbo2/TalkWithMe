@@ -234,7 +234,7 @@ function enqueueStreamingTTS(personaName, text) {
     // again buys the same answer at the price of a serialized synthesis slot.
     // Messages with no verdict of their own are untouched — a late 422 from an
     // earlier responder must not mute the one currently streaming.
-    if (messageId && ttsBrokenMessageIds.has(messageId)) {
+    if (isKnownMessageId(messageId) && ttsBrokenMessageIds.has(messageId)) {
         console.warn("streaming TTS skipped (voice already refused for this message):",
                      previewForLog(text));
         return;
@@ -315,21 +315,55 @@ function resetTtsReplyState() {
  * worked around: any client-side rule fine enough to tell those two cases
  * apart is a script table again, which is the bug #169 was. Pinned by
  * tests/test_tts_resilience.js — see the note on ttsBrokenMessageIds.
+ *
+ * An item with NO message ID condemns nothing at all (issue #174). The ID is
+ * stamped from the "start" event, so it is missing only when the server never
+ * sent one (an older backend, or a token that arrived before the ID was
+ * adopted) — and then it is missing for EVERY responder in the turn, so it
+ * identifies no message in particular. Judging `null` would be guessing at an
+ * owner, and guessing wrong mutes an innocent responder; asking the next
+ * sentence of an unidentified reply and hearing the same 422 again is the
+ * cheaper mistake. Both callers still log the refusal after this returns, so
+ * the verdict is never silently swallowed.
  */
 function handleUnvoiceableVerdict(item, err) {
-    if (item.messageId) ttsBrokenMessageIds.add(item.messageId);
+    if (!isKnownMessageId(item.messageId)) {
+        console.warn("TTS voice verdict left unattributed (no message ID on the asking item):",
+                     previewForLog(item.text));
+        return;
+    }
+    ttsBrokenMessageIds.add(item.messageId);
     dropQueuedSentencesOfMessage(item.messageId);
     noteTtsUnavailableForReply(item.messageId, err.detail || err.message);
+}
+
+/**
+ * Does this queued request belong to the message identified by `messageId`?
+ *
+ * Both sides must be known IDs before they are allowed to be equal — the one
+ * comparison of message IDs in the whole frontend, and the only place that may
+ * write `===` between two of them (grep guard in tests/test_tts_resilience.js).
+ * Two items stamped `null` compare equal, and the question "whose sentences are
+ * these?" answered about an unidentified message must be *nobody's*, not
+ * "everybody unidentified" — that equality was issue #174.
+ */
+function belongsToMessage(item, messageId) {
+    return isKnownMessageId(messageId)
+        && isKnownMessageId(item && item.messageId)
+        && item.messageId === messageId;
 }
 
 /**
  * Drop the queued sentences of one message; every other message's sentences
  * stay queued (this verdict says nothing about them). Splice backwards so the
  * remaining indexes stay valid as items are removed.
+ *
+ * No separate empty-ID guard: belongsToMessage() already refuses to identify a
+ * message by an unknown ID, so an unidentified caller drops nothing.
  */
 function dropQueuedSentencesOfMessage(messageId) {
     for (let i = ttsRequestQueue.length - 1; i >= 0; i -= 1) {
-        if (ttsRequestQueue[i].messageId === messageId) ttsRequestQueue.splice(i, 1);
+        if (belongsToMessage(ttsRequestQueue[i], messageId)) ttsRequestQueue.splice(i, 1);
     }
 }
 
@@ -345,7 +379,7 @@ function dropQueuedSentencesOfMessage(messageId) {
  * inside the attribute selector unescaped.
  */
 function noteTtsUnavailableForReply(messageId, reason) {
-    if (!messageId || typeof document === "undefined" || !document.createElement) return;
+    if (!isKnownMessageId(messageId) || typeof document === "undefined" || !document.createElement) return;
     const row = typeof messagesEl !== "undefined" && messagesEl
         ? messagesEl.querySelector(`.message-row[data-message-id="${messageId}"]`)
         : null;
@@ -546,7 +580,7 @@ async function fetchTTS(personaName, text, messageId) {
     if (!data.audio_base64) return null;
 
     // Persist the audio against the message it was enqueued for.
-    if (messageId) {
+    if (isKnownMessageId(messageId)) {
         uploadAudio(currentChatRoom, messageId, data.audio_base64, "audio/wav")
             .then(result => {
                 if (result && result.filename) {

@@ -119,7 +119,7 @@ async function toggleMicrophone() {
                 // pendingUserMessageId is set by sendMessage() right before the
                 // message is sent, but we need it here *before* sendMessage().
                 // So we generate it now if it's not already set.
-                if (!pendingUserMessageId) {
+                if (!isKnownMessageId(pendingUserMessageId)) {
                     pendingUserMessageId = generateMessageId();
                 }
 

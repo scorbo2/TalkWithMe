@@ -815,6 +815,7 @@ standalone script under `impl/` with per-engine install notes.
   - Bug fix: smarten up the deny list for chat room history (#170)
   - Bug fix: better click handling for closing modals (#172)
   - Bug fix: better 422 handling (#173)
+  - Bug fix: bad guard could mute all pending sentences (#174)
 
 ## License
 
